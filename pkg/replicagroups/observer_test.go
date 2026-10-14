@@ -77,18 +77,18 @@ func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int
 	meta := metadata(f.lws.Name, f.lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))
 	f.workload = &appsv1.StatefulSet{
 		ObjectMeta: meta, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(replicas))},
-		Status: appsv1.StatefulSetStatus{ObservedGeneration: 3},
+		Status: appsv1.StatefulSetStatus{ObservedGeneration: 3, Replicas: int32(replicas)},
 	}
 	owner, kind := f.workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet")
 	if identity == leaderworkersetv1.GroupIdentityHash {
 		f.workload = &appsv1.Deployment{
 			ObjectMeta: meta, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(replicas))},
-			Status: appsv1.DeploymentStatus{ObservedGeneration: 3},
+			Status: appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: int32(replicas)},
 		}
 		f.replicaSet = &appsv1.ReplicaSet{
 			ObjectMeta: metadata(f.lws.Name+"-rs", f.workload, appsv1.SchemeGroupVersion.WithKind("Deployment")),
 			Spec:       appsv1.ReplicaSetSpec{Replicas: ptr.To(int32(replicas))},
-			Status:     appsv1.ReplicaSetStatus{ObservedGeneration: 3},
+			Status:     appsv1.ReplicaSetStatus{ObservedGeneration: 3, Replicas: int32(replicas)},
 		}
 		owner, kind = f.replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet")
 	}
@@ -144,12 +144,13 @@ func newFixture(identity leaderworkersetv1.GroupIdentityType, replicas, size int
 }
 
 func TestScalingObservation(t *testing.T) {
-	shortfall := func(f *fixture) {
-		f.scale(3)
+	// StatefulSet status counts all observed Pods; ReplicaSet status excludes
+	// terminating and terminal Pods. Keep lagging-status cases explicit below.
+	oneActiveLeader := func(f *fixture) {
 		if f.replicaSet != nil {
-			f.replicaSet.Status.Replicas = 2
+			f.replicaSet.Status.Replicas = 1
 		} else {
-			f.workload.(*appsv1.StatefulSet).Status.Replicas = 2
+			f.workload.(*appsv1.StatefulSet).Status.Replicas = int32(len(f.leaders))
 		}
 	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
@@ -177,10 +178,13 @@ func TestScalingObservation(t *testing.T) {
 			{"missing new leader", func(f *fixture) { f.leaders = f.leaders[:1] }, false, false},
 			{"deletion not yet observed", func(f *fixture) { f.scale(1) }, false, false},
 			{"deletion observed but not finished", func(f *fixture) { f.scale(1); holdTermination(f.leaders[1]) }, true, true},
-			{"deleted group still needed", func(f *fixture) { holdTermination(f.leaders[1]) }, false, false},
-			{"terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed }, false, false},
-			{"confirmed shortfall", shortfall, false, true},
-			{"Pods lag native status", func(f *fixture) { shortfall(f); f.leaders = f.leaders[:1] }, false, false},
+			{"deleted group still needed", func(f *fixture) { holdTermination(f.leaders[1]); oneActiveLeader(f) }, false, true},
+			{"terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed; oneActiveLeader(f) }, false, true},
+			{"missing leader acknowledged", func(f *fixture) { f.leaders = f.leaders[:1]; oneActiveLeader(f) }, false, true},
+			{"status still counts terminating leader", func(f *fixture) { holdTermination(f.leaders[1]) }, false, identity == leaderworkersetv1.GroupIdentityOrdinal},
+			{"status still counts terminal leader", func(f *fixture) { f.leaders[1].Status.Phase = corev1.PodFailed }, false, identity == leaderworkersetv1.GroupIdentityOrdinal},
+			{"confirmed shortfall", func(f *fixture) { f.scale(3) }, false, true},
+			{"Pods lag native status", func(f *fixture) { f.scale(3); f.leaders = f.leaders[:1] }, false, false},
 		} {
 			t.Run(fmt.Sprintf("%s/%s", identity, tc.name), func(t *testing.T) {
 				f := newFixture(identity, 2, 2)
