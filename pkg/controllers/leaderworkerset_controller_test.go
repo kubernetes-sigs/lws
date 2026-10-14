@@ -62,7 +62,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
 		scenarios := []string{"owned", "unowned", "missing leader", "replaced leader", "wrong owner kind", "wrong owner version", "missing workload", "replaced workload", "foreign LWS", "read error", "replacement during delete"}
 		if identity == leaderworkerset.GroupIdentityHash {
-			scenarios = append(scenarios, "replaced replica set", "missing replica set", "replica set read error")
+			scenarios = append(scenarios, "replaced replica set", "missing replica set", "replica set read error", "constructor without setup", "literal without setup")
 		}
 		for _, scenario := range scenarios {
 			t.Run(string(identity)+"/"+scenario, func(t *testing.T) {
@@ -115,10 +115,13 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 					objects = append(objects, leader)
 				}
 				storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+				withoutSetup := scenario == "constructor without setup" || scenario == "literal without setup"
 				cl := interceptor.NewClient(storage, interceptor.Funcs{
 					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 						_, isReplicaSet := obj.(*appsv1.ReplicaSet)
-						require.False(t, isReplicaSet, "ReplicaSet lookup must bypass the manager cache")
+						if !withoutSetup {
+							require.False(t, isReplicaSet, "ReplicaSet lookup must bypass the manager cache")
+						}
 						if scenario == "read error" {
 							return fmt.Errorf("owner lookup failed")
 						}
@@ -142,7 +145,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 				})
 				r := NewLeaderWorkerSetReconciler(cl, scheme, events.NewFakeRecorder(5))
 				apiReads := 0
-				r.apiReader = interceptor.NewClient(storage, interceptor.Funcs{
+				apiReader := interceptor.NewClient(storage, interceptor.Funcs{
 					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 						apiReads++
 						require.IsType(t, &appsv1.ReplicaSet{}, obj, "other owner lookups must stay cached")
@@ -152,8 +155,17 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 						return c.Get(ctx, key, obj, opts...)
 					},
 				})
-				err := r.deleteWorkerStatefulSets(t.Context(), lws)
-				if identity == leaderworkerset.GroupIdentityOrdinal {
+				switch scenario {
+				case "constructor without setup":
+					require.NotNil(t, r.apiReader, "constructor should provide a usable default reader")
+				case "literal without setup":
+					r = &LeaderWorkerSetReconciler{Client: cl, Scheme: scheme}
+				default:
+					r.apiReader = apiReader
+				}
+				var err error
+				require.NotPanics(t, func() { err = r.deleteWorkerStatefulSets(t.Context(), lws) })
+				if identity == leaderworkerset.GroupIdentityOrdinal || withoutSetup {
 					require.Zero(t, apiReads)
 				} else if scenario == "owned" {
 					require.Equal(t, 1, apiReads)
@@ -168,7 +180,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 				}
 				var remaining appsv1.StatefulSetList
 				require.NoError(t, cl.List(t.Context(), &remaining, client.MatchingLabels{leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker}))
-				if scenario == "owned" {
+				if scenario == "owned" || withoutSetup {
 					require.Empty(t, remaining.Items)
 				} else {
 					require.Len(t, remaining.Items, 1, "unverified or replaced workers must survive")

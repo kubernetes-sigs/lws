@@ -117,6 +117,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 	}
 	return &LeaderWorkerSetReconciler{
 		Client:                client,
+		apiReader:             client, // SetupWithManager supplies the uncached reader in production.
 		Scheme:                scheme,
 		Record:                record,
 		SchedulerProvider:     provider,
@@ -1501,7 +1502,11 @@ func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Cont
 		if rs, isReplicaSet := parent.(*appsv1.ReplicaSet); isReplicaSet {
 			cached, found := replicaSets[ref.Name]
 			if !found {
-				if err := r.apiReader.Get(ctx, key, rs); err != nil {
+				reader := r.apiReader
+				if reader == nil {
+					reader = r.Client
+				}
+				if err := reader.Get(ctx, key, rs); err != nil {
 					if !apierrors.IsNotFound(err) {
 						return false, err
 					}
