@@ -1,0 +1,18 @@
+suite: webhook Service
+templates:
+  - templates/webhook/service.yaml
+release:
+  name: lws
+  namespace: lws-system
+tests:
+  - it: forwards webhook traffic to the configured service port
+    set:
+      service:
+        port: 10443
+    asserts:
+      - equal:
+          path: spec.ports
+          value:
+            - port: 443
+              protocol: TCP
+              targetPort: 10443
