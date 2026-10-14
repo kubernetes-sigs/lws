@@ -1,0 +1,12 @@
+# 20 small LeaderWorkerSets, for checking the harness itself in a few minutes.
+namespace: lws-performance
+timeout: 5m
+nodeSelector: {type: kwok}
+tolerations:
+- {key: kwok.x-k8s.io/node, operator: Exists, effect: NoSchedule}
+classes:
+- {name: ordinal, count: 10, replicas: 2, size: 2}
+- {name: hash, count: 10, replicas: 2, size: 2, groupIdentity: Hash}
+scale:
+- {name: scale-up, replicas: {ordinal: 4, hash: 4}}
+- {name: scale-down, replicas: {ordinal: 1, hash: 1}}
