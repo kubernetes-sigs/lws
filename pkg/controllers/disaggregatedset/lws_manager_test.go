@@ -249,6 +249,74 @@ func TestRolloutResumesZeroRoleWithUpdatedBudget(t *testing.T) {
 	}
 }
 
+func TestRolloutBudgetFallback(t *testing.T) {
+	percentage := leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromString("10%")}
+	surge := leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromString("1%")}
+	fallback := leaderworkersetv1.RollingUpdateConfiguration{MaxUnavailable: intstr.FromInt(1)}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, child := range []string{"", "a"} {
+			for _, tc := range []struct {
+				name                      string
+				before                    int
+				counts                    []int
+				direction                 scaleDirection
+				current, desired, interim leaderworkersetv1.RollingUpdateConfiguration
+			}{
+				{name: "old percentage drains to zero", before: 10, counts: []int{9, 8, 7, 6, 5, 4, 3, 2, 1, 0}, direction: scaleDown, current: percentage, desired: surge, interim: fallback},
+				{name: "zero budgets resume in steps", counts: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, direction: scaleUp, desired: percentage, interim: fallback},
+				{name: "valid existing surge is retained", before: 1, counts: []int{2, 9, 10}, direction: scaleUp, current: surge, desired: percentage, interim: surge},
+			} {
+				t.Run(string(identity)+"/"+child+"/"+tc.name, func(t *testing.T) {
+					children := make([]string, tc.before)
+					for i := range children {
+						children[i] = "a"
+					}
+					f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+					role := disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model"}
+					if child == "" {
+						delete(f.lws.Annotations, subRoleReplicasAnnotation)
+						delete(f.lws.Annotations, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+					} else {
+						role.SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: child, Replicas: ptr.To[int32](10)}}
+						setSubRoleJSON(f.lws, subRoleReplicasAnnotation, map[string]int{child: tc.before})
+						setSubRoleJSON(f.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{child: 10})
+					}
+					f.lws.Spec.RolloutStrategy = *defaultedRolloutStrategy(&leaderworkersetv1.RolloutStrategy{RollingUpdateConfiguration: tc.current.DeepCopy()})
+					if identity == leaderworkersetv1.GroupIdentityOrdinal && tc.before > 0 {
+						f.lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](2)
+					}
+					require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+					f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), lwsAdmissionInterceptors())
+					role.Spec.Replicas = ptr.To[int32](10)
+					role.Spec.RolloutStrategy.RollingUpdateConfiguration = tc.desired.DeepCopy()
+					f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{role}
+					before := f.ds.DeepCopy()
+					executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
+					for _, count := range tc.counts {
+						// Subrole assignment may need several reconciles before the physical scale.
+						for range 8 {
+							err := executor.scaleRevision(t.Context(), f.ds, f.revision("revision"), []string{childRoleKey(role.Name, child)}, RoleReplicaState{count}, tc.direction)
+							require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+							f.native()
+						}
+						got := f.observe().LWS
+						require.EqualValues(t, count, *got.Spec.Replicas)
+						want := defaultedRolloutStrategy(&leaderworkersetv1.RolloutStrategy{RollingUpdateConfiguration: tc.interim.DeepCopy()})
+						if identity == leaderworkersetv1.GroupIdentityOrdinal && tc.before > 0 {
+							want.RollingUpdateConfiguration.Partition = ptr.To[int32](2)
+						}
+						if tc.direction == scaleUp && count == 10 {
+							want = defaultedRolloutStrategy(&role.Spec.RolloutStrategy)
+						}
+						require.Equal(t, *want, got.Spec.RolloutStrategy, "replicas=%d", count)
+					}
+					require.Equal(t, before, f.ds, "repair only the child's budget, not the planner's policy")
+				})
+			}
+		}
+	}
+}
+
 func buildManagerTestLWS(annotations map[string]string) *leaderworkersetv1.LeaderWorkerSet {
 	return wrappers.BuildBasicLeaderWorkerSet("test-lws", "default").
 		Labels(managerTestLabels).

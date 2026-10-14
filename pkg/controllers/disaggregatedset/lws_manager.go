@@ -408,26 +408,36 @@ func (manager *LeaderWorkerSetManager) scale(ctx context.Context, ds *disaggrega
 	return nil
 }
 
-// The current revision's budgets are live settings, like replicas. Publish them
-// together: a zero/zero budget is valid at zero replicas, but prevents resuming.
-// Subrole scaling can take several writes; defer a budget that is only valid at
-// the final count (for example, maxUnavailable=10% when growing from 1 to 10).
+// Apply the desired budgets when valid at the next replica count; otherwise keep
+// the current ones. Even an old revision (desired == nil) may need a repair:
+// maxUnavailable=10% rounds down to zero when shrinking from ten replicas to nine.
+// Use maxUnavailable=1 only if neither strategy allows the child to scale.
 func setRolloutStrategy(lws *leaderworkersetv1.LeaderWorkerSet, desired *leaderworkersetv1.RolloutStrategy) bool {
-	if desired == nil {
-		return false // Preserve old revisions' recorded native settings.
+	replicas := int(getLWSReplicas(lws))
+	if desired != nil {
+		strategy := defaultedRolloutStrategy(desired)
+		if isRolloutStrategyValidForReplicas(strategy, replicas) {
+			if equality.Semantic.DeepEqual(defaultedRolloutStrategy(&lws.Spec.RolloutStrategy), strategy) {
+				return false
+			}
+			lws.Spec.RolloutStrategy = *strategy
+			return true
+		}
 	}
-	strategy := defaultedRolloutStrategy(desired)
-	if equality.Semantic.DeepEqual(defaultedRolloutStrategy(&lws.Spec.RolloutStrategy), strategy) {
+	current := defaultedRolloutStrategy(&lws.Spec.RolloutStrategy)
+	if isRolloutStrategyValidForReplicas(current, replicas) {
 		return false
 	}
-	config := strategy.RollingUpdateConfiguration
-	surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, int(getLWSReplicas(lws)), true)
-	unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, int(getLWSReplicas(lws)), false)
-	if surgeErr != nil || unavailableErr != nil || getLWSReplicas(lws) != 0 && surge == 0 && unavailable == 0 {
-		return false
-	}
-	lws.Spec.RolloutStrategy = *strategy
+	current.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt(1)
+	lws.Spec.RolloutStrategy = *current
 	return true
+}
+
+func isRolloutStrategyValidForReplicas(strategy *leaderworkersetv1.RolloutStrategy, replicas int) bool {
+	config := strategy.RollingUpdateConfiguration
+	surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, replicas, true)
+	unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, replicas, false)
+	return surgeErr == nil && unavailableErr == nil && (replicas == 0 || surge != 0 || unavailable != 0)
 }
 
 func defaultedRolloutStrategy(desired *leaderworkersetv1.RolloutStrategy) *leaderworkersetv1.RolloutStrategy {
