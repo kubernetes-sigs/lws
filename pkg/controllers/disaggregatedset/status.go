@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -39,7 +40,9 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	if err != nil {
 		return err
 	}
-	observedReplicas, available := summarizeRoleStatuses(roleStatuses, desiredReplicasByRole, disaggregatedsetutils.GetSlices(ds))
+	// Availability is judged against the published targets, so set them first.
+	setDesiredReplicas(roleStatuses, desiredReplicasByRole, disaggregatedsetutils.GetSlices(ds))
+	observedReplicas, available := summarizeRoleStatuses(roleStatuses)
 
 	changed := setRoleStatuses(ds, roleStatuses)
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
@@ -97,22 +100,41 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	return statuses, allAssigned, nil
 }
 
+// setDesiredReplicas publishes the target of every parent and child, totalled
+// across slices. An unknown target stays unset so readers never mistake it for a
+// requested zero.
+func setDesiredReplicas(statuses []disaggregatedsetv1.RoleStatus, desiredReplicasByRole map[string]int, sliceCount int32) {
+	desired := func(key string) *int32 {
+		perSlice, known := desiredReplicasByRole[key]
+		if !known {
+			return nil
+		}
+		return ptr.To(int32(perSlice) * sliceCount)
+	}
+	for i := range statuses {
+		parent := &statuses[i]
+		parent.DesiredReplicas = desired(parent.Name)
+		for j := range parent.SubRoleStatuses {
+			child := &parent.SubRoleStatuses[j]
+			child.DesiredReplicas = desired(childRoleKey(parent.Name, child.Name))
+		}
+	}
+}
+
 // summarizeRoleStatuses projects public nested status into scaler keys and
-// checks that every parent and child has reached its own target.
-func summarizeRoleStatuses(statuses []disaggregatedsetv1.RoleStatus, desiredReplicasByRole map[string]int, sliceCount int32) (map[string]int32, bool) {
+// checks that every parent and child has reached its published target.
+func summarizeRoleStatuses(statuses []disaggregatedsetv1.RoleStatus) (map[string]int32, bool) {
 	replicasByRole := make(map[string]int32)
 	available := true
-	record := func(name string, replicas, ready, updated int32) {
+	record := func(name string, desired *int32, replicas, ready, updated int32) {
 		replicasByRole[name] = replicas
-		perSlice, known := desiredReplicasByRole[name]
-		desired := int32(perSlice) * sliceCount
 		// Unknown targets must not be mistaken for a requested zero.
-		available = available && known && replicas == desired && ready == desired && updated == desired
+		available = available && desired != nil && replicas == *desired && ready == *desired && updated == *desired
 	}
 	for _, parent := range statuses {
-		record(parent.Name, parent.Replicas, parent.ReadyReplicas, parent.UpdatedReplicas)
+		record(parent.Name, parent.DesiredReplicas, parent.Replicas, parent.ReadyReplicas, parent.UpdatedReplicas)
 		for _, child := range parent.SubRoleStatuses {
-			record(childRoleKey(parent.Name, child.Name), child.Replicas, child.ReadyReplicas, child.UpdatedReplicas)
+			record(childRoleKey(parent.Name, child.Name), child.DesiredReplicas, child.Replicas, child.ReadyReplicas, child.UpdatedReplicas)
 		}
 	}
 	return replicasByRole, available
