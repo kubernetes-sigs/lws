@@ -635,7 +635,7 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 		ds.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{}
 		createLegacyDisaggregatedSet(ds, "rollingUpdateConfiguration.maxUnavailable")
 		manager := disaggregatedsetcontroller.NewScalerManager(k8sClient, events.NewFakeRecorder(10))
-		scalers, err := manager.Reconcile(ctx, ds, func(string) int32 { return 4 })
+		scalers, err := manager.Reconcile(ctx, ds, func(string) (int32, error) { return 4, nil })
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(scalers[ds.Spec.Roles[0].Name].Spec.Replicas).To(gomega.Equal(int32(4)))
 		originalSpec := ds.Spec.DeepCopy()
@@ -768,7 +768,11 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 			LWSManager: manager, ScalerManager: disaggregatedsetcontroller.NewScalerManager(k8sClient, recorder),
 		}
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
-		_, err := reconciler.Reconcile(ctx, request)
+		result, err := reconciler.Reconcile(ctx, request)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(result.RequeueAfter).To(gomega.BeNumerically(">", 0))
+		// The first pass creates empty children; the requested retry scales them.
+		_, err = reconciler.Reconcile(ctx, request)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		roleName := ds.Spec.Roles[0].Name
 		childName := disaggregatedsetutils.GenerateName(ds.Name, 0, disaggregatedsetutils.ComputeRevision(ds.Spec.Roles), roleName)
