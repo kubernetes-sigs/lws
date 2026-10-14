@@ -14,6 +14,8 @@ subresource (it monitors leader pods only), targeting 50% CPU utilization
 between the `minReplicas` and `maxReplicas` each manifest sets. It needs
 [metrics-server](https://github.com/kubernetes-sigs/metrics-server).
 
+<img src="/images/examples/lws-autoscaling.svg" alt="HPA driving the LeaderWorkerSet scale subresource, group count 2 to 5" style="display:block;margin:1.5rem auto;width:100%;max-width:550px">
+
 ## Deploy
 
 {{% tabpane text=true %}}

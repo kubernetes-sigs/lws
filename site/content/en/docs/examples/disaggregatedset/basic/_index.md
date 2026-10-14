@@ -24,6 +24,8 @@ per-role scaler and HPA, [multi-slice](../multi-slice/) fans the role set out
 into independent slices, and [topology-aware scheduling](../topology-aware-scheduling/)
 co-locates a slice's roles in one topology domain.
 
+<img src="/images/examples/ds-basic.svg" alt="DisaggregatedSet with prefill and decode child LeaderWorkerSets, KV cache flowing prefill to decode" style="display:block;margin:1.5rem auto;width:100%;max-width:700px">
+
 ## Deploy
 
 {{% tabpane text=true %}}

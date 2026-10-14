@@ -24,6 +24,8 @@ The other guides build on this one: [autoscaling](../autoscaling/) adds an HPA
 and [topology-aware scheduling](../topology-aware-scheduling/) pins each group
 to one topology domain.
 
+<img src="/images/examples/lws-basic.svg" alt="LeaderWorkerSet with two replica groups, each a leader and one worker, fronted by a leader Service" style="display:block;margin:1.5rem auto;width:100%;max-width:550px">
+
 ## Deploy
 
 Pick a runtime. Both read a Hugging Face token from `HF_TOKEN`.

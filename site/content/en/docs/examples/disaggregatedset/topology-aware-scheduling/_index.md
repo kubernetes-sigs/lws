@@ -24,6 +24,8 @@ There are two ways to do this. Pick based on how your cluster admits workloads:
   topology domain. Use this when Kueue already manages quota and admission for
   your cluster.
 
+<img src="/images/examples/ds-topology-aware.svg" alt="Each slice's prefill and decode co-located in one topology domain, slices spread across domains" style="display:block;margin:1.5rem auto;width:100%;max-width:700px">
+
 ## Option 1: Native placement policies
 
 This guide is the [basic](../basic/) deployment plus topology-aware placement.

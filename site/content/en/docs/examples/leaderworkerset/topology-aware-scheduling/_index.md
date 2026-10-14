@@ -28,6 +28,8 @@ There are two ways to do this. Pick based on how your cluster admits workloads:
   Kueue already manages quota and admission for your cluster, so topology
   placement stays consistent with the rest of your gang scheduling.
 
+<img src="/images/examples/lws-topology-aware.svg" alt="Each replica group pinned to one topology domain, groups on separate domains" style="display:block;margin:1.5rem auto;width:100%;max-width:550px">
+
 ## Option 1: Native placement policies
 
 This guide is the [basic](../basic/) deployment plus topology-aware placement.

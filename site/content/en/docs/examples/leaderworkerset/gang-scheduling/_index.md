@@ -15,6 +15,8 @@ keeps both pending.
 Before starting, complete the [native gang scheduling installation
 prerequisites](../../../installation/#enable-native-gang-scheduling).
 
+<img src="/images/examples/lws-gang-scheduling.svg" alt="LeaderWorkerSet with native gang scheduling: one Workload and one PodGroup per replica group, each PodGroup gang-scheduling its leader and worker together" style="display:block;margin:1.5rem auto;width:100%;max-width:550px">
+
 ## Create the LeaderWorkerSet
 
 The example requests only CPU and memory, so it does not require accelerators

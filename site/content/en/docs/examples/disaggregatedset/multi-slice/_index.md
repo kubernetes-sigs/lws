@@ -15,6 +15,8 @@ slice's roles and spread slices across domains.
 Slice fan-out and external role autoscaling are mutually exclusive: external
 scaling requires `spec.slices: 1`.
 
+<img src="/images/examples/ds-multi-slice.svg" alt="DisaggregatedSet role set replicated into independent slices via spec.slices" style="display:block;margin:1.5rem auto;width:100%;max-width:700px">
+
 ## Deploy
 
 {{% tabpane text=true %}}

@@ -15,6 +15,8 @@ CPU. It needs [metrics-server](https://github.com/kubernetes-sigs/metrics-server
 
 External scaling requires `spec.slices: 1`.
 
+<img src="/images/examples/ds-autoscaling.svg" alt="prefill role scaled by a DisaggregatedSetRoleScaler and HPA" style="display:block;margin:1.5rem auto;width:100%;max-width:700px">
+
 ## Deploy
 
 {{% tabpane text=true %}}
