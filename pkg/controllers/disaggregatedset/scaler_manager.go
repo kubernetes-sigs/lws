@@ -155,7 +155,7 @@ func unresolvedReplicaTargetRoles(roleNames []string, desiredReplicasByRole map[
 func (m *ScalerManager) Reconcile(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
-	seedFor func(role string) int32,
+	seedFor func(role string) (int32, error),
 ) (map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, error) {
 	log := logf.FromContext(ctx)
 
@@ -202,7 +202,11 @@ func (m *ScalerManager) Reconcile(
 		}
 		seed := int32(0)
 		if seedFor != nil {
-			seed = seedFor(role)
+			var err error
+			seed, err = seedFor(role)
+			if err != nil {
+				return nil, fmt.Errorf("compute scaler seed for %s: %w", role, err)
+			}
 		}
 		s, err := m.create(ctx, ds, role, seed)
 		if err != nil {

@@ -31,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
@@ -205,6 +206,7 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 						c := newTestClient(objects...)
 						executor := newTestExecutor(c)
 						executor.LWSManager = NewLeaderWorkerSetManager(c) // Real shared observer, not status stubs.
+						executor.LWSManager.reader = rolloutDescendantReader(c, objects)
 						_, complete, err := reconcileTestTransition(t.Context(), executor, ds, "target", desired)
 						require.NoError(t, err)
 						for _, lws := range workloads {
@@ -334,6 +336,64 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Each rollout tick rebuilds native descendants; reconciliation only writes LWS.
+// Index those immutable fixtures like the production informer. The fake client's
+// List otherwise serializes every Pod in every LWS before filtering, repeatedly.
+// LWS reads/writes still use the fake client; Observe still checks real ownership,
+// group membership and readiness, and receives independent copies of descendants.
+func rolloutDescendantReader(c client.WithWatch, objects []client.Object) client.Reader {
+	byLWS := make(map[client.ObjectKey][]client.Object)
+	for _, object := range objects {
+		name := object.GetLabels()[leaderworkersetv1.SetNameLabelKey]
+		if name != "" {
+			key := client.ObjectKey{Namespace: object.GetNamespace(), Name: name}
+			byLWS[key] = append(byLWS[key], object)
+		}
+	}
+	return interceptor.NewClient(c, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, options ...client.ListOption) error {
+			opts := (&client.ListOptions{}).ApplyOptions(options)
+			if opts.LabelSelector == nil || opts.Namespace == "" || opts.FieldSelector != nil || opts.Limit != 0 || opts.Continue != "" {
+				return c.List(ctx, list, options...)
+			}
+			name, exact := opts.LabelSelector.RequiresExactMatch(leaderworkersetv1.SetNameLabelKey)
+			if !exact {
+				return c.List(ctx, list, options...)
+			}
+			switch list := list.(type) {
+			case *corev1.PodList:
+				*list = corev1.PodList{}
+			case *appsv1.StatefulSetList:
+				*list = appsv1.StatefulSetList{}
+			case *appsv1.ReplicaSetList:
+				*list = appsv1.ReplicaSetList{}
+			default:
+				return c.List(ctx, list, options...)
+			}
+			for _, object := range byLWS[client.ObjectKey{Namespace: opts.Namespace, Name: name}] {
+				if !opts.LabelSelector.Matches(labels.Set(object.GetLabels())) {
+					continue
+				}
+				switch list := list.(type) {
+				case *corev1.PodList:
+					if pod, ok := object.(*corev1.Pod); ok {
+						list.Items = append(list.Items, *pod.DeepCopy())
+					}
+				case *appsv1.StatefulSetList:
+					if sts, ok := object.(*appsv1.StatefulSet); ok {
+						list.Items = append(list.Items, *sts.DeepCopy())
+					}
+				case *appsv1.ReplicaSetList:
+					if rs, ok := object.(*appsv1.ReplicaSet); ok {
+						list.Items = append(list.Items, *rs.DeepCopy())
+					}
+				}
+			}
+			return nil
+		},
+	})
 }
 
 func TestDisjointTargetCorrectionReadiness(t *testing.T) {
