@@ -19,10 +19,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -198,7 +201,8 @@ func TestSummarizePhase(t *testing.T) {
 }
 
 func TestWriteSummary(t *testing.T) {
-	summary := &Summary{Phases: []PhaseSummary{{Name: "create", LeaderWorkerSets: 2, WallTimeMs: 1000, GroupsPerSecond: 1.5, P90Ms: 800}}}
+	summary := &Summary{Phases: []PhaseSummary{{Name: "create", LeaderWorkerSets: 2, WallTimeMs: 1000, GroupsPerSecond: 1.5, P90Ms: 800,
+		Controller: &ControllerUsage{CPUSeconds: 1.5, APIRequests: 3, APIRequestsByMethod: map[string]int64{"POST": 3}}}}}
 	path := filepath.Join(t.TempDir(), "results", "summary.yaml")
 	if err := writeSummary(path, summary); err != nil {
 		t.Fatal(err)
@@ -218,7 +222,7 @@ func TestWriteSummary(t *testing.T) {
 
 func TestRangeSpecCheck(t *testing.T) {
 	summary := &Summary{Phases: []PhaseSummary{
-		{Name: "create", WallTimeMs: 1000, P50Ms: 500, P90Ms: 800},
+		{Name: "create", WallTimeMs: 1000, P50Ms: 500, P90Ms: 800, Controller: &ControllerUsage{CPUSeconds: 2.5, APIRequests: 500}},
 		{Name: "scale-up", WallTimeMs: 500, MaxMs: 450},
 	}}
 	tests := map[string]struct {
@@ -226,14 +230,16 @@ func TestRangeSpecCheck(t *testing.T) {
 		want []string
 	}{
 		"within the limits": {
-			spec: map[string]map[string]float64{"create": {"wallTimeMs": 1000, "p90Ms": 800}},
+			spec: map[string]map[string]float64{"create": {"wallTimeMs": 1000, "p90Ms": 800, "controller.cpuSeconds": 2.5}},
 		},
 		"each exceeded bound is reported": {
 			spec: map[string]map[string]float64{
-				"create":   {"wallTimeMs": 999, "p50Ms": 499.5, "p90Ms": 799},
+				"create":   {"wallTimeMs": 999, "p50Ms": 499.5, "p90Ms": 799, "controller.cpuSeconds": 2.4, "controller.apiRequests": 499},
 				"scale-up": {"maxMs": 449},
 			},
 			want: []string{
+				"phase create: controller.apiRequests is 500, above the limit of 499",
+				"phase create: controller.cpuSeconds is 2.5, above the limit of 2.4",
 				"phase create: p50Ms is 500, above the limit of 499.5",
 				"phase create: p90Ms is 800, above the limit of 799",
 				"phase create: wallTimeMs is 1000, above the limit of 999",
@@ -241,9 +247,10 @@ func TestRangeSpecCheck(t *testing.T) {
 			},
 		},
 		"bounds without a measurement": {
-			spec: map[string]map[string]float64{"scale-up": {"wallTime": 1}, "scale-down": {"maxMs": 1}},
+			spec: map[string]map[string]float64{"scale-up": {"controller.cpuSeconds": 1, "wallTime": 1}, "scale-down": {"maxMs": 1}},
 			want: []string{
 				"phase scale-down: not in the summary",
+				"phase scale-up: controller.cpuSeconds is not measured",
 				"phase scale-up: wallTime is not measured",
 			},
 		},
@@ -255,5 +262,51 @@ func TestRangeSpecCheck(t *testing.T) {
 				t.Errorf("check() (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestControllerUsage(t *testing.T) {
+	leader := func(cpuSeconds float64, posts, patches int) string {
+		return fmt.Sprintf(`# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total %g
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 1.048576e+08
+# TYPE rest_client_requests_total counter
+rest_client_requests_total{code="200",method="GET"} 100
+rest_client_requests_total{code="201",method="POST"} %d
+rest_client_requests_total{code="200",method="PATCH"} %d
+# TYPE leader_election_master_status gauge
+leader_election_master_status{name="lws"} 1
+`, cpuSeconds, posts, patches)
+	}
+	const follower = `# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 1
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 5.24288e+07
+# TYPE leader_election_master_status gauge
+leader_election_master_status{name="lws"} 0
+`
+	scrape := func(pods ...string) sample {
+		s := sample{requests: map[string]float64{}}
+		for _, text := range pods {
+			parser := expfmt.NewTextParser(model.UTF8Validation)
+			families, err := parser.TextToMetricFamilies(strings.NewReader(text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.add(families)
+		}
+		return s
+	}
+	if scrape(follower).leader {
+		t.Error("a follower alone is the leader")
+	}
+	before, after := scrape(leader(10, 20, 0), follower), scrape(leader(12.5, 70, 30), follower)
+	if !before.leader {
+		t.Error("no leader among the leader and a follower")
+	}
+	want := &ControllerUsage{CPUSeconds: 2.5, PeakMemoryMiB: 150, APIRequests: 80, APIRequestsByMethod: map[string]int64{"POST": 50, "PATCH": 30}}
+	if diff := cmp.Diff(want, controllerUsage(before, after, after.rssBytes)); diff != "" {
+		t.Errorf("controllerUsage() (-want +got):\n%s", diff)
 	}
 }
