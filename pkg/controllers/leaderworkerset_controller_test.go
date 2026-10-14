@@ -62,7 +62,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
 		scenarios := []string{"owned", "unowned", "missing leader", "replaced leader", "wrong owner kind", "wrong owner version", "missing workload", "replaced workload", "foreign LWS", "read error", "replacement during delete"}
 		if identity == leaderworkerset.GroupIdentityHash {
-			scenarios = append(scenarios, "replaced replica set")
+			scenarios = append(scenarios, "replaced replica set", "missing replica set", "replica set read error", "constructor without setup", "literal without setup")
 		}
 		for _, scenario := range scenarios {
 			t.Run(string(identity)+"/"+scenario, func(t *testing.T) {
@@ -79,7 +79,9 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 				if identity == leaderworkerset.GroupIdentityHash {
 					workload = &appsv1.Deployment{ObjectMeta: workloadMeta}
 					rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "model-rs", Namespace: lws.Namespace, UID: "rs", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("Deployment"))}}}
-					objects = append(objects, rs)
+					if scenario != "missing replica set" {
+						objects = append(objects, rs)
+					}
 					leaderOwner = metav1.NewControllerRef(rs, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
 					if scenario == "replaced replica set" {
 						rs.UID = "replacement"
@@ -112,8 +114,14 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 				if scenario != "missing leader" {
 					objects = append(objects, leader)
 				}
-				cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+				storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+				withoutSetup := scenario == "constructor without setup" || scenario == "literal without setup"
+				cl := interceptor.NewClient(storage, interceptor.Funcs{
 					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						_, isReplicaSet := obj.(*appsv1.ReplicaSet)
+						if !withoutSetup {
+							require.False(t, isReplicaSet, "ReplicaSet lookup must bypass the manager cache")
+						}
 						if scenario == "read error" {
 							return fmt.Errorf("owner lookup failed")
 						}
@@ -134,11 +142,36 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 						}
 						return c.Delete(ctx, obj, opts...)
 					},
-				}).Build()
+				})
 				r := NewLeaderWorkerSetReconciler(cl, scheme, events.NewFakeRecorder(5))
-				err := r.deleteWorkerStatefulSets(t.Context(), lws)
+				apiReads := 0
+				apiReader := interceptor.NewClient(storage, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						apiReads++
+						require.IsType(t, &appsv1.ReplicaSet{}, obj, "other owner lookups must stay cached")
+						if scenario == "replica set read error" {
+							return fmt.Errorf("owner lookup failed")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				})
 				switch scenario {
-				case "read error":
+				case "constructor without setup":
+					require.NotNil(t, r.apiReader, "constructor should provide a usable default reader")
+				case "literal without setup":
+					r = &LeaderWorkerSetReconciler{Client: cl, Scheme: scheme}
+				default:
+					r.apiReader = apiReader
+				}
+				var err error
+				require.NotPanics(t, func() { err = r.deleteWorkerStatefulSets(t.Context(), lws) })
+				if identity == leaderworkerset.GroupIdentityOrdinal || withoutSetup {
+					require.Zero(t, apiReads)
+				} else if scenario == "owned" {
+					require.Equal(t, 1, apiReads)
+				}
+				switch scenario {
+				case "read error", "replica set read error":
 					require.ErrorContains(t, err, "owner lookup failed")
 				case "replacement during delete":
 					require.True(t, apierrors.IsConflict(err), "stale cleanup must conflict: %v", err)
@@ -147,7 +180,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 				}
 				var remaining appsv1.StatefulSetList
 				require.NoError(t, cl.List(t.Context(), &remaining, client.MatchingLabels{leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker}))
-				if scenario == "owned" {
+				if scenario == "owned" || withoutSetup {
 					require.Empty(t, remaining.Items)
 				} else {
 					require.Len(t, remaining.Items, 1, "unverified or replaced workers must survive")
@@ -155,6 +188,72 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestParallelWorkerCleanupReusesReplicaSets(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, leaderworkerset.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default", UID: "lws"}}
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: lws.Name, Namespace: lws.Namespace, UID: "deployment",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+	}}
+	rsA := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Name: "rs-a", Namespace: lws.Namespace, UID: "rs-a",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+	}}
+	rsB := rsA.DeepCopy()
+	rsB.Name, rsB.UID = "rs-b", "rs-b"
+	ownerA := *metav1.NewControllerRef(rsA, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
+	ownerB := *metav1.NewControllerRef(rsB, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))
+	staleOwner := ownerA
+	staleOwner.UID = "old-rs-a"
+	objects := []client.Object{lws, deployment, rsA} // rs-b is initially missing.
+	for i, owner := range []metav1.OwnerReference{ownerA, ownerA, staleOwner, ownerB, ownerB} {
+		name := fmt.Sprintf("model-%d", i)
+		leader := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: lws.Namespace, UID: types.UID(name), OwnerReferences: []metav1.OwnerReference{owner},
+		}}
+		workers := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: lws.Namespace, UID: types.UID(name + "-workers"),
+			Labels:          map[string]string{leaderworkerset.SetNameLabelKey: lws.Name, leaderworkerset.RoleLabelKey: leaderworkerset.RoleWorker},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+		}}
+		objects = append(objects, leader, workers)
+	}
+	storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	cl := interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			_, isReplicaSet := obj.(*appsv1.ReplicaSet)
+			require.False(t, isReplicaSet, "ReplicaSet lookup must bypass the manager cache")
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := NewLeaderWorkerSetReconciler(cl, scheme, events.NewFakeRecorder(5))
+	reads := map[string]int{}
+	r.apiReader = interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			require.IsType(t, &appsv1.ReplicaSet{}, obj)
+			reads[key.Name]++
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	require.NoError(t, r.deleteWorkerStatefulSets(t.Context(), lws))
+	require.Equal(t, map[string]int{"rs-a": 1, "rs-b": 1}, reads, "read each owner once, including missing owners")
+	var remaining appsv1.StatefulSetList
+	require.NoError(t, storage.List(t.Context(), &remaining))
+	require.Len(t, remaining.Items, 3, "workers with a stale or missing owner must survive")
+
+	// A new pass must refresh both successful and missing lookups, not retain a cache.
+	require.NoError(t, storage.Create(t.Context(), rsB))
+	require.NoError(t, r.deleteWorkerStatefulSets(t.Context(), lws))
+	require.Equal(t, map[string]int{"rs-a": 2, "rs-b": 2}, reads)
+	require.NoError(t, storage.List(t.Context(), &remaining))
+	require.Len(t, remaining.Items, 1)
+	require.Equal(t, "model-2", remaining.Items[0].Name, "a reused ReplicaSet must still match each leader's owner UID")
 }
 
 func TestLeaderStatefulSetApplyConfig(t *testing.T) {
