@@ -694,7 +694,10 @@ func rolloutCompletionStatus(
 		if requireExactSpec && currentSpec != target || currentSpec < target {
 			return false, false
 		}
-		if target > 0 && observed.committed < target {
+		// Deferred can finish with surplus that steady-state scaling removes next.
+		// All issued groups must be Ready: the surplus may contain the Ready groups
+		// that currently cover loading groups below the final Ordinal replica count.
+		if target > 0 && observed.committed < currentSpec {
 			targetReady = false
 		}
 	}
