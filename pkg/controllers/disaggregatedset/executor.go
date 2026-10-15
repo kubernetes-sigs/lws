@@ -717,13 +717,45 @@ func rolloutCompletionStatus(
 			if !complete || int(prefix.Availability().RetainedReadyReplicas) < target {
 				targetReady = false
 			}
-		} else if observed.committed < int(getLWSReplicas(lws)) {
-			// Hash victims are not fixed: every surplus group could cost Ready
-			// capacity. All issued groups must be Ready before allowing the trim.
+		} else if !hashSurvivorsReady(observed, int(getLWSReplicas(lws)), target) {
 			targetReady = false
 		}
 	}
 	return true, targetReady
+}
+
+func hashSurvivorsReady(observed replicaReadiness, replicas, target int) bool {
+	if observed.committed >= replicas {
+		return true
+	}
+	s := observed.snapshot
+	if observed.committed < target || s == nil || !s.ScalingObserved() {
+		return false
+	}
+	activeSets := 0
+	for _, rs := range s.ReplicaSets {
+		if rs.Spec.Replicas == nil || *rs.Spec.Replicas > 0 {
+			activeSets++
+		}
+	}
+	if activeSets != 1 {
+		// Deployment can shrink each ReplicaSet independently; Pending leaders
+		// in one cannot protect Ready groups in another.
+		return false
+	}
+	notReadyLeaders := 0
+	for _, group := range s.Groups {
+		leader := group.Leader
+		if !group.Terminating && leader.Status.Phase != corev1.PodFailed && leader.Status.Phase != corev1.PodSucceeded &&
+			!podutils.PodRunningAndReady(*leader) {
+			notReadyLeaders++
+		}
+	}
+	// ReplicaSet prefers unassigned, Pending and not-Ready leaders for deletion.
+	// A Ready leader with loading workers is NOT such a victim. Reserve a Ready
+	// group for each remaining deletion, using the same observed cohort.
+	readyRemovals := max(0, replicas-target-notReadyLeaders)
+	return observed.committed-readyRemovals >= target
 }
 
 // --- Scaling operations ---
