@@ -816,7 +816,21 @@ func TestDeferredCompletionWaitsForSafeFinalScaleDown(t *testing.T) {
 				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(old), &leaderworkersetv1.LeaderWorkerSet{}), "keep the drained revision marker until safe target cleanup finishes")
 			}
 
-			// Once all issued groups are Ready, ordinary scaling can safely trim to nine.
+			// A healthy retained Ordinal range is enough even if surplus never
+			// becomes Ready. Hash cannot assume those are the deletion victims.
+			pod := &corev1.Pod{}
+			require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: target.Namespace, Name: target.Name + "-8"}, pod))
+			pod.Status.Conditions[0].Status = corev1.ConditionTrue
+			require.NoError(t, c.Status().Update(t.Context(), pod))
+			reconcile()
+			reconcile()
+			if identity == leaderworkersetv1.GroupIdentityOrdinal {
+				require.EqualValues(t, 9, getTestLWSReplicas(c, testNamespace, target.Name))
+				return
+			}
+			require.EqualValues(t, 12, getTestLWSReplicas(c, testNamespace, target.Name))
+
+			// For Hash, all issued groups must be Ready before allowing the trim.
 			for _, object := range objects {
 				if pod, ok := object.(*corev1.Pod); ok {
 					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
@@ -829,6 +843,92 @@ func TestDeferredCompletionWaitsForSafeFinalScaleDown(t *testing.T) {
 			require.EqualValues(t, 9, getTestLWSReplicas(c, testNamespace, target.Name))
 		})
 	}
+}
+
+func TestDeferredCompletionSurvivorReadiness(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, virtual := range []bool{false, true} {
+			for _, condition := range []string{"all Ready", "unready surplus", "unready survivor", "missing survivor", "terminating survivor", "exhausted restart", "unacknowledged worker", "unacknowledged LWS", "unacknowledged native"} {
+				t.Run(fmt.Sprintf("%s/subroles=%v/%s", identity, virtual, condition), func(t *testing.T) {
+					f := newSubRoleFixtureForIdentity(t, identity, 7, "a", "a", "b")
+					s := f.observe()
+					switch condition {
+					case "unready surplus":
+						s.Groups[2].Ready = false
+					case "unready survivor":
+						s.Groups[0].Ready = false
+					case "missing survivor":
+						s.Groups = s.Groups[1:]
+					case "terminating survivor":
+						s.Groups[0].Terminating = true
+					case "exhausted restart":
+						s.Groups[0].Leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+					case "unacknowledged worker":
+						s.Groups[0].WorkerStatefulSet.Generation++
+					case "unacknowledged LWS":
+						s.LWS.Generation++
+					case "unacknowledged native":
+						if identity == leaderworkersetv1.GroupIdentityHash {
+							s.ReplicaSets[0].Generation++
+						} else {
+							s.LeaderStatefulSet.Generation++
+						}
+					}
+					names, targets := []string{"model"}, RoleReplicaState{2}
+					observed := rolloutReadiness{s.LWS.Name: {committed: int(s.Availability().RetainedReadyReplicas), snapshot: s}}
+					if virtual {
+						names, targets = []string{"model/a", "model/b"}, RoleReplicaState{1, 1}
+						observeSubRoleReadiness(&subRoleState{snapshot: s, issued: map[string]int{"a": 2, "b": 1}}, observed)
+					} else {
+						delete(s.LWS.Annotations, subRoleReplicasAnnotation)
+					}
+					revision := disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{"model": s.LWS}}
+					complete, ready := rolloutCompletionStatus(nil, revision, names, targets, observed, false)
+					require.True(t, complete)
+					want := condition == "all Ready" || condition == "unready surplus" && identity == leaderworkersetv1.GroupIdentityOrdinal
+					require.Equal(t, want, ready, "check physical survivors, not each child's separate prefix")
+					complete, _ = rolloutCompletionStatus(nil, revision, names, targets, observed, true)
+					require.False(t, complete, "Immediate still requires exact targets")
+				})
+			}
+		}
+	}
+}
+
+func TestDeferredCompletionRedistributesOrdinalSurvivors(t *testing.T) {
+	f := newSubRoleFixture(t, 7, "a", "a", "b")
+	f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+		{Name: "a", Replicas: ptr.To[int32](1)}, {Name: "b", Replicas: ptr.To[int32](1)},
+	}}}
+	old := f.withRevision("old")
+	setSubRoleJSON(old.lws, subRoleReplicasAnnotation, map[string]int{"a": 0, "b": 0})
+	setSubRoleJSON(old.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{"a": 2, "b": 1})
+	setInitialReplicasAnnotation(old.lws, 3)
+	require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
+	surplus := f.observe().Groups[2].Leader
+	surplus.Status.Conditions = nil
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), surplus))
+	r := newTestReconciler(f.manager.client)
+	r.LWSManager = f.manager
+	for range 12 {
+		_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), f.ds, 0, "model", map[string]int{"model/a": 1, "model/b": 1})
+		require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+		s := f.observe()
+		if getLWSReplicas(s.LWS) == 2 {
+			// The retained A group must become B before the old B is deleted.
+			for i, name := range []string{"a", "b"} {
+				assigned, coherent := groupSubRole(s.Groups[i])
+				require.True(t, coherent && s.Groups[i].Ready)
+				require.Equal(t, name, assigned)
+			}
+		}
+		f.native()
+	}
+	s := f.observe()
+	require.Len(t, s.Groups, 2)
+	require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
+	require.JSONEq(t, `{"a":1,"b":1}`, s.LWS.Annotations[subRoleReplicasAnnotation])
+	require.True(t, apierrors.IsNotFound(f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(old.lws), &leaderworkersetv1.LeaderWorkerSet{})))
 }
 
 func TestRolloutGuardsChangedInformerInputs(t *testing.T) {
@@ -958,7 +1058,8 @@ func TestRollbackUsesLiveRetainedReadiness(t *testing.T) {
 						if !issued && phase.cancel {
 							phase.retained, phase.old = 3, 1 // Unissued removals can be cancelled.
 						}
-						assert.Equal(t, replicaReadiness{raw: phase.raw, committed: phase.retained}, observed[a.Name])
+						assert.Equal(t, phase.raw, observed[a.Name].raw)
+						assert.Equal(t, phase.retained, observed[a.Name].committed)
 						assert.EqualValues(t, 4, a.Status.ReadyReplicas, "observation must not mutate discovered inputs")
 						executor := newTestExecutor(c)
 						executor.LWSManager = manager // Real observer, reconstructed on every reconcile.
@@ -2902,7 +3003,7 @@ func TestSubRoleMigrationFromOrdinaryToOrdinal(t *testing.T) {
 			old = oldRevision()
 			assert.Equal(t, before.LWS.Annotations, ordinary.Annotations, "the old ordinary revision must never acquire child metadata")
 			require.NoError(t, err)
-			require.Equal(t, replicaReadiness{spec: 2, initial: 2, raw: 2, committed: 2}, observed.role(old, "model"))
+			require.Equal(t, replicaReadiness{spec: 2, initial: 2, raw: 2, committed: 2, snapshot: observed[ordinary.Name].snapshot}, observed.role(old, "model"))
 			for _, child := range []string{"model/a", "model/b"} {
 				require.Equal(t, replicaReadiness{}, observed.role(old, child))
 				require.Equal(t, replicaReadiness{spec: 1, initial: 1}, observed.role(target, child))

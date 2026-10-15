@@ -683,6 +683,7 @@ func rolloutCompletionStatus(
 	requireExactSpec bool,
 ) (specComplete, targetReady bool) {
 	targetReady = true
+	physicalTargets := make(map[string]int)
 	for i, roleName := range roleNames {
 		if readiness.totalReplicas(oldRevisions, roleName) != 0 {
 			return false, false
@@ -694,10 +695,31 @@ func rolloutCompletionStatus(
 		if requireExactSpec && currentSpec != target || currentSpec < target {
 			return false, false
 		}
-		// Deferred can finish with surplus that steady-state scaling removes next.
-		// All issued groups must be Ready: the surplus may contain the Ready groups
-		// that currently cover loading groups below the final Ordinal replica count.
-		if target > 0 && observed.committed < currentSpec {
+		if requireExactSpec && observed.committed < target {
+			targetReady = false
+		}
+		parent, _ := roleParts(roleName)
+		physicalTargets[parent] += target
+	}
+	if requireExactSpec {
+		return true, targetReady
+	}
+	// Deferred leaves surplus for steady-state scaling. Subroles share one
+	// physical survivor range; their existing assignment code redistributes it.
+	for parent, target := range physicalTargets {
+		if target == 0 {
+			continue
+		}
+		lws := targetRevision.Roles[parent]
+		observed := readiness[lws.Name]
+		if s := observed.snapshot; s != nil && s.LWS.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
+			prefix, complete := subRolePrefix(s, target)
+			if !complete || int(prefix.Availability().RetainedReadyReplicas) < target {
+				targetReady = false
+			}
+		} else if observed.committed < int(getLWSReplicas(lws)) {
+			// Hash victims are not fixed: every surplus group could cost Ready
+			// capacity. All issued groups must be Ready before allowing the trim.
 			targetReady = false
 		}
 	}
