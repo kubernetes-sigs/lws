@@ -2450,6 +2450,62 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 		queue.Done(request)
 		require.Equal(t, client.ObjectKeyFromObject(ds), request.NamespacedName)
 	})
+	t.Run("conditional Pod label patches", func(t *testing.T) {
+		lws := revisionLWS("pod-labels", testRolePrefill, 1, 0, time.Time{}, 1)
+		lws.ResourceVersion = "1"
+		manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
+		// Deliberately keep the reader unchanged: error classification must not
+		// depend on a Pod watch having caught up, or fall back to a live GET.
+		manager.reader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+		label := func(pod *corev1.Pod, name string) error {
+			return manager.labelSubRoleGroup(t.Context(), lws, replicagroups.Group{Leader: pod, Pods: []*corev1.Pod{pod}}, name)
+		}
+		for _, change := range []string{"resource-version", "replacement", "uid", "invalid-label"} {
+			t.Run(change, func(t *testing.T) {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: "label-" + change, Namespace: lws.Namespace, Labels: map[string]string{"user": "preserved"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "test", Image: "test.invalid/image"}}},
+				}
+				require.NoError(t, writer.Create(t.Context(), pod))
+				stale := pod.DeepCopy()
+				name := "b"
+				switch change {
+				case "resource-version":
+					pod.Labels["concurrent"] = "preserved"
+					require.NoError(t, writer.Update(t.Context(), pod))
+				case "replacement", "uid":
+					require.NoError(t, writer.Delete(t.Context(), pod))
+					pod.UID, pod.ResourceVersion = "", ""
+					require.NoError(t, writer.Create(t.Context(), pod))
+					require.NotEqual(t, stale.UID, pod.UID)
+					if change == "uid" {
+						stale.ResourceVersion = pod.ResourceVersion // Verify the UID fence independently.
+					}
+				case "invalid-label":
+					name = "invalid/value"
+				}
+				err := label(stale, name)
+				if change == "invalid-label" {
+					require.True(t, apierrors.IsInvalid(err), "%v", err)
+					require.NotErrorIs(t, err, errReplicaGroupsPending, "genuine validation errors must remain visible")
+				} else {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				}
+				require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+				require.NotContains(t, pod.Labels, disaggregatedsetv1.SubRoleLabelKey, "rejected writes must not change routing")
+				require.NoError(t, label(pod, "b"), "retry from the current observation succeeds")
+				require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+				require.Equal(t, "b", pod.Labels[disaggregatedsetv1.SubRoleLabelKey])
+				require.NoError(t, label(pod, ""))
+				require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+				require.NotContains(t, pod.Labels, disaggregatedsetv1.SubRoleLabelKey)
+				require.Equal(t, "preserved", pod.Labels["user"])
+				if change == "resource-version" {
+					require.Equal(t, "preserved", pod.Labels["concurrent"])
+				}
+			})
+		}
+	})
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
 			lws := revisionLWS(string(identity), testRolePrefill, 2, 0, time.Time{}, 2)
