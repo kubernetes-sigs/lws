@@ -1296,6 +1296,7 @@ func TestDSOrdinalScaleDownDoesNotWaitForStartup(t *testing.T) {
 			want        int32
 		}{
 			{"DS explicit scale", "ds", "4", 0, false, false, 3},
+			{"DS partition zero with old group", "ds", "4", 0, false, true, 3},
 			{"DS rollout surplus", "ds", "3", 0, false, false, 4},
 			{"DS active native partition", "ds", "4", 2, false, false, 4},
 			{"DS new template and scale", "ds", "4", 0, true, false, 4},
