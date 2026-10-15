@@ -12,7 +12,7 @@ assignees: ''
 Please do not remove items from the checklist
 -->
 - [ ] All [OWNERS](https://github.com/kubernetes-sigs/lws/blob/main/OWNERS) must LGTM the release proposal
-- [ ] Verify that the changelog in this issue is up-to-date
+- [ ] Verify that the changelog in this issue is up-to-date by running `./hack/releasing/sync-notes.sh "$VERSION"` and reviewing the generated notes.
 - [ ] For major or minor releases (v$MAJ.$MIN.0), create a new release branch.
   - [ ] an OWNER creates a vanilla release branch with
         `git branch release-$MAJ.$MIN main`
@@ -50,6 +50,6 @@ Please do not remove items from the checklist
 
 
 ## Changelog
-<!--
+<!-- release-changelog-start -->
 Describe changes since the last release here.
--->
+<!-- release-changelog-end -->
