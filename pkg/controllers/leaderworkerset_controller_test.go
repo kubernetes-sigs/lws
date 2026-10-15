@@ -41,6 +41,7 @@ import (
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 
+	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1280,6 +1281,70 @@ func TestRollingUpdateParametersTemplateUpdateReclaimsSurgeWhenAllowed(t *testin
 	}
 	if replicas != 3 {
 		t.Fatalf("rollingUpdateParameters() replicas=%d, want 3", replicas)
+	}
+}
+
+func TestDSOrdinalScaleDownDoesNotWaitForStartup(t *testing.T) {
+	for _, size := range []int{1, 2} {
+		for _, tc := range []struct {
+			name        string
+			owner       string
+			previous    string
+			partition   int32
+			newTemplate bool
+			oldGroup    bool
+			want        int32
+		}{
+			{"DS explicit scale", "ds", "4", 0, false, false, 3},
+			{"DS rollout surplus", "ds", "3", 0, false, false, 4},
+			{"DS active native partition", "ds", "4", 2, false, false, 4},
+			{"DS new template and scale", "ds", "4", 0, true, false, 4},
+			{"standalone scale unchanged", "", "4", 0, false, false, 4},
+			{"standalone partition zero with old group", "", "4", 0, false, true, 4},
+			{"unrelated controller", "other-kind", "4", 0, false, false, 4},
+			{"unrelated API", "other-api", "4", 0, false, false, 4},
+			{"DS is not the controller", "non-controller", "4", 0, false, false, 4},
+		} {
+			t.Run(fmt.Sprintf("%s/size%d", tc.name, size), func(t *testing.T) {
+				lws := wrappers.BuildLeaderWorkerSet("default").Replica(3).Size(size).
+					RolloutStrategy(leaderworkerset.RolloutStrategy{Type: leaderworkerset.RollingUpdateStrategyType,
+						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							Partition: ptr.To[int32](0), MaxSurge: intstr.FromInt(1), MaxUnavailable: intstr.FromInt(0),
+						}}).Obj()
+				// Labels alone must not opt standalone LWS into DS scaling semantics.
+				lws.Labels = map[string]string{disaggregatedset.SetNameLabelKey: "ds"}
+				if tc.owner != "" {
+					owner := metav1.OwnerReference{APIVersion: disaggregatedset.GroupVersion.String(), Kind: "DisaggregatedSet",
+						Name: "ds", UID: "ds-uid", Controller: ptr.To(true)}
+					switch tc.owner {
+					case "other-kind":
+						owner.Kind = "OtherController"
+					case "other-api":
+						owner.APIVersion = "other.example/v1"
+					case "non-controller":
+						owner.Controller = ptr.To(false)
+					}
+					lws.OwnerReferences = []metav1.OwnerReference{owner}
+				}
+				sts := lwsStatusRollingUpdateSts(lws, 4, tc.partition, tc.previous)
+				// Ordinal 1 stays unready, including when only its worker is loading.
+				var objects []client.Object
+				for i := range 4 {
+					revision := "new"
+					if tc.oldGroup && i == 0 {
+						revision = "old"
+					}
+					objects = append(objects, lwsStatusLeaderPod(lws, i, revision, size > 1 || i != 1))
+					if size > 1 {
+						objects = append(objects, lwsStatusWorkerSts(lws, i, revision, i != 1))
+					}
+				}
+				r, _ := lwsStatusNewReconciler(t, objects...)
+				_, replicas, err := r.rollingUpdateParameters(t.Context(), lws, sts, "new", tc.newTemplate)
+				require.NoError(t, err)
+				require.Equal(t, tc.want, replicas)
+			})
+		}
 	}
 }
 
