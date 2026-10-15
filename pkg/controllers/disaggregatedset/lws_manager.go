@@ -66,6 +66,8 @@ type replicaReadiness struct {
 	committed     int // Ready groups that can authorize another drain.
 	// Positive evidence only: missing or incomplete observations stay false.
 	allUnscheduled bool
+	// Physical observation, reused to check which groups final cleanup retains.
+	snapshot *replicagroups.Snapshot
 }
 
 // Child keys use LWS-name/child; ordinary keys retain the physical LWS name.
@@ -186,7 +188,7 @@ func observeSubRoleReadiness(state *subRoleState, observed rolloutReadiness) {
 			allUnscheduled: allGroupsUnscheduled(groups, counts[child]),
 		}
 	}
-	observed[s.LWS.Name] = replicaReadiness{raw: raw}
+	observed[s.LWS.Name] = replicaReadiness{raw: raw, committed: int(s.Availability().RetainedReadyReplicas), snapshot: s}
 }
 
 // observeCachedReadiness adapts shared group observations to readiness and scheduling facts.
@@ -213,6 +215,7 @@ func (manager *LeaderWorkerSetManager) observeCachedReadiness(ctx context.Contex
 		}
 		availability := snapshot.Availability()
 		result[lws.Name] = replicaReadiness{
+			snapshot:       snapshot,
 			raw:            int(availability.ReadyReplicas),
 			committed:      int(availability.RetainedReadyReplicas),
 			allUnscheduled: allGroupsUnscheduled(snapshot.Groups, int(getLWSReplicas(snapshot.LWS))),
