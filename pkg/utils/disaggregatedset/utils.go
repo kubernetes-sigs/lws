@@ -28,6 +28,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -39,7 +40,11 @@ const NumRequiredRoles = 1
 // IsOwnedByDisaggregatedSet reports whether the object's controller owner is a DisaggregatedSet.
 func IsOwnedByDisaggregatedSet(object metav1.Object) bool {
 	owner := metav1.GetControllerOf(object)
-	return owner != nil && owner.APIVersion == disaggregatedsetv1.GroupVersion.String() && owner.Kind == "DisaggregatedSet"
+	if owner == nil {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(owner.APIVersion)
+	return err == nil && gv.Group == disaggregatedsetv1.GroupVersion.Group && owner.Kind == "DisaggregatedSet"
 }
 
 // GetInitialReplicas returns a valid non-negative initial-replicas annotation.
