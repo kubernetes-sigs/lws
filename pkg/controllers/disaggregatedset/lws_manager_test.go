@@ -2565,8 +2565,13 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 						}
 						require.NoError(t, o.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
 						_, err := manager.syncSubRoles(t.Context(), newTestDisaggregatedSet(), lws, subRoleUpdate{membership: membership})
+						// The Pod watch may lag our previous label patch. A failed
+						// JSON Patch resource-version test returns Invalid, not Conflict.
+						if errors.Is(err, errReplicaGroupsPending) || apierrors.IsInvalid(err) || apierrors.IsConflict(err) {
+							return false
+						}
 						if err != nil {
-							require.ErrorIs(t, err, errReplicaGroupsPending)
+							require.NoError(t, err)
 							return false
 						}
 						return true
