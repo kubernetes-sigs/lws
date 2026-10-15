@@ -36,6 +36,12 @@ import (
 
 const NumRequiredRoles = 1
 
+// IsOwnedByDisaggregatedSet reports whether the object's controller owner is a DisaggregatedSet.
+func IsOwnedByDisaggregatedSet(object metav1.Object) bool {
+	owner := metav1.GetControllerOf(object)
+	return owner != nil && owner.APIVersion == disaggregatedsetv1.GroupVersion.String() && owner.Kind == "DisaggregatedSet"
+}
+
 // GetInitialReplicas returns a valid non-negative initial-replicas annotation.
 // Missing, empty, malformed, negative, or out-of-range values are treated as
 // unset so the controller can reconstruct the baseline from observed state.

@@ -54,6 +54,7 @@ import (
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	statefulsetutils "sigs.k8s.io/lws/pkg/utils/statefulset"
@@ -639,7 +640,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
-	rollingUpdateCompleted := partition == 0 && stsReplicas == lwsReplicas
+	// DisaggregatedSet approves child reductions using availability across revisions.
+	// Do not invent native surge for its replica-only updates. The previous desired
+	// count distinguishes a new scale request from existing native rollout surplus.
+	dsScale := disaggregatedsetutils.IsOwnedByDisaggregatedSet(lws) &&
+		sts.Annotations[leaderworkerset.ReplicasAnnotationKey] == strconv.Itoa(int(stsReplicas))
+	rollingUpdateCompleted := partition == 0 && (stsReplicas == lwsReplicas || dsScale)
 	// Case 3:
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
