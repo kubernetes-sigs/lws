@@ -783,6 +783,54 @@ func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready i
 	return objects
 }
 
+func TestDeferredCompletionWaitsForSafeFinalScaleDown(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			ds := newTestDisaggregatedSet(makeRoleSpec(testRoleDecode, 9, corev1.PodSpec{}, intstr.FromInt(6), intstr.FromInt(0)))
+			revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+			old := revisionLWS("old", testRoleDecode, 0, 0, time.Unix(1000, 0), 19)
+			target := revisionLWS(revision, testRoleDecode, 12, 9, time.Unix(2000, 0), 9)
+			old.Spec.GroupIdentity, target.Spec.GroupIdentity = identity, identity
+			old.Spec.LeaderWorkerTemplate.Size, target.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
+			objects := append(replicaGroupObjects(old, 0, 0), replicaGroupObjects(target, 12, 8)...)
+			for _, object := range objects {
+				if pod, ok := object.(*corev1.Pod); ok {
+					pod.Spec.NodeName = "node"
+					// Nine groups are Ready, but ordinal 10 is one of them.
+					// Trimming straight to nine removes it and leaves only eight.
+					if pod.Name == target.Name+"-10" {
+						pod.Status.Conditions[0].Status = corev1.ConditionTrue
+					}
+				}
+			}
+			c := newTestClient(objects...)
+			r := newTestReconciler(c)
+			r.LWSManager = NewLeaderWorkerSetManager(c) // Observe actual groups, not LWS status counters.
+			reconcile := func() {
+				_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, revision, resolveDesiredReplicasByRole(ds, nil))
+				require.NoError(t, err)
+			}
+			for range 2 {
+				reconcile()
+				require.EqualValues(t, 12, getTestLWSReplicas(c, testNamespace, target.Name), "nine Ready groups do not authorize deleting arbitrary target surplus")
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(old), &leaderworkersetv1.LeaderWorkerSet{}), "keep the drained revision marker until safe target cleanup finishes")
+			}
+
+			// Once all issued groups are Ready, ordinary scaling can safely trim to nine.
+			for _, object := range objects {
+				if pod, ok := object.(*corev1.Pod); ok {
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+					pod.Status.Conditions[0].Status = corev1.ConditionTrue
+					require.NoError(t, c.Status().Update(t.Context(), pod))
+				}
+			}
+			reconcile()
+			reconcile()
+			require.EqualValues(t, 9, getTestLWSReplicas(c, testNamespace, target.Name))
+		})
+	}
+}
+
 func TestRolloutGuardsChangedInformerInputs(t *testing.T) {
 	for _, change := range []string{"missing", "replacement", "generation changed", "deleting", "terminating input", "read error"} {
 		t.Run(change, func(t *testing.T) {
@@ -1937,7 +1985,7 @@ func TestObserveOldRevisionNeverUsesBaselineBelowSpec(t *testing.T) {
 	}
 }
 
-func TestExternalTargetShrinksAfterRoleOldSpecReachesZero(t *testing.T) {
+func TestExternalTargetWaitsForSafeCleanupAfterOldSpecReachesZero(t *testing.T) {
 	ctx := context.Background()
 	one, zero := intstr.FromInt(1), intstr.FromInt(0)
 	role := makeRoleSpec(testRolePrefill, 10, corev1.PodSpec{}, one, zero)
@@ -1962,7 +2010,14 @@ func TestExternalTargetShrinksAfterRoleOldSpecReachesZero(t *testing.T) {
 	_, err = reconciler.reconcileSlice(ctx, executor, ds, 0, targetRevision, desired)
 	require.NoError(t, err)
 
+	assert.EqualValues(t, 10, getTestLWSReplicas(fakeClient, testNamespace, target.Name), "five Ready groups cannot safely fund five deletions")
+	for range 2 {
+		simulateAllReady(fakeClient)
+		_, err = reconciler.reconcileSlice(ctx, executor, ds, 0, targetRevision, desired)
+		require.NoError(t, err)
+	}
 	assert.EqualValues(t, 5, getTestLWSReplicas(fakeClient, testNamespace, target.Name))
+	require.True(t, apierrors.IsNotFound(fakeClient.Get(ctx, client.ObjectKeyFromObject(old), &leaderworkersetv1.LeaderWorkerSet{})))
 }
 
 // Active reconciliation includes budget history plus three Ordinal or five Hash
