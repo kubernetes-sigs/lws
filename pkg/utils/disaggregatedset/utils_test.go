@@ -19,6 +19,28 @@ const (
 	testUtilsRoleDecode  = "decode"
 )
 
+func TestIsOwnedByDisaggregatedSet(t *testing.T) {
+	assert.False(t, IsOwnedByDisaggregatedSet(&metav1.ObjectMeta{}))
+	for _, tc := range []struct {
+		name, apiVersion string
+		want             bool
+	}{
+		{"current version", disaggregatedsetv1.GroupVersion.String(), true},
+		{"another version", disaggregatedsetv1.GroupVersion.Group + "/v2", true},
+		{"another group", "other.example/v1", false},
+		{"core group", "v1", false},
+		{"malformed version", disaggregatedsetv1.GroupVersion.Group + "/v1/invalid", false},
+		{"empty version", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := &metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: tc.apiVersion, Kind: "DisaggregatedSet", Controller: ptr.To(true),
+			}}}
+			assert.Equal(t, tc.want, IsOwnedByDisaggregatedSet(object))
+		})
+	}
+}
+
 func TestSubRoleRolloutConfig(t *testing.T) {
 	parent := &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(2), MaxUnavailable: intstr.FromString("50%")}
 	for _, tc := range []struct {
