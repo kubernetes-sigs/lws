@@ -3344,8 +3344,16 @@ func TestSubRoleTransitions(t *testing.T) {
 						f.sync()
 					}
 					s := f.observe()
-					mask := (1 << min(len(initial), countSubRoles(target))) - 1
-					complete := !decrease || health&mask == mask
+					prefixReady := 0
+					for i := range min(len(initial), countSubRoles(target)) {
+						if health&(1<<i) != 0 {
+							prefixReady++
+						}
+					}
+					// The plan was accepted while every group was Ready. Preserve
+					// those floors, but do not require unrelated survivors to recover.
+					floor := min(issued["a"], target["a"]) + min(issued["b"], target["b"])
+					complete := !decrease || prefixReady >= floor
 					counts, err := subRoleCounts(s.LWS, subRoleReplicasAnnotation)
 					require.NoError(t, err)
 					if !complete {
@@ -3577,7 +3585,7 @@ func TestSubRoleNativeBoundsAndInvalidIntent(t *testing.T) {
 				require.NoError(t, f.manager.client.Update(t.Context(), s.LWS))
 				s.LeaderStatefulSet.Spec.Replicas = ptr.To[int32](2)
 				require.NoError(t, f.manager.client.Update(t.Context(), s.LeaderStatefulSet))
-				target = map[string]int{"a": 0, "b": 3}
+				target = map[string]int{"a": 1, "b": 2}
 			case "native generation":
 				s.LeaderStatefulSet.Generation++
 				require.NoError(t, f.manager.client.Update(t.Context(), s.LeaderStatefulSet))
@@ -3610,8 +3618,10 @@ func TestSubRoleNativeBoundsAndInvalidIntent(t *testing.T) {
 			_, err := f.manager.syncSubRoles(t.Context(), f.ds, before.LWS, subRoleUpdate{target: target})
 			require.Error(t, err)
 			if change == "native victim" {
-				s.Groups[0].Leader.Status.Conditions = nil
-				require.NoError(t, f.manager.client.Status().Update(t.Context(), s.Groups[0].Leader))
+				for _, group := range s.Groups[:2] {
+					group.Leader.Status.Conditions = nil
+					require.NoError(t, f.manager.client.Status().Update(t.Context(), group.Leader))
+				}
 				before = f.observe() // Admission already cleared outgoing labels.
 				require.NotEmpty(t, before.LWS.Annotations[subRolePlanAnnotation])
 				require.True(t, before.Groups[2].Ready, "a healthy native victim cannot replace the unready retained ordinal")
@@ -4431,6 +4441,155 @@ func TestHashSubRoleStaleCountsCannotUndoAcceptedDrain(t *testing.T) {
 	}
 }
 
+func TestOrdinalSubRoleDrainDoesNotWaitForUnrelatedStartup(t *testing.T) {
+	f := newSubRoleFixture(t, 7, "a", "a", "b", "b")
+	// Each child has a Ready group and a group whose workers never finish startup.
+	for _, i := range []int{1, 3} {
+		worker := f.observe().Groups[i].Pods[1]
+		worker.Status.Conditions = nil
+		require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+	}
+	require.ErrorIs(t, f.scale(map[string]int{"a": 2, "b": 1}), errReplicaGroupsPending)
+	for range 8 {
+		f.sync()
+		f.native()
+	}
+	s := f.observe()
+	require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
+	require.Len(t, s.Groups, 3)
+	require.False(t, s.Groups[1].Ready, "progress must not depend on releasing old startup")
+	require.True(t, s.Groups[0].Ready)
+	require.True(t, s.Groups[2].Ready)
+}
+
+func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
+	for _, children := range [][]string{
+		{"a", "a", "b", "b"}, {"a", "a", "a", "b"},
+		{"a", "b", "a", "b"}, {"b", "a", "b", "a"},
+		{"b", "b", "a", "a"}, {"b", "a", "a", "a"},
+	} {
+		for health := range 16 {
+			for _, target := range []map[string]int{{"a": 1, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 1}} {
+				t.Run(fmt.Sprint(children, health, target), func(t *testing.T) {
+					f := newSubRoleFixture(t, 7, children...)
+					for i, group := range f.observe().Groups {
+						if health&(1<<i) == 0 {
+							worker := group.Pods[1]
+							worker.Status.Conditions = nil
+							require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+						}
+					}
+					require.ErrorIs(t, f.scale(target), errReplicaGroupsPending)
+					plan, err := readSubRolePlan(f.observe().LWS)
+					require.NoError(t, err)
+					checkFloor := func() {
+						ready := map[string]int{}
+						for _, group := range f.observe().Groups {
+							if child, coherent := groupSubRole(group); coherent && group.Ready {
+								ready[child]++
+							}
+						}
+						for child, floor := range plan.ReadyFloor {
+							require.GreaterOrEqual(t, ready[child], floor, "every Pod patch must preserve %s, even between worker writes", child)
+						}
+					}
+					base := f.manager.client
+					f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+						Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+							err := c.Patch(ctx, obj, patch, opts...)
+							checkFloor()
+							return err
+						},
+					})
+					prefixReady := 0
+					for i := range countSubRoles(target) {
+						if health&(1<<i) != 0 {
+							prefixReady++
+						}
+					}
+					for range 8 {
+						f.sync()
+						f.native()
+						checkFloor()
+					}
+					if prefixReady >= countSubRoles(plan.ReadyFloor) {
+						require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+						require.Len(t, f.observe().Groups, countSubRoles(target))
+					} else {
+						require.EqualValues(t, 4, getLWSReplicas(f.observe().LWS), "an unsafe suffix deletion must still wait")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOrdinalSubRoleLegacyDrainStillWaitsForReadySurvivors(t *testing.T) {
+	f := newSubRoleFixture(t, 7, "a", "a", "b", "b")
+	s := f.observe()
+	// An older controller saved counts, not the Ready floors it authorized.
+	setSubRoleJSON(s.LWS, subRolePlanAnnotation, map[string]int{"a": 2, "b": 1})
+	require.NoError(t, f.manager.client.Update(t.Context(), s.LWS))
+	worker := s.Groups[1].Pods[1]
+	worker.Status.Conditions = nil
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+	before := f.observe()
+	for range 3 {
+		f.sync()
+		f.native()
+	}
+	after := f.observe()
+	require.Equal(t, before.Groups, after.Groups, "do not infer new authorization for a legacy plan")
+	require.EqualValues(t, 4, getLWSReplicas(after.LWS))
+	require.Equal(t, before.LWS.Annotations[subRolePlanAnnotation], after.LWS.Annotations[subRolePlanAnnotation])
+	worker = after.Groups[1].Pods[1]
+	worker.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+	for range 3 {
+		f.sync()
+		f.native()
+	}
+	require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+	require.Len(t, f.observe().Groups, 3)
+}
+
+func TestOrdinalSubRoleInterruptedReadyTransfer(t *testing.T) {
+	f := newSubRoleFixture(t, 0, "a", "a", "a", "b")
+	worker := f.observe().Groups[2].Pods[1]
+	worker.Status.Conditions = nil
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), worker))
+	require.ErrorIs(t, f.scale(map[string]int{"a": 2, "b": 1}), errReplicaGroupsPending)
+	// The Ready assignment moves group 1, whereas count-only assignment would
+	// move unready group 2. Interrupt between group 1's two worker-label writes.
+	base := f.manager.client
+	f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if obj.GetName() == "model-1-2" {
+				return errors.New("interrupted transfer")
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{})
+	require.ErrorContains(t, err, "interrupted transfer")
+	f.manager = NewLeaderWorkerSetManager(base)
+	for range 8 {
+		f.sync()
+		f.native()
+		ready := map[string]int{}
+		for _, group := range f.observe().Groups {
+			if name, coherent := groupSubRole(group); coherent && group.Ready {
+				ready[name]++
+			}
+		}
+		require.GreaterOrEqual(t, ready["a"], 1)
+		require.GreaterOrEqual(t, ready["b"], 1)
+	}
+	require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+	require.Len(t, f.observe().Groups, 3)
+	require.False(t, f.observe().Groups[2].Ready, "recovery must not wait for unrelated startup")
+}
+
 func TestHashSubRoleAcceptedDrainPreservesReadyFloorWithoutWaitingForEverySurvivor(t *testing.T) {
 	for _, initialReady := range []int{2, 0} {
 		t.Run(fmt.Sprint(initialReady), func(t *testing.T) {
@@ -4491,9 +4650,9 @@ func TestSubRoleRolloutAppliesEveryParent(t *testing.T) {
 			for i := range target {
 				require.EqualValues(t, step.New[i], getLWSReplicas(target[i].observe().LWS), "accept both parents before waiting")
 				if step.Past[i] < tc.old[i] {
-					counts, err := subRoleCounts(old[i].observe().LWS, subRolePlanAnnotation)
+					plan, err := readSubRolePlan(old[i].observe().LWS)
 					require.NoError(t, err)
-					require.Equal(t, step.Past[i], counts["pool"], "accept the old drain in the same step")
+					require.Equal(t, step.Past[i], plan.Counts["pool"], "accept the old drain in the same step")
 				}
 			}
 			recorder := executor.Record.(*events.FakeRecorder)
