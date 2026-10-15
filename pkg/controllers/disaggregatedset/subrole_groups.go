@@ -27,6 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -237,17 +238,25 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 				return err
 			}
 		}
-		labels := mergeLabels(pod.Labels, map[string]string{disaggv1.SubRoleLabelKey: name})
-		if name == "" {
-			delete(labels, disaggv1.SubRoleLabelKey)
+		if pod.UID == "" || pod.ResourceVersion == "" {
+			return errReplicaGroupsPending
 		}
-		patch, _ := json.Marshal([]map[string]any{
-			{"op": "test", "path": "/metadata/uid", "value": pod.UID},
-			{"op": "test", "path": "/metadata/resourceVersion", "value": pod.ResourceVersion},
-			{"op": "add", "path": "/metadata/labels", "value": labels},
-		})
-		if err := m.client.Patch(ctx, pod.DeepCopy(), client.RawPatch(types.JSONPatchType, patch)); err != nil {
-			return err
+		var label any = name
+		if name == "" {
+			label = nil // Merge-patch null removes only our routing label.
+		}
+		// Keep both preconditions. Unlike a JSON Patch test failure, an outdated
+		// resourceVersion produces a distinct Conflict rather than generic Invalid.
+		patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{
+			"uid": pod.UID, "resourceVersion": pod.ResourceVersion,
+			"labels": map[string]any{disaggv1.SubRoleLabelKey: label},
+		}})
+		if err := m.client.Patch(ctx, pod.DeepCopy(), client.RawPatch(types.MergePatchType, patch)); err != nil {
+			cause, _ := apierrors.StatusCause(err, metav1.CauseTypeFieldValueInvalid)
+			if apierrors.IsConflict(err) || apierrors.IsInvalid(err) && cause.Field == "metadata.uid" {
+				return errReplicaGroupsPending
+			}
+			return err // Invalid labels and other genuine errors remain visible.
 		}
 	}
 	return nil
