@@ -7,7 +7,7 @@ matches the default manifest:
         app.kubernetes.io/instance: lws
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/name: lws
-        app.kubernetes.io/version: v0.11.1
+        app.kubernetes.io/version: v1.0.0
         control-plane: controller-manager
         helm.sh/chart: lws-0.1.0
       name: lws-controller-manager
