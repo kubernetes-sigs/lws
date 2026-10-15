@@ -47,9 +47,9 @@ const (
 	subRoleDeletionCost = "-2147483648" // math.MinInt32
 )
 
-// Hash retains the accepted targets and Ready floors across label/scale retries.
+// Retain accepted targets and Ready floors across label/scale retries.
 // Equal issued and pending counts mean the physical scale has been published.
-// Ordinal pending work keeps its existing plain count-map format.
+// Legacy Ordinal count-only plans still use the conservative healthy-prefix gate.
 type subRolePlan struct {
 	Counts     map[string]int `json:"counts"`
 	ReadyFloor map[string]int `json:"readyFloor"`
@@ -57,15 +57,21 @@ type subRolePlan struct {
 
 func readSubRolePlan(lws *leaderv1.LeaderWorkerSet) (*subRolePlan, error) {
 	value := lws.Annotations[subRolePlanAnnotation]
-	if value == "" || lws.Spec.GroupIdentity != leaderv1.GroupIdentityHash {
+	if value == "" {
 		return nil, nil
+	}
+	if lws.Spec.GroupIdentity != leaderv1.GroupIdentityHash {
+		var legacy map[string]int
+		if json.Unmarshal([]byte(value), &legacy) == nil {
+			return nil, nil
+		}
 	}
 	var plan subRolePlan
 	if err := json.Unmarshal([]byte(value), &plan); err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", subRolePlanAnnotation, err)
 	}
 	if plan.Counts == nil || plan.ReadyFloor == nil {
-		return nil, fmt.Errorf("Hash sub-role plan requires counts and Ready floors")
+		return nil, fmt.Errorf("sub-role plan requires counts and Ready floors")
 	}
 	if err := validateSubRoleCounts(plan.Counts); err != nil {
 		return nil, err
@@ -319,7 +325,7 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	}
 	if len(membership) == 0 {
 		state.pending = map[string]int{"": int(getLWSReplicas(lws))}
-		state.startHashPlan()
+		state.startSubRolePlan()
 		return state, m.saveSubRoles(ctx, state)
 	}
 	baseline := state.issued
@@ -354,28 +360,29 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	}
 	if decreasing {
 		state.pending = target
-		state.startHashPlan()
+		state.startSubRolePlan()
 	} else {
 		state.issued = target
 	}
 	return state, m.saveSubRoles(ctx, state)
 }
 
-func (state *subRoleState) startHashPlan() {
-	if state.lws.Spec.GroupIdentity == leaderv1.GroupIdentityHash {
-		floor := map[string]int{}
-		if state.snapshot != nil {
-			for _, group := range activeSubRoleGroups(state.snapshot) {
-				if name, coherent := groupSubRole(group); coherent && retainedSubRoleEligible(group) {
-					floor[name]++
-				}
-			}
-			for name, ready := range floor {
-				floor[name] = max(0, ready-max(0, state.issued[name]-state.pending[name]))
+func (state *subRoleState) startSubRolePlan() {
+	floor := map[string]int{}
+	if state.snapshot != nil {
+		for _, group := range activeSubRoleGroups(state.snapshot) {
+			if name, coherent := groupSubRole(group); coherent && retainedSubRoleEligible(group) {
+				floor[name]++
 			}
 		}
-		state.plan = &subRolePlan{Counts: maps.Clone(state.pending), ReadyFloor: floor}
+		for name, ready := range floor {
+			// A reduction of N may lose at most N currently Ready groups.
+			// Save this minimum once; retries must not spend the allowance again.
+			reduction := max(0, state.issued[name]-state.pending[name])
+			floor[name] = max(0, ready-reduction)
+		}
 	}
+	state.plan = &subRolePlan{Counts: maps.Clone(state.pending), ReadyFloor: floor}
 }
 
 // One conditional write owns all durable child state and the matching parent sums.
@@ -451,9 +458,13 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	}
 	// Partial writes and newborn labels must finish before application health can gate progress.
 	labelled := false
+	ready := map[string]int{}
 	for _, group := range s.Groups {
 		name, coherent := groupSubRole(group)
 		assignment, retained := assignments[group.Leader.UID]
+		if coherent && retainedSubRoleEligible(group) {
+			ready[name]++
+		}
 		if !removing && (!coherent || retained && name == "") {
 			if err := m.labelSubRoleGroup(ctx, s.LWS, group, assignment); err != nil {
 				return err
@@ -464,29 +475,48 @@ func (m *LeaderWorkerSetManager) syncSubRoleAssignments(ctx context.Context, sta
 	if labelled {
 		return errReplicaGroupsPending
 	}
-	healthy := complete && int(prefix.Availability().RetainedReadyReplicas) == survivors
-	if pending != nil && !removing && !healthy {
+	canAssign := complete && int(prefix.Availability().RetainedReadyReplicas) == survivors
+	var minimumReady map[string]int
+	if state.plan != nil && !removing {
+		minimumReady = state.plan.ReadyFloor
+		assignments = readySubRoleAssignments(prefix.Groups, target, minimumReady)
+		canAssign = complete && assignments != nil // Preserve saved floors, not full readiness.
+	}
+	if pending != nil && !removing && !canAssign {
 		return errReplicaGroupsPending
 	}
-	// Move retained groups only with a fully healthy prefix. Clear all outgoing
-	// routing before publishing the physical target in this same pass.
-	for _, group := range s.Groups {
-		assignment, retained := assignments[group.Leader.UID]
-		if retained && group.Leader.Labels[disaggv1.SubRoleLabelKey] == assignment {
+	// Move one survivor, then observe its labels before clearing outgoing routing.
+	blockedTransfer := false
+	for _, group := range prefix.Groups {
+		assignment := assignments[group.Leader.UID]
+		from := group.Leader.Labels[disaggv1.SubRoleLabelKey]
+		if from == assignment {
 			continue
 		}
-		if retained && !healthy {
+		if !canAssign {
 			return errReplicaGroupsPending
+		}
+		if retainedSubRoleEligible(group) && ready[from] <= minimumReady[from] {
+			blockedTransfer = true
+			continue // This donor cannot yet spare a Ready group; try another.
 		}
 		if err := m.labelSubRoleGroup(ctx, s.LWS, group, assignment); err != nil {
 			return err
 		}
-		if retained {
-			return errReplicaGroupsPending
+		return errReplicaGroupsPending
+	}
+	if blockedTransfer {
+		return errReplicaGroupsPending
+	}
+	for _, group := range s.Groups {
+		if _, retained := assignments[group.Leader.UID]; !retained {
+			if err := m.labelSubRoleGroup(ctx, s.LWS, group, ""); err != nil {
+				return err
+			}
 		}
 	}
 	if pending != nil {
-		state.issued, state.pending = target, nil
+		state.issued, state.pending, state.plan = target, nil, nil
 		if removing {
 			state.issued, state.initial = nil, nil
 		}
