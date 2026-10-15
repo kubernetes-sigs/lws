@@ -683,6 +683,7 @@ func rolloutCompletionStatus(
 	requireExactSpec bool,
 ) (specComplete, targetReady bool) {
 	targetReady = true
+	physicalTargets := make(map[string]int)
 	for i, roleName := range roleNames {
 		if readiness.totalReplicas(oldRevisions, roleName) != 0 {
 			return false, false
@@ -694,11 +695,67 @@ func rolloutCompletionStatus(
 		if requireExactSpec && currentSpec != target || currentSpec < target {
 			return false, false
 		}
-		if target > 0 && observed.committed < target {
+		if requireExactSpec && observed.committed < target {
+			targetReady = false
+		}
+		parent, _ := roleParts(roleName)
+		physicalTargets[parent] += target
+	}
+	if requireExactSpec {
+		return true, targetReady
+	}
+	// Deferred leaves surplus for steady-state scaling. Subroles share one
+	// physical survivor range; their existing assignment code redistributes it.
+	for parent, target := range physicalTargets {
+		if target == 0 {
+			continue
+		}
+		lws := targetRevision.Roles[parent]
+		observed := readiness[lws.Name]
+		if s := observed.snapshot; s != nil && s.LWS.Spec.GroupIdentity != leaderworkersetv1.GroupIdentityHash {
+			prefix, complete := subRolePrefix(s, target)
+			if !complete || int(prefix.Availability().RetainedReadyReplicas) < target {
+				targetReady = false
+			}
+		} else if !hashSurvivorsReady(observed, int(getLWSReplicas(lws)), target) {
 			targetReady = false
 		}
 	}
 	return true, targetReady
+}
+
+func hashSurvivorsReady(observed replicaReadiness, replicas, target int) bool {
+	if observed.committed >= replicas {
+		return true
+	}
+	s := observed.snapshot
+	if observed.committed < target || s == nil || !s.ScalingObserved() {
+		return false
+	}
+	activeSets := 0
+	for _, rs := range s.ReplicaSets {
+		if rs.Spec.Replicas == nil || *rs.Spec.Replicas > 0 {
+			activeSets++
+		}
+	}
+	if activeSets != 1 {
+		// Deployment can shrink each ReplicaSet independently; Pending leaders
+		// in one cannot protect Ready groups in another.
+		return false
+	}
+	notReadyLeaders := 0
+	for _, group := range s.Groups {
+		leader := group.Leader
+		if !group.Terminating && leader.Status.Phase != corev1.PodFailed && leader.Status.Phase != corev1.PodSucceeded &&
+			!podutils.PodRunningAndReady(*leader) {
+			notReadyLeaders++
+		}
+	}
+	// ReplicaSet prefers unassigned, Pending and not-Ready leaders for deletion.
+	// A Ready leader with loading workers is NOT such a victim. Reserve a Ready
+	// group for each remaining deletion, using the same observed cohort.
+	readyRemovals := max(0, replicas-target-notReadyLeaders)
+	return observed.committed-readyRemovals >= target
 }
 
 // --- Scaling operations ---

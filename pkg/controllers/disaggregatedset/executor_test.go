@@ -788,6 +788,212 @@ func replicaGroupObjects(lws *leaderworkersetv1.LeaderWorkerSet, actual, ready i
 	return objects
 }
 
+func TestDeferredCompletionWaitsForSafeFinalScaleDown(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			ds := newTestDisaggregatedSet(makeRoleSpec(testRoleDecode, 9, corev1.PodSpec{}, intstr.FromInt(6), intstr.FromInt(0)))
+			revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+			old := revisionLWS("old", testRoleDecode, 0, 0, time.Unix(1000, 0), 19)
+			target := revisionLWS(revision, testRoleDecode, 12, 9, time.Unix(2000, 0), 9)
+			old.Spec.GroupIdentity, target.Spec.GroupIdentity = identity, identity
+			old.Spec.LeaderWorkerTemplate.Size, target.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1), ptr.To[int32](1)
+			objects := append(replicaGroupObjects(old, 0, 0), replicaGroupObjects(target, 12, 8)...)
+			for _, object := range objects {
+				if pod, ok := object.(*corev1.Pod); ok {
+					pod.Spec.NodeName = "node"
+					// Nine groups are Ready, but ordinal 10 is one of them.
+					// Trimming straight to nine removes it and leaves only eight.
+					if pod.Name == target.Name+"-10" {
+						pod.Status.Conditions[0].Status = corev1.ConditionTrue
+					}
+				}
+			}
+			c := newTestClient(objects...)
+			r := newTestReconciler(c)
+			r.LWSManager = NewLeaderWorkerSetManager(c) // Observe actual groups, not LWS status counters.
+			reconcile := func() {
+				_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), ds, 0, revision, resolveDesiredReplicasByRole(ds, nil))
+				require.NoError(t, err)
+			}
+			if identity == leaderworkersetv1.GroupIdentityHash {
+				reconcile()
+				reconcile()
+				require.EqualValues(t, 9, getTestLWSReplicas(c, testNamespace, target.Name), "ReplicaSet prefers the three not-Ready leaders, regardless of their names")
+				return
+			}
+			for range 2 {
+				reconcile()
+				require.EqualValues(t, 12, getTestLWSReplicas(c, testNamespace, target.Name), "nine Ready groups do not authorize deleting arbitrary target surplus")
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(old), &leaderworkersetv1.LeaderWorkerSet{}), "keep the drained revision marker until safe target cleanup finishes")
+			}
+
+			// A healthy retained Ordinal range is enough even if surplus never becomes Ready.
+			pod := &corev1.Pod{}
+			require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: target.Namespace, Name: target.Name + "-8"}, pod))
+			pod.Status.Conditions[0].Status = corev1.ConditionTrue
+			require.NoError(t, c.Status().Update(t.Context(), pod))
+			reconcile()
+			reconcile()
+			require.EqualValues(t, 9, getTestLWSReplicas(c, testNamespace, target.Name))
+		})
+	}
+}
+
+func TestHashDeferredCompletionDeletionPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		unreadyLeaders int
+		unreadyWorkers int
+		want           bool
+	}{
+		{name: "all Ready", want: true},
+		{name: "Pending surplus", unreadyLeaders: 3, want: true},
+		{name: "partly Ready surplus", unreadyLeaders: 2, want: true},
+		{name: "worker-only unready", unreadyWorkers: 3},
+		{name: "mixed leader and worker readiness", unreadyLeaders: 2, unreadyWorkers: 1},
+		{name: "unacknowledged scale", unreadyLeaders: 3},
+		{name: "missing group", unreadyLeaders: 3},
+		{name: "unissued deletion", unreadyLeaders: 2},
+		{name: "multiple ReplicaSets", unreadyLeaders: 3},
+		{name: "zero-sized historical ReplicaSet", unreadyLeaders: 3, want: true},
+		{name: "terminating leader", unreadyLeaders: 2, unreadyWorkers: 1},
+		{name: "terminal leader", unreadyLeaders: 2, unreadyWorkers: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, leaderworkersetv1.GroupIdentityHash, 0, "a", "a", "a", "b", "b", "b")
+			s := f.observe()
+			for i := range tc.unreadyLeaders + tc.unreadyWorkers {
+				group := &s.Groups[5-i]
+				group.Ready = false
+				if i < tc.unreadyLeaders {
+					group.Leader.Status.Phase = corev1.PodPending
+					group.Leader.Status.Conditions = nil
+				} else {
+					group.Pods[1].Status.Conditions = nil // Leader remains Ready; it is not a preferred victim.
+				}
+			}
+			switch tc.name {
+			case "unacknowledged scale":
+				s.ReplicaSets[0].Generation++
+			case "missing group":
+				s.Groups = s.Groups[:5]
+			case "multiple ReplicaSets", "zero-sized historical ReplicaSet":
+				rs := s.ReplicaSets[0].DeepCopy()
+				rs.Name, rs.UID, rs.Spec.Replicas = "second", "second", ptr.To[int32](0)
+				if tc.name == "multiple ReplicaSets" {
+					rs.Spec.Replicas, s.ReplicaSets[0].Spec.Replicas = ptr.To[int32](3), ptr.To[int32](3)
+					for i := 3; i < 6; i++ {
+						s.Groups[i].Leader.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(rs, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))}
+					}
+				}
+				s.ReplicaSets = append(s.ReplicaSets, rs)
+			case "terminating leader", "terminal leader", "unissued deletion":
+				extra := s.Groups[5]
+				extra.Leader = extra.Leader.DeepCopy()
+				extra.Leader.Name, extra.Leader.UID = "extra", "extra"
+				if tc.name == "terminating leader" {
+					extra.Terminating, extra.Leader.DeletionTimestamp = true, ptr.To(metav1.Now())
+				} else if tc.name == "terminal leader" {
+					extra.Leader.Status.Phase = corev1.PodFailed
+				}
+				s.Groups = append(s.Groups, extra)
+			}
+			observed := rolloutReadiness{}
+			observeSubRoleReadiness(&subRoleState{snapshot: s, issued: map[string]int{"a": 3, "b": 3}}, observed)
+			revision := disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{"model": s.LWS}}
+			complete, ready := rolloutCompletionStatus(nil, revision, []string{"model/a", "model/b"}, RoleReplicaState{2, 1}, observed, false)
+			require.True(t, complete)
+			require.Equal(t, tc.want, ready)
+		})
+	}
+}
+
+func TestDeferredCompletionSurvivorReadiness(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, virtual := range []bool{false, true} {
+			for _, condition := range []string{"all Ready", "unready surplus", "unready survivor", "missing survivor", "terminating survivor", "exhausted restart", "unacknowledged worker", "unacknowledged LWS", "unacknowledged native"} {
+				t.Run(fmt.Sprintf("%s/subroles=%v/%s", identity, virtual, condition), func(t *testing.T) {
+					f := newSubRoleFixtureForIdentity(t, identity, 7, "a", "a", "b")
+					s := f.observe()
+					switch condition {
+					case "unready surplus":
+						s.Groups[2].Ready = false
+					case "unready survivor":
+						s.Groups[0].Ready = false
+					case "missing survivor":
+						s.Groups = s.Groups[1:]
+					case "terminating survivor":
+						s.Groups[0].Terminating = true
+					case "exhausted restart":
+						s.Groups[0].Leader.Annotations[leaderworkersetv1.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+					case "unacknowledged worker":
+						s.Groups[0].WorkerStatefulSet.Generation++
+					case "unacknowledged LWS":
+						s.LWS.Generation++
+					case "unacknowledged native":
+						if identity == leaderworkersetv1.GroupIdentityHash {
+							s.ReplicaSets[0].Generation++
+						} else {
+							s.LeaderStatefulSet.Generation++
+						}
+					}
+					names, targets := []string{"model"}, RoleReplicaState{2}
+					observed := rolloutReadiness{s.LWS.Name: {committed: int(s.Availability().RetainedReadyReplicas), snapshot: s}}
+					if virtual {
+						names, targets = []string{"model/a", "model/b"}, RoleReplicaState{1, 1}
+						observeSubRoleReadiness(&subRoleState{snapshot: s, issued: map[string]int{"a": 2, "b": 1}}, observed)
+					} else {
+						delete(s.LWS.Annotations, subRoleReplicasAnnotation)
+					}
+					revision := disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{"model": s.LWS}}
+					complete, ready := rolloutCompletionStatus(nil, revision, names, targets, observed, false)
+					require.True(t, complete)
+					want := condition == "all Ready" || condition == "unready surplus" && identity == leaderworkersetv1.GroupIdentityOrdinal
+					require.Equal(t, want, ready, "check physical survivors, not each child's separate prefix")
+					complete, _ = rolloutCompletionStatus(nil, revision, names, targets, observed, true)
+					require.False(t, complete, "Immediate still requires exact targets")
+				})
+			}
+		}
+	}
+}
+
+func TestDeferredCompletionRedistributesOrdinalSurvivors(t *testing.T) {
+	f := newSubRoleFixture(t, 7, "a", "a", "b")
+	f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+		{Name: "a", Replicas: ptr.To[int32](1)}, {Name: "b", Replicas: ptr.To[int32](1)},
+	}}}
+	old := f.withRevision("old")
+	setSubRoleJSON(old.lws, subRoleReplicasAnnotation, map[string]int{"a": 0, "b": 0})
+	setSubRoleJSON(old.lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey, map[string]int{"a": 2, "b": 1})
+	setInitialReplicasAnnotation(old.lws, 3)
+	require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
+	surplus := f.observe().Groups[2].Leader
+	surplus.Status.Conditions = nil
+	require.NoError(t, f.manager.client.Status().Update(t.Context(), surplus))
+	r := newTestReconciler(f.manager.client)
+	r.LWSManager = f.manager
+	for range 12 {
+		_, err := r.reconcileSlice(t.Context(), r.createRollingUpdateExecutor(), f.ds, 0, "model", map[string]int{"model/a": 1, "model/b": 1})
+		require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+		s := f.observe()
+		if getLWSReplicas(s.LWS) == 2 {
+			// The retained A group must become B before the old B is deleted.
+			for i, name := range []string{"a", "b"} {
+				assigned, coherent := groupSubRole(s.Groups[i])
+				require.True(t, coherent && s.Groups[i].Ready)
+				require.Equal(t, name, assigned)
+			}
+		}
+		f.native()
+	}
+	s := f.observe()
+	require.Len(t, s.Groups, 2)
+	require.Empty(t, s.LWS.Annotations[subRolePlanAnnotation])
+	require.JSONEq(t, `{"a":1,"b":1}`, s.LWS.Annotations[subRoleReplicasAnnotation])
+	require.True(t, apierrors.IsNotFound(f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(old.lws), &leaderworkersetv1.LeaderWorkerSet{})))
+}
+
 func TestRolloutGuardsChangedInformerInputs(t *testing.T) {
 	for _, change := range []string{"missing", "replacement", "generation changed", "deleting", "terminating input", "read error"} {
 		t.Run(change, func(t *testing.T) {
@@ -915,7 +1121,8 @@ func TestRollbackUsesLiveRetainedReadiness(t *testing.T) {
 						if !issued && phase.cancel {
 							phase.retained, phase.old = 3, 1 // Unissued removals can be cancelled.
 						}
-						assert.Equal(t, replicaReadiness{raw: phase.raw, committed: phase.retained}, observed[a.Name])
+						assert.Equal(t, phase.raw, observed[a.Name].raw)
+						assert.Equal(t, phase.retained, observed[a.Name].committed)
 						assert.EqualValues(t, 4, a.Status.ReadyReplicas, "observation must not mutate discovered inputs")
 						executor := newTestExecutor(c)
 						executor.LWSManager = manager // Real observer, reconstructed on every reconcile.
@@ -1942,7 +2149,7 @@ func TestObserveOldRevisionNeverUsesBaselineBelowSpec(t *testing.T) {
 	}
 }
 
-func TestExternalTargetShrinksAfterRoleOldSpecReachesZero(t *testing.T) {
+func TestExternalTargetWaitsForSafeCleanupAfterOldSpecReachesZero(t *testing.T) {
 	ctx := context.Background()
 	one, zero := intstr.FromInt(1), intstr.FromInt(0)
 	role := makeRoleSpec(testRolePrefill, 10, corev1.PodSpec{}, one, zero)
@@ -1967,7 +2174,14 @@ func TestExternalTargetShrinksAfterRoleOldSpecReachesZero(t *testing.T) {
 	_, err = reconciler.reconcileSlice(ctx, executor, ds, 0, targetRevision, desired)
 	require.NoError(t, err)
 
+	assert.EqualValues(t, 10, getTestLWSReplicas(fakeClient, testNamespace, target.Name), "five Ready groups cannot safely fund five deletions")
+	for range 2 {
+		simulateAllReady(fakeClient)
+		_, err = reconciler.reconcileSlice(ctx, executor, ds, 0, targetRevision, desired)
+		require.NoError(t, err)
+	}
 	assert.EqualValues(t, 5, getTestLWSReplicas(fakeClient, testNamespace, target.Name))
+	require.True(t, apierrors.IsNotFound(fakeClient.Get(ctx, client.ObjectKeyFromObject(old), &leaderworkersetv1.LeaderWorkerSet{})))
 }
 
 // Active reconciliation includes budget history plus three Ordinal or five Hash
@@ -2852,7 +3066,7 @@ func TestSubRoleMigrationFromOrdinaryToOrdinal(t *testing.T) {
 			old = oldRevision()
 			assert.Equal(t, before.LWS.Annotations, ordinary.Annotations, "the old ordinary revision must never acquire child metadata")
 			require.NoError(t, err)
-			require.Equal(t, replicaReadiness{spec: 2, initial: 2, raw: 2, committed: 2}, observed.role(old, "model"))
+			require.Equal(t, replicaReadiness{spec: 2, initial: 2, raw: 2, committed: 2, snapshot: observed[ordinary.Name].snapshot}, observed.role(old, "model"))
 			for _, child := range []string{"model/a", "model/b"} {
 				require.Equal(t, replicaReadiness{}, observed.role(old, child))
 				require.Equal(t, replicaReadiness{spec: 1, initial: 1}, observed.role(target, child))
