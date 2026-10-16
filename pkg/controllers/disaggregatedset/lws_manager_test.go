@@ -104,50 +104,36 @@ func TestSubRoleGrowthDelaySurvivesRestartAndRetry(t *testing.T) {
 }
 
 func TestSubRoleGrowthDelayCancellationAndRepair(t *testing.T) {
+	now := time.Now()
+	deadline := now.Add(time.Second).UTC().Format(time.RFC3339Nano)
 	for _, tc := range []struct {
-		name      string
-		target    map[string]int
-		delay     time.Duration
-		malformed bool
+		name     string
+		target   int
+		delay    time.Duration
+		deadline string
+		waiting  bool
 	}{
-		{"same total cancels", map[string]int{"a": 1, "b": 1}, 2 * time.Second, false},
-		{"reduction cancels", map[string]int{"a": 1, "b": 0}, 2 * time.Second, false},
-		{"disabled or rollout bypasses", map[string]int{"a": 2, "b": 1}, 0, false},
-		{"malformed deadline is repaired", map[string]int{"a": 2, "b": 1}, 2 * time.Second, true},
+		{"same total cancels", 2, 2 * time.Second, deadline, false},
+		{"reduction cancels", 1, 2 * time.Second, deadline, false},
+		{"disabled or rollout bypasses", 3, 0, deadline, false},
+		{"malformed deadline is repaired", 3, 2 * time.Second, "invalid", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSubRoleFixture(t, 0, "a", "b")
-			clock := clocktesting.NewFakeClock(time.Now())
-			f.manager.clock = clock
-			tick := func(target map[string]int, delay time.Duration) {
-				t.Helper()
-				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{target: target, growthDelay: delay})
-				require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+			clock := clocktesting.NewFakeClock(now)
+			manager := &LeaderWorkerSetManager{clock: clock}
+			state := &subRoleState{
+				lws:              &leaderworkersetv1.LeaderWorkerSet{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To[int32](2)}},
+				scaleUpNotBefore: tc.deadline,
 			}
-			growth := map[string]int{"a": 2, "b": 1}
-			tick(growth, 2*time.Second)
-			require.NotEmpty(t, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
-			clock.Step(time.Second)
-			if tc.malformed {
-				f.lws.Annotations[subRoleScaleUpNotBeforeAnnotation] = "invalid"
-				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+			require.Equal(t, tc.waiting, manager.delaySubRoleGrowth(state, tc.target, tc.delay))
+			if !tc.waiting {
+				require.Empty(t, state.scaleUpNotBefore)
 			}
-			for range 8 {
-				tick(tc.target, tc.delay)
-				f.native()
-			}
-			if tc.malformed {
-				require.Equal(t, clock.Now().Add(2*time.Second).UTC().Format(time.RFC3339Nano), f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
-				require.EqualValues(t, 2, getLWSReplicas(f.lws))
-				clock.Step(2 * time.Second)
-				tick(growth, tc.delay)
-			}
-			require.Empty(t, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
-			require.EqualValues(t, countSubRoles(tc.target), getLWSReplicas(f.lws))
-			if tc.name == "same total cancels" {
-				tick(growth, tc.delay)
-				require.Equal(t, clock.Now().Add(tc.delay).UTC().Format(time.RFC3339Nano), f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "a later independent increase gets a fresh window")
-			}
+			// A repaired deadline, or growth after cancellation, gets a fresh window.
+			require.True(t, manager.delaySubRoleGrowth(state, 3, 2*time.Second))
+			require.Equal(t, clock.Now().Add(2*time.Second).UTC().Format(time.RFC3339Nano), state.scaleUpNotBefore)
+			clock.Step(2 * time.Second)
+			require.False(t, manager.delaySubRoleGrowth(state, 3, 2*time.Second))
 		})
 	}
 }
@@ -285,6 +271,8 @@ func TestSubRoleRolloutBudgetUpdates(t *testing.T) {
 					children[i] = "a"
 				}
 				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				clock := clocktesting.NewFakeClock(time.Now())
+				f.manager.clock = clock
 				f.lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(tc.before)}
 				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
 				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), lwsAdmissionInterceptors())
@@ -295,6 +283,7 @@ func TestSubRoleRolloutBudgetUpdates(t *testing.T) {
 					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, map[string]int{"model": tc.after, "model/a": tc.after})
 					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 					f.native()
+					clock.Step(time.Second)
 				}
 				got := f.observe().LWS
 				require.EqualValues(t, tc.after, *got.Spec.Replicas)

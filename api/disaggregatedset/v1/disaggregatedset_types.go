@@ -148,13 +148,14 @@ type DisaggregatedSetScalingPolicy struct {
 
 	// SubRoleScaleUpDelaySeconds delays growth of an existing sub-role LWS so
 	// nearby target updates can be applied together. Valid values are 0 to 60;
-	// omitted or zero disables the delay. Only steady-state net growth waits:
+	// defaults to 2, and zero disables the delay. Only steady-state net growth waits:
 	// ordinary roles, zero-to-positive scaling, and template rollouts do not.
 	// The first growth request starts a fixed window; later updates do not extend
 	// it. At expiry, the latest targets apply. The wait is cancelled if their sum
 	// no longer exceeds current replicas. This adds scale-up latency and does not
 	// combine updates arriving after the window.
 	// +optional
+	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=60
 	SubRoleScaleUpDelaySeconds *int32 `json:"subRoleScaleUpDelaySeconds,omitempty"`
@@ -255,7 +256,7 @@ type DisaggregatedSetSpec struct {
 	Slices *int32 `json:"slices,omitempty"`
 
 	// ScalingPolicy controls replica target changes. Omit it for Deferred
-	// scale-down during rollouts and no delay for steady-state sub-role growth.
+	// scale-down during rollouts and a 2-second delay for steady-state sub-role growth.
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 

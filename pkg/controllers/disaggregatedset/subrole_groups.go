@@ -270,7 +270,7 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 type subRoleUpdate struct {
 	membership, target, initial map[string]int
 	rolloutStrategy             *leaderv1.RolloutStrategy
-	growthDelay                 time.Duration // Only steady-state reconciliation opts in.
+	growthDelay                 time.Duration // Only steady-state reconciliation delays growth.
 }
 
 type subRoleState struct {
