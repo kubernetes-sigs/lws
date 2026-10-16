@@ -406,13 +406,13 @@ seeded at one replica for vanilla-HPA bootstrap; scale-to-zero-aware autoscalers
 subsequently write zero.
 
 Independent scaler writes can arrive separately even when their final targets only
-move capacity between sub-roles. An optional DisaggregatedSet policy gives these
-writes a short window to arrive before growing an existing physical LWS:
+move capacity between sub-roles. By default, the controller waits two seconds for
+these writes before growing an existing physical LWS. The delay is configurable:
 
 ```yaml
 spec:
   scalingPolicy:
-    subRoleScaleUpDelaySeconds: 5
+    subRoleScaleUpDelaySeconds: 2
 ```
 
 For example, an LWS has `short=4, long=4`. The `short` scaler first requests 6,
@@ -420,7 +420,7 @@ temporarily raising the total to 10. If `long` requests 2 within the window, the
 total returns to 8: the controller cancels the growth delay and redistributes the
 existing groups instead of creating two groups and later removing two.
 
-The field accepts 0 to 60 seconds; omitted or zero keeps immediate growth. Each
+The field accepts 0 to 60 seconds; omitted defaults to 2, and zero disables the delay. Each
 physical LWS starts a fixed deadline on its first steady-state net-growth request.
 Later writes do not extend it, and reconciliation uses the latest targets. A total
 at or below current replicas cancels the wait. Initial scaling from zero, ordinary
@@ -544,6 +544,7 @@ existing tests to make this code solid enough prior to implementation.
 ## Implementation History
 
 - 2026-08-04: Initial provisional KEP draft.
+- 2026-10-16: Added a configurable, fixed scale-up window for existing sub-role pools, defaulting to two seconds; zero disables it. Nearby target updates can reuse groups without temporary physical growth.
 
 ## Drawbacks
 

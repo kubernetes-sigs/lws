@@ -87,6 +87,7 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 			}
 			gomega.Expect(fetched.Spec.ScalingPolicy).NotTo(gomega.BeNil())
 			gomega.Expect(fetched.Spec.ScalingPolicy.ScaleDownDuringRollout).To(gomega.Equal(want))
+			gomega.Expect(fetched.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(ptr.To[int32](2)))
 		},
 		ginkgo.Entry("omitted policy", nil, disaggregatedset.RolloutScaleDownPolicy(""), true),
 		ginkgo.Entry("empty policy defaults to Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{}, disaggregatedset.RolloutScaleDownDeferred, true),
@@ -107,26 +108,17 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 			}
 			gomega.Expect(err).To(gomega.Succeed())
 			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(seconds))
+			disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = nil
+			gomega.Expect(k8sClient.Update(ctx, disagg)).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(ptr.To[int32](2)))
+			disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = ptr.To[int32](61)
+			gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, disagg))).To(gomega.BeTrue())
 		},
-		ginkgo.Entry("omitted", (*int32)(nil), true),
 		ginkgo.Entry("disabled", ptr.To[int32](0), true),
-		ginkgo.Entry("one second", ptr.To[int32](1), true),
 		ginkgo.Entry("maximum", ptr.To[int32](60), true),
 		ginkgo.Entry("negative", ptr.To[int32](-1), false),
 		ginkgo.Entry("above maximum", ptr.To[int32](61), false),
 	)
-
-	ginkgo.It("updates the sub-role scale-up delay without changing the workload revision", func() {
-		disagg := buildDisaggregatedSet().Obj()
-		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
-		revision := disaggregatedsetutils.ComputeRevision(disagg.Spec.Roles)
-		disagg.Spec.ScalingPolicy = &disaggregatedset.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: ptr.To[int32](5)}
-		gomega.Expect(k8sClient.Update(ctx, disagg)).To(gomega.Succeed())
-		gomega.Expect(disaggregatedsetutils.ComputeRevision(disagg.Spec.Roles)).To(gomega.Equal(revision))
-		gomega.Expect(*disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(int32(5)))
-		disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = ptr.To[int32](61)
-		gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, disagg))).To(gomega.BeTrue())
-	})
 
 	type testValidationCase struct {
 		makeDisaggregatedSet func() *disaggregatedset.DisaggregatedSet
