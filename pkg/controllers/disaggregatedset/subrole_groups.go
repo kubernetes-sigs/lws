@@ -27,7 +27,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -258,11 +257,7 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 			"labels": map[string]any{disaggv1.SubRoleLabelKey: label},
 		}})
 		if err := m.client.Patch(ctx, pod.DeepCopy(), client.RawPatch(types.MergePatchType, patch)); err != nil {
-			cause, _ := apierrors.StatusCause(err, metav1.CauseTypeFieldValueInvalid)
-			if apierrors.IsConflict(err) || apierrors.IsInvalid(err) && cause.Field == "metadata.uid" {
-				return errReplicaGroupsPending
-			}
-			return err // Invalid labels and other genuine errors remain visible.
+			return retryStaleWrite(err)
 		}
 	}
 	return nil
@@ -656,7 +651,7 @@ func (m *LeaderWorkerSetManager) preferSubRoleDeletion(ctx context.Context, grou
 	}
 	before := pod.DeepCopy()
 	before.UID = "" // Include UID and resourceVersion to fence replacement/concurrent edits.
-	return true, m.client.Patch(ctx, desired, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	return true, retryStaleWrite(m.client.Patch(ctx, desired, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})))
 }
 
 func (m *LeaderWorkerSetManager) syncHashSubRoleAssignments(ctx context.Context, state *subRoleState) error {

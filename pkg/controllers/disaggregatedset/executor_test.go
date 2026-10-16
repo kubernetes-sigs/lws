@@ -559,10 +559,12 @@ func TestDisjointSurplusReconcileUsesGuardedTargetOnlyWrites(t *testing.T) {
 				oldRevisions, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "new")
 				require.NoError(t, err)
 				require.NotNil(t, target)
-				_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, oldRevisions, *target,
+				result, complete, err := executor.reconcileExistingRollout(t.Context(), ds, oldRevisions, *target,
 					map[string]int{testRolePrefill: 2, testRoleDecode: 2})
 				if concurrentWrite && attempt == 0 {
-					require.True(t, apierrors.IsConflict(err), "the raced scale must fail without changing replicas")
+					require.NoError(t, err, "the raced scale should requeue without an error")
+					require.Equal(t, time.Second, result.RequeueAfter)
+					require.False(t, complete)
 					assert.EqualValues(t, 3, getTestLWSReplicas(c, testNamespace, prefill.Name))
 					continue
 				}
