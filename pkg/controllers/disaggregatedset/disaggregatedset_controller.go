@@ -112,6 +112,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// participate in subsequent rollout work. Per-revision drained cleanup runs
 	// per retained slice in reconcileSlice.
 	if err := r.cleanupRemovedSlices(ctx, disaggregatedSet, allLWS, sliceCount); err != nil {
+		if errors.Is(err, errReplicaGroupsPending) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
