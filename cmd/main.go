@@ -245,11 +245,10 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		os.Exit(1)
 	}
 	// Set up DisaggregatedSet controller
-	if err := (&disaggregatedsetcontroller.DisaggregatedSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Record: mgr.GetEventRecorder("disaggregatedset"),
-	}).SetupWithManager(mgr); err != nil {
+	disaggregatedSetController := disaggregatedsetcontroller.NewDisaggregatedSetReconciler(
+		mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorder("disaggregatedset"),
+	)
+	if err := disaggregatedSetController.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DisaggregatedSet")
 		os.Exit(1)
 	}

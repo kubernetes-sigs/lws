@@ -21,11 +21,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -54,16 +58,59 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	}
 
 	// A failure of one status writer must not suppress the other.
-	var statusErr error
+	var scalerErr error
 	if len(scalers) > 0 {
-		statusErr = r.ScalerManager.WriteStatus(ctx, ds, scalers, observedReplicas)
+		scalerErr = r.ScalerManager.WriteStatus(ctx, ds, scalers, observedReplicas)
 	}
-	if changed {
-		if err := r.Status().Update(ctx, ds); err != nil {
-			statusErr = errors.Join(statusErr, fmt.Errorf("failed to update DisaggregatedSet status: %w", err))
+	err = r.publishStatus(ctx, ds, changed)
+	if errors.Is(err, errStatusPending) && scalerErr != nil {
+		// A normal status retry must not hide a scaler failure.
+		return scalerErr
+	}
+	return errors.Join(scalerErr, err)
+}
+
+var errStatusPending = errors.New("waiting for the DisaggregatedSet informer to observe a newer version")
+
+const (
+	statusVersionTTL       = time.Minute
+	maxStaleStatusVersions = 4096 // Limits retry suppression, not supported DisaggregatedSets.
+)
+
+type statusVersion struct {
+	uid             types.UID
+	resourceVersion string
+}
+
+// publishStatus avoids repeating writes against a version known to be stale.
+// Child events may enqueue us before the parent informer observes our last write.
+// Keep optimistic concurrency: another writer can still win after our cache advances.
+func (r *DisaggregatedSetReconciler) publishStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, changed bool) error {
+	key := client.ObjectKeyFromObject(ds)
+	version := statusVersion{uid: ds.UID, resourceVersion: ds.ResourceVersion}
+	versions := r.staleStatusVersions
+	if stale, ok := versions.Get(key); ok {
+		if stale == version {
+			return errStatusPending
 		}
+		// Watch events may skip versions; do not wait for the exact write response.
+		versions.Remove(key)
 	}
-	return statusErr
+	if !changed {
+		return nil
+	}
+	err := r.Status().Update(ctx, ds)
+	if apierrors.IsConflict(err) {
+		versions.Add(key, version, statusVersionTTL)
+		return errStatusPending
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update DisaggregatedSet status: %w", err)
+	}
+	if ds.ResourceVersion != version.resourceVersion {
+		versions.Add(key, version, statusVersionTTL)
+	}
+	return nil
 }
 
 // collectRoleStatuses aggregates all slices and revisions. Only current roles

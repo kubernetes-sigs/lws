@@ -68,13 +68,7 @@ func TestGroupReplacementPolicySyncedDuringRollout(t *testing.T) {
 		WithObjects(disaggregatedSet, oldHash, newHash, oldOrdinal, removedRole).
 		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
 	recorder := events.NewFakeRecorder(100)
-	reconciler := &controller.DisaggregatedSetReconciler{
-		Client:        fakeClient,
-		Scheme:        scheme,
-		LWSManager:    controller.NewLeaderWorkerSetManager(fakeClient),
-		ScalerManager: controller.NewScalerManager(fakeClient, recorder),
-		Record:        recorder,
-	}
+	reconciler := controller.NewDisaggregatedSetReconciler(fakeClient, scheme, recorder)
 
 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
 	require.NoError(t, err)

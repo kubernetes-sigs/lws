@@ -30,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -49,6 +50,20 @@ type DisaggregatedSetReconciler struct {
 	Record        events.EventRecorder
 	LWSManager    *LeaderWorkerSetManager
 	ScalerManager *ScalerManager
+	// Last unusable status-write version per object, bounded by size and age.
+	staleStatusVersions *utilcache.LRUExpireCache // client.ObjectKey -> statusVersion
+}
+
+// NewDisaggregatedSetReconciler initializes controller state before workers start.
+func NewDisaggregatedSetReconciler(c client.Client, scheme *runtime.Scheme, record events.EventRecorder) *DisaggregatedSetReconciler {
+	return &DisaggregatedSetReconciler{
+		Client:              c,
+		Scheme:              scheme,
+		Record:              record,
+		LWSManager:          NewLeaderWorkerSetManager(c),
+		ScalerManager:       NewScalerManager(c, record),
+		staleStatusVersions: utilcache.NewLRUExpireCache(maxStaleStatusVersions),
+	}
 }
 
 // +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets,verbs=get;list;watch;create;update;patch;delete
@@ -68,6 +83,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{}
 	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.staleStatusVersions.Remove(req.NamespacedName)
 			if r.LWSManager.pending != nil {
 				r.LWSManager.pending.forget(req.NamespacedName)
 			}
@@ -170,7 +186,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Observe status after workload writes, including slices that failed to
 	// reconcile. DisaggregatedSet and scaler counts come from the same aggregate.
-	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers); statusErr != nil {
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers); errors.Is(statusErr, errStatusPending) {
+		result = earliestRequeue(result, ctrl.Result{RequeueAfter: time.Second})
+	} else if statusErr != nil {
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))
 	}
 
@@ -633,6 +651,9 @@ func disaggregatedSetRequest(lws *leaderworkersetv1.LeaderWorkerSet) (ctrl.Reque
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.staleStatusVersions == nil {
+		r.staleStatusVersions = utilcache.NewLRUExpireCache(maxStaleStatusVersions)
+	}
 	if r.LWSManager == nil {
 		r.LWSManager = NewLeaderWorkerSetManager(mgr.GetClient())
 	}

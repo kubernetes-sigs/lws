@@ -86,13 +86,9 @@ var sharedTestClientScheme = sync.OnceValue(testSchemeForUnit)
 func newTestReconciler(fakeClient client.Client) *DisaggregatedSetReconciler {
 	scheme := sharedTestClientScheme()
 	recorder := events.NewFakeRecorder(100)
-	return &DisaggregatedSetReconciler{
-		Client:        fakeClient,
-		Scheme:        scheme,
-		LWSManager:    newTestLWSManager(fakeClient),
-		ScalerManager: NewScalerManager(fakeClient, recorder),
-		Record:        recorder,
-	}
+	r := NewDisaggregatedSetReconciler(fakeClient, scheme, recorder)
+	r.LWSManager = newTestLWSManager(fakeClient)
+	return r
 }
 
 // newTestExecutor creates a RollingUpdateExecutor with a FakeRecorder for testing.
