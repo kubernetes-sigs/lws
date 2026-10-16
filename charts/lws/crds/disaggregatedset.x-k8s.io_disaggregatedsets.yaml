@@ -13,6 +13,9 @@ spec:
     kind: DisaggregatedSet
     listKind: DisaggregatedSetList
     plural: disaggregatedsets
+    shortNames:
+      - dset
+      - disaggset
     singular: disaggregatedset
   scope: Namespaced
   versions:
