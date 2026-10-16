@@ -549,6 +549,18 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
    <p>Name is the parent role name.</p>
 </td>
 </tr>
+<tr><td><code>desiredReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>DesiredReplicas is the number of replicas the controller is driving this role
+toward, totalled across slices: its replicas, or the target of its
+DisaggregatedSetRoleScaler when its scaling mode is External. A partitioned
+role reports the sum of its sub-role targets. It is unset while any of those
+targets is unknown, for example before the scaler exists, so it is never
+mistaken for a requested zero. The Available condition is judged against it.</p>
+</td>
+</tr>
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -624,6 +636,16 @@ desired while old replicas of that role remain.</p>
 </td>
 <td>
    <p>Name is the sub-role name, without the parent prefix.</p>
+</td>
+</tr>
+<tr><td><code>desiredReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>DesiredReplicas is the number of replica groups the controller is driving
+this sub-role toward, totalled across slices: its replicas, or the target of
+its DisaggregatedSetRoleScaler when its scaling mode is External. It is unset
+while that target is unknown.</p>
 </td>
 </tr>
 <tr><td><code>replicas</code><br/>

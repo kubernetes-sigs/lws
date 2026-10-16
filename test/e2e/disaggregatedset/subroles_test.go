@@ -113,7 +113,7 @@ var _ = Describe("Ordinal subroles", func() {
 					g.Expect(parent.SubRoleStatuses).To(HaveLen(2))
 					for _, child := range parent.SubRoleStatuses {
 						count := int32(want[parent.Name+"/"+child.Name])
-						g.Expect(child).To(Equal(disaggv1.SubRoleStatus{Name: child.Name, Replicas: count, ReadyReplicas: count, UpdatedReplicas: count}))
+						g.Expect(child).To(Equal(disaggv1.SubRoleStatus{Name: child.Name, DesiredReplicas: ptr.To(count), Replicas: count, ReadyReplicas: count, UpdatedReplicas: count}))
 					}
 				}
 			}, 3*time.Minute, time.Second).Should(Succeed())

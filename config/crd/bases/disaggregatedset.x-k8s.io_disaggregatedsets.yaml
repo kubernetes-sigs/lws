@@ -19721,6 +19721,16 @@ spec:
                   description: RoleStatus defines the observed state of a single parent
                     role.
                   properties:
+                    desiredReplicas:
+                      description: |-
+                        DesiredReplicas is the number of replicas the controller is driving this role
+                        toward, totalled across slices: its replicas, or the target of its
+                        DisaggregatedSetRoleScaler when its scaling mode is External. A partitioned
+                        role reports the sum of its sub-role targets. It is unset while any of those
+                        targets is unknown, for example before the scaler exists, so it is never
+                        mistaken for a requested zero. The Available condition is judged against it.
+                      format: int32
+                      type: integer
                     name:
                       description: Name is the parent role name.
                       type: string
@@ -19744,6 +19754,14 @@ spec:
                         description: SubRoleStatus defines the observed state of a
                           sub-role within its parent.
                         properties:
+                          desiredReplicas:
+                            description: |-
+                              DesiredReplicas is the number of replica groups the controller is driving
+                              this sub-role toward, totalled across slices: its replicas, or the target of
+                              its DisaggregatedSetRoleScaler when its scaling mode is External. It is unset
+                              while that target is unknown.
+                            format: int32
+                            type: integer
                           name:
                             description: Name is the sub-role name, without the parent
                               prefix.

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 )
@@ -240,4 +241,73 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 		}
 	}
 	return nil
+}
+
+// TestSetDesiredReplicas checks that each role and sub-role publishes the target
+// the controller judges availability against, totalled across slices, and that an
+// unknown target is left unset rather than reported as a requested zero.
+func TestSetDesiredReplicas(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		desired map[string]int
+		slices  int32
+		want    []disaggregatedsetv1.RoleStatus
+	}{
+		{
+			name:    "known targets",
+			desired: map[string]int{"prefill": 2, "decode": 0},
+			slices:  1,
+			want:    []disaggregatedsetv1.RoleStatus{{Name: "prefill", DesiredReplicas: ptr.To[int32](2)}, {Name: "decode", DesiredReplicas: ptr.To[int32](0)}},
+		},
+		{
+			name:    "totalled across slices",
+			desired: map[string]int{"prefill": 2, "decode": 3},
+			slices:  4,
+			want:    []disaggregatedsetv1.RoleStatus{{Name: "prefill", DesiredReplicas: ptr.To[int32](8)}, {Name: "decode", DesiredReplicas: ptr.To[int32](12)}},
+		},
+		{
+			name:    "unknown target is unset",
+			desired: map[string]int{"decode": 1},
+			slices:  1,
+			want:    []disaggregatedsetv1.RoleStatus{{Name: "prefill"}, {Name: "decode", DesiredReplicas: ptr.To[int32](1)}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill"}, {Name: "decode"}}
+			setDesiredReplicas(statuses, tc.desired, tc.slices)
+			require.Equal(t, tc.want, statuses)
+		})
+	}
+
+	t.Run("sub-roles", func(t *testing.T) {
+		statuses := []disaggregatedsetv1.RoleStatus{{Name: "model", SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{{Name: "a"}, {Name: "b"}}}}
+		setDesiredReplicas(statuses, map[string]int{"model/a": 2}, 1)
+		require.Equal(t, []disaggregatedsetv1.RoleStatus{{Name: "model", SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
+			{Name: "a", DesiredReplicas: ptr.To[int32](2)}, {Name: "b"},
+		}}}, statuses, "a parent whose children are not all resolved has no target")
+	})
+}
+
+// TestSummarizeRoleStatusesUsesDesiredReplicas checks that availability is judged
+// against the published target, so status readers and the controller agree.
+func TestSummarizeRoleStatusesUsesDesiredReplicas(t *testing.T) {
+	ready := func(n int32, desired *int32) disaggregatedsetv1.RoleStatus {
+		return disaggregatedsetv1.RoleStatus{Name: "decode", DesiredReplicas: desired, Replicas: n, ReadyReplicas: n, UpdatedReplicas: n}
+	}
+	for _, tc := range []struct {
+		name   string
+		status disaggregatedsetv1.RoleStatus
+		want   bool
+	}{
+		{"at its target", ready(4, ptr.To[int32](4)), true},
+		{"below its target", ready(4, ptr.To[int32](6)), false},
+		{"scaled to zero", ready(0, ptr.To[int32](0)), true},
+		{"unknown target", ready(0, nil), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			replicas, available := summarizeRoleStatuses([]disaggregatedsetv1.RoleStatus{tc.status})
+			assert.Equal(t, tc.want, available)
+			assert.Equal(t, map[string]int32{"decode": tc.status.Replicas}, replicas)
+		})
+	}
 }
