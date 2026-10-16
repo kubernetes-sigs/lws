@@ -40,6 +40,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,100 @@ import (
 	disaggwebhook "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
+
+func TestSubRoleGrowthDelaySurvivesRestartAndRetry(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "b")
+			clock := clocktesting.NewFakeClock(time.Now())
+			f.manager.clock = clock
+			update := subRoleUpdate{target: map[string]int{"a": 2, "b": 1}, growthDelay: 2 * time.Second}
+			tick := func() {
+				t.Helper()
+				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, update)
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+			}
+			tick()
+			deadline := clock.Now().Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
+			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+			clock.Step(time.Second)
+			f.manager = NewLeaderWorkerSetManager(f.manager.client)
+			f.manager.clock = clock
+			f.sync() // Observation/label repair must not erase the active window.
+			tick()
+			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+			require.EqualValues(t, 2, getLWSReplicas(f.lws))
+			clock.Step(time.Second)
+			base := f.manager.client
+			attempts := 0
+			f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+				Patch: func(_ context.Context, _ client.WithWatch, object client.Object, _ client.Patch, _ ...client.PatchOption) error {
+					lws := object.(*leaderworkersetv1.LeaderWorkerSet)
+					require.EqualValues(t, 3, getLWSReplicas(lws))
+					require.Empty(t, lws.Annotations[subRoleScaleUpNotBeforeAnnotation], "growth and deadline removal must share one write")
+					attempts++
+					return apierrors.NewConflict(leaderworkersetv1.Resource("leaderworkersets"), lws.Name, errors.New("concurrent write"))
+				},
+			})
+			tick()
+			require.Equal(t, 1, attempts)
+			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "failed growth must not restart the wait")
+			f.manager.client = base
+			tick()
+			require.EqualValues(t, 3, getLWSReplicas(f.observe().LWS))
+			require.Empty(t, f.lws.Annotations[subRoleScaleUpNotBeforeAnnotation])
+		})
+	}
+}
+
+func TestSubRoleGrowthDelayCancellationAndRepair(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		target    map[string]int
+		delay     time.Duration
+		malformed bool
+	}{
+		{"same total cancels", map[string]int{"a": 1, "b": 1}, 2 * time.Second, false},
+		{"reduction cancels", map[string]int{"a": 1, "b": 0}, 2 * time.Second, false},
+		{"disabled or rollout bypasses", map[string]int{"a": 2, "b": 1}, 0, false},
+		{"malformed deadline is repaired", map[string]int{"a": 2, "b": 1}, 2 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubRoleFixture(t, 0, "a", "b")
+			clock := clocktesting.NewFakeClock(time.Now())
+			f.manager.clock = clock
+			tick := func(target map[string]int, delay time.Duration) {
+				t.Helper()
+				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, subRoleUpdate{target: target, growthDelay: delay})
+				require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+			}
+			growth := map[string]int{"a": 2, "b": 1}
+			tick(growth, 2*time.Second)
+			require.NotEmpty(t, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+			clock.Step(time.Second)
+			if tc.malformed {
+				f.lws.Annotations[subRoleScaleUpNotBeforeAnnotation] = "invalid"
+				require.NoError(t, f.manager.client.Update(t.Context(), f.lws))
+			}
+			for range 8 {
+				tick(tc.target, tc.delay)
+				f.native()
+			}
+			if tc.malformed {
+				require.Equal(t, clock.Now().Add(2*time.Second).UTC().Format(time.RFC3339Nano), f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+				require.EqualValues(t, 2, getLWSReplicas(f.lws))
+				clock.Step(2 * time.Second)
+				tick(growth, tc.delay)
+			}
+			require.Empty(t, f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+			require.EqualValues(t, countSubRoles(tc.target), getLWSReplicas(f.lws))
+			if tc.name == "same total cancels" {
+				tick(growth, tc.delay)
+				require.Equal(t, clock.Now().Add(tc.delay).UTC().Format(time.RFC3339Nano), f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "a later independent increase gets a fresh window")
+			}
+		})
+	}
+}
 
 func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {

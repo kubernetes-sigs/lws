@@ -24,6 +24,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -41,6 +42,7 @@ import (
 const (
 	subRoleReplicasAnnotation             = "disaggregatedset.x-k8s.io/subrole-replicas"
 	subRolePlanAnnotation                 = "disaggregatedset.x-k8s.io/subrole-plan"
+	subRoleScaleUpNotBeforeAnnotation     = "disaggregatedset.x-k8s.io/subrole-scale-up-not-before"
 	subRoleOriginalDeletionCostAnnotation = "disaggregatedset.x-k8s.io/original-deletion-cost"
 	// Lowest valid deletion cost; scheduling, phase and readiness still take priority.
 	subRoleDeletionCost = "-2147483648" // math.MinInt32
@@ -268,6 +270,7 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 type subRoleUpdate struct {
 	membership, target, initial map[string]int
 	rolloutStrategy             *leaderv1.RolloutStrategy
+	growthDelay                 time.Duration // Only steady-state reconciliation opts in.
 }
 
 type subRoleState struct {
@@ -277,13 +280,14 @@ type subRoleState struct {
 	written                  bool // A conditional LWS write succeeded in this call.
 	plan                     *subRolePlan
 	rolloutStrategy          *leaderv1.RolloutStrategy
+	scaleUpNotBefore         string
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
 	if len(update.membership)+len(update.target)+len(update.initial) == 0 && lws.Annotations[subRoleReplicasAnnotation] == "" && lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey] == "" && lws.Annotations[subRolePlanAnnotation] == "" {
 		return nil, nil
 	}
-	state := &subRoleState{lws: lws, rolloutStrategy: update.rolloutStrategy}
+	state := &subRoleState{lws: lws, rolloutStrategy: update.rolloutStrategy, scaleUpNotBefore: lws.Annotations[subRoleScaleUpNotBeforeAnnotation]}
 	if !metav1.IsControlledBy(lws, ds) {
 		return state, fmt.Errorf("LeaderWorkerSet %s is not owned by DisaggregatedSet %s", lws.Name, ds.Name)
 	}
@@ -319,6 +323,7 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 		}
 	}
 	if len(membership) == 0 {
+		state.scaleUpNotBefore = ""
 		state.pending = map[string]int{"": int(getLWSReplicas(lws))}
 		state.startSubRolePlan()
 		return state, m.saveSubRoles(ctx, state)
@@ -340,6 +345,10 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	if update.initial != nil {
 		state.initial = update.initial
 	}
+	waitForGrowth := false
+	if update.target != nil {
+		waitForGrowth = m.delaySubRoleGrowth(state, countSubRoles(update.target), update.growthDelay)
+	}
 	if err := m.saveSubRoles(ctx, state); err != nil {
 		return state, err // Observe metadata publication before assignment or planning.
 	}
@@ -353,6 +362,11 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 			target[name] = 0
 		}
 	}
+	// Coalesce before accepting a plan: an accepted transfer must finish even
+	// if newer scaler requests arrive. Keep their desired counts untouched.
+	if waitForGrowth {
+		return state, errReplicaGroupsPending
+	}
 	if decreasing {
 		state.pending = target
 		state.startSubRolePlan()
@@ -360,6 +374,24 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 		state.issued = target
 	}
 	return state, m.saveSubRoles(ctx, state)
+}
+
+// Record the deadline alongside baseline metadata, so frequent target updates
+// cannot postpone the start of the window. Assignment recovery still runs first.
+func (m *LeaderWorkerSetManager) delaySubRoleGrowth(state *subRoleState, target int, delay time.Duration) bool {
+	replicas := int(getLWSReplicas(state.lws))
+	if delay <= 0 || replicas == 0 || target <= replicas {
+		state.scaleUpNotBefore = ""
+		return false
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, state.scaleUpNotBefore)
+	if err != nil {
+		deadline = m.clock.Now().Add(delay)
+		state.scaleUpNotBefore = deadline.UTC().Format(time.RFC3339Nano)
+	}
+	// Preserve an expired deadline through label retries and failed writes.
+	// saveSubRoles clears it atomically when physical growth is published.
+	return m.clock.Now().Before(deadline)
 }
 
 func (state *subRoleState) startSubRolePlan() {
@@ -395,6 +427,10 @@ func (m *LeaderWorkerSetManager) saveSubRoles(ctx context.Context, state *subRol
 	}
 	if state.issued != nil {
 		live.Spec.Replicas = ptr.To(int32(countSubRoles(state.issued)))
+	}
+	delete(live.Annotations, subRoleScaleUpNotBeforeAnnotation)
+	if state.scaleUpNotBefore != "" && getLWSReplicas(live) <= getLWSReplicas(state.lws) {
+		live.Annotations[subRoleScaleUpNotBeforeAnnotation] = state.scaleUpNotBefore
 	}
 	setRolloutStrategy(live, state.rolloutStrategy)
 	if state.initial != nil {
