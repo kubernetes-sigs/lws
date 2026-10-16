@@ -3492,6 +3492,10 @@ func TestSubRoleInterruptedWrites(t *testing.T) {
 						require.NoError(t, c.Delete(ctx, pod))
 						pod.UID, pod.ResourceVersion = "replacement", ""
 						require.NoError(t, c.Create(ctx, pod))
+						// The fake restarts versions at 1; real replacements get a new version.
+						if pod.ResourceVersion == object.GetResourceVersion() {
+							require.NoError(t, c.Update(ctx, pod))
+						}
 					} else {
 						require.NoError(t, c.Update(ctx, pod))
 					}
