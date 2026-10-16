@@ -95,6 +95,39 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 		ginkgo.Entry("invalid policy", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: "invalid"}, disaggregatedset.RolloutScaleDownPolicy(""), false),
 	)
 
+	ginkgo.DescribeTable("sub-role scale-up delay validation",
+		func(seconds *int32, valid bool) {
+			disagg := buildDisaggregatedSet().Obj()
+			disagg.Spec.ScalingPolicy = &disaggregatedset.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: seconds}
+			err := k8sClient.Create(ctx, disagg)
+			if !valid {
+				gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+				gomega.Expect(err.Error()).To(gomega.ContainSubstring("subRoleScaleUpDelaySeconds"))
+				return
+			}
+			gomega.Expect(err).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(seconds))
+		},
+		ginkgo.Entry("omitted", (*int32)(nil), true),
+		ginkgo.Entry("disabled", ptr.To[int32](0), true),
+		ginkgo.Entry("one second", ptr.To[int32](1), true),
+		ginkgo.Entry("maximum", ptr.To[int32](60), true),
+		ginkgo.Entry("negative", ptr.To[int32](-1), false),
+		ginkgo.Entry("above maximum", ptr.To[int32](61), false),
+	)
+
+	ginkgo.It("updates the sub-role scale-up delay without changing the workload revision", func() {
+		disagg := buildDisaggregatedSet().Obj()
+		gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+		revision := disaggregatedsetutils.ComputeRevision(disagg.Spec.Roles)
+		disagg.Spec.ScalingPolicy = &disaggregatedset.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: ptr.To[int32](5)}
+		gomega.Expect(k8sClient.Update(ctx, disagg)).To(gomega.Succeed())
+		gomega.Expect(disaggregatedsetutils.ComputeRevision(disagg.Spec.Roles)).To(gomega.Equal(revision))
+		gomega.Expect(*disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(int32(5)))
+		disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = ptr.To[int32](61)
+		gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, disagg))).To(gomega.BeTrue())
+	})
+
 	type testValidationCase struct {
 		makeDisaggregatedSet func() *disaggregatedset.DisaggregatedSet
 		expectedError        string

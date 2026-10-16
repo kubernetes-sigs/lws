@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -49,11 +50,12 @@ type LeaderWorkerSetManager struct {
 	client           client.Client
 	reader           client.Reader
 	pending          *pendingWrites
+	clock            clock.Clock
 	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
-	manager := &LeaderWorkerSetManager{client: c, reader: c}
+	manager := &LeaderWorkerSetManager{client: c, reader: c, clock: clock.RealClock{}}
 	manager.observeReadiness = manager.observeCachedReadiness
 	return manager
 }

@@ -46,6 +46,7 @@ import (
 	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -3205,6 +3206,126 @@ func TestSubRoleScalingWaitsUntilRequestedTargetsAreAccepted(t *testing.T) {
 			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS), "repairing metadata or labels is not an accepted scale-up")
 			require.Empty(t, executor.Record.(*events.FakeRecorder).Events)
 		})
+	}
+}
+
+func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
+	type request struct {
+		at                 time.Duration
+		interactive, batch int32
+		physical           int
+	}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name      string
+			delay     int32
+			bootstrap bool
+			requests  []request
+		}{
+			{"opposite changes reuse existing groups", 2, false, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"latest growth uses the original deadline", 2, false, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
+			{"default remains immediate", 0, false, []request{{0, 6, 8, 14}}},
+			{"initial population is not delayed", 2, true, []request{{0, 2, 1, 3}}},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				var children []string
+				initial := map[string]int32{"model/interactive": 0, "model/batch": 0}
+				if !tc.bootstrap {
+					children = append(slices.Repeat([]string{"batch"}, 8), slices.Repeat([]string{"interactive"}, 4)...)
+					initial["model/interactive"], initial["model/batch"] = 4, 8
+				}
+				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+					{Name: "interactive", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+					{Name: "batch", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+				}}}
+				if tc.delay > 0 {
+					f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: ptr.To(tc.delay)}
+				}
+				clock := clocktesting.NewFakeClock(time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC))
+				f.manager.clock = clock
+				started := clock.Now()
+				podUIDs := func() []types.UID {
+					var result []types.UID
+					for _, group := range f.observe().Groups {
+						for _, pod := range group.Pods {
+							result = append(result, pod.UID)
+						}
+					}
+					return slices.Sorted(slices.Values(result))
+				}
+				before := podUIDs()
+				ceiling := len(children)
+				checkPhysicalWrite := func(object client.Object) {
+					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						require.LessOrEqual(t, int(getLWSReplicas(lws)), ceiling, "must not temporarily issue unwanted growth")
+						if tc.name == "opposite changes reuse existing groups" {
+							require.EqualValues(t, 12, getLWSReplicas(lws), "coalesced transfer must never change physical size")
+						}
+					}
+				}
+				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+						checkPhysicalWrite(object)
+						return c.Patch(ctx, object, patch, options...)
+					},
+					Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+						checkPhysicalWrite(object)
+						return c.Update(ctx, object, options...)
+					},
+				})
+				scalerManager := NewScalerManager(f.manager.client, events.NewFakeRecorder(10))
+				seed := func(role string) (int32, error) { return initial[role], nil }
+				_, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+				require.NoError(t, err)
+				reconciler := &DisaggregatedSetReconciler{LWSManager: f.manager}
+				for _, request := range tc.requests {
+					clock.SetTime(started.Add(request.at))
+					ceiling = request.physical
+					for child, replicas := range map[string]int32{"interactive": request.interactive, "batch": request.batch} {
+						scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+						require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKey{Namespace: f.ds.Namespace, Name: ScalerName(f.ds.Name, "model/"+child)}, scaler))
+						scaler.Spec.Replicas = replicas
+						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
+					}
+					for attempt := range 12 {
+						// Read both actual scaler objects again, just as top-level reconciliation does.
+						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+						require.NoError(t, err)
+						desired := resolveDesiredReplicasByRole(f.ds, scalers)
+						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, &f.ds.Spec.Roles[0], "model", desired)
+						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+						if attempt == 0 && tc.delay > 0 && !tc.bootstrap && request.physical < int(request.interactive+request.batch) {
+							require.Equal(t, started.Add(time.Duration(tc.delay)*time.Second).Format(time.RFC3339Nano),
+								f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "the first reconcile must persist the original deadline, even while updating the baseline")
+						}
+						f.native()
+					}
+					require.EqualValues(t, request.physical, getLWSReplicas(f.observe().LWS), "at %s", request.at)
+					if request.physical == int(request.interactive+request.batch) {
+						counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+						require.NoError(t, err)
+						require.Equal(t, map[string]int{"interactive": int(request.interactive), "batch": int(request.batch)}, counts, "same-size transfers must not wait for the growth deadline")
+					}
+				}
+				last := tc.requests[len(tc.requests)-1]
+				counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+				require.NoError(t, err)
+				require.Equal(t, map[string]int{"interactive": int(last.interactive), "batch": int(last.batch)}, counts)
+				require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+				if tc.name == "opposite changes reuse existing groups" {
+					require.Equal(t, before, podUIDs(), "reuse every original leader and worker; do not create then delete")
+					actual := map[string]int{}
+					for _, group := range f.observe().Groups {
+						child, coherent := groupSubRole(group)
+						require.True(t, coherent)
+						require.True(t, group.Ready)
+						actual[child]++
+					}
+					require.Equal(t, counts, actual)
+				}
+			})
+		}
 	}
 }
 

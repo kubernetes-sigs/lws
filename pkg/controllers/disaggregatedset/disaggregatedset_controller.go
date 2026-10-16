@@ -518,8 +518,12 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 		return nil
 	}
 	counts := desiredSubRoles(config, desiredReplicasByRole)
+	var growthDelay time.Duration
+	if policy := disaggregatedSet.Spec.ScalingPolicy; policy != nil {
+		growthDelay = time.Duration(ptr.Deref(policy.SubRoleScaleUpDelaySeconds, 0)) * time.Second
+	}
 	// Outside rollout, membership, issued target and effective baseline all follow desired.
-	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts, rolloutStrategy: &config.Spec.RolloutStrategy})
+	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts, rolloutStrategy: &config.Spec.RolloutStrategy, growthDelay: growthDelay})
 	if err != nil || state != nil {
 		// A non-nil state means subrole reconciliation owns this LWS's scaling.
 		return err
