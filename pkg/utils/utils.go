@@ -101,3 +101,56 @@ func CalculatePGMinResources(lws *leaderworkerset.LeaderWorkerSet) corev1.Resour
 
 	return totalResources
 }
+
+// ExclusiveTopologyKey returns the topology key for group level exclusive
+// placement and whether it is enabled. An ExclusiveTopology spec.placementPolicy
+// takes precedence over the exclusive-topology annotation. A None type falls
+// back to the annotation, because the API server defaults the type to None
+// whenever placementPolicy is set, including when only subGroup is.
+func ExclusiveTopologyKey(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
+	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.Type == leaderworkerset.PlacementExclusiveTopology {
+		return policy.Topology, true
+	}
+	annotation := lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	return annotation, annotation != ""
+}
+
+// SubGroupExclusiveTopologyKey returns the topology key for subgroup level
+// exclusive placement and whether it is enabled. An ExclusiveTopology
+// spec.placementPolicy.subGroup takes precedence over the
+// subgroup-exclusive-topology annotation. Subgroup placement needs subgroups,
+// so it is disabled without a subGroupPolicy.
+func SubGroupExclusiveTopologyKey(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		return "", false
+	}
+	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.SubGroup != nil && policy.SubGroup.Type == leaderworkerset.PlacementExclusiveTopology {
+		return policy.SubGroup.Topology, true
+	}
+	annotation := lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+	return annotation, annotation != ""
+}
+
+// EffectivePlacementPolicy returns the placement that the field and the
+// exclusive-topology annotations resolve to, or nil when neither level is
+// exclusive. Both sources of the same placement give the same result, so it is
+// what a revision records.
+func EffectivePlacementPolicy(lws *leaderworkerset.LeaderWorkerSet) *leaderworkerset.PlacementPolicy {
+	groupKey, group := ExclusiveTopologyKey(lws)
+	subGroupKey, subGroup := SubGroupExclusiveTopologyKey(lws)
+	if !group && !subGroup {
+		return nil
+	}
+	policy := &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone}
+	if group {
+		policy.Type = leaderworkerset.PlacementExclusiveTopology
+		policy.Topology = groupKey
+	}
+	if subGroup {
+		policy.SubGroup = &leaderworkerset.SubGroupPlacementPolicy{
+			Type:     leaderworkerset.PlacementExclusiveTopology,
+			Topology: subGroupKey,
+		}
+	}
+	return policy
+}

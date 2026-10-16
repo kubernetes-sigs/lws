@@ -222,3 +222,113 @@ func Test_GetOperatorNamespace(t *testing.T) {
 		t.Errorf("GetOperatorNamespace() = %s, want %s", got, defaultNamespace)
 	}
 }
+
+func Test_ExclusiveTopologyKey(t *testing.T) {
+	testCases := []struct {
+		name       string
+		annotation *string
+		policyType leaderworkerset.PlacementType
+		topology   string
+		wantKey    string
+		wantOK     bool
+	}{
+		{name: "neither set"},
+		{name: "annotation only", annotation: ptr.To("rack"), wantKey: "rack", wantOK: true},
+		{name: "empty annotation", annotation: ptr.To("")},
+		{name: "placementPolicy only", policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
+		{name: "placementPolicy takes precedence over the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
+		{name: "placementPolicy None falls back to the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementNone, wantKey: "rack", wantOK: true},
+		{name: "placementPolicy None without the annotation", policyType: leaderworkerset.PlacementNone},
+	}
+
+	for _, tc := range testCases {
+		t.Run("group/"+tc.name, func(t *testing.T) {
+			lws := &leaderworkerset.LeaderWorkerSet{}
+			if tc.annotation != nil {
+				lws.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: *tc.annotation}
+			}
+			if tc.policyType != "" {
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: tc.policyType, Topology: tc.topology}
+			}
+			if gotKey, gotOK := ExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("ExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+		})
+		t.Run("subgroup/"+tc.name, func(t *testing.T) {
+			lws := &leaderworkerset.LeaderWorkerSet{}
+			if tc.annotation != nil {
+				lws.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: *tc.annotation}
+			}
+			lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](2)}
+			if tc.policyType != "" {
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+					Type:     leaderworkerset.PlacementNone,
+					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: tc.policyType, Topology: tc.topology},
+				}
+			}
+			if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+		})
+	}
+
+	t.Run("subgroup/annotation without subGroupPolicy", func(t *testing.T) {
+		lws := &leaderworkerset.LeaderWorkerSet{}
+		lws.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
+		if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != "" || gotOK {
+			t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (\"\", false)", gotKey, gotOK)
+		}
+	})
+}
+
+func Test_EffectivePlacementPolicy(t *testing.T) {
+	exclusive := func(topology string) *leaderworkerset.PlacementPolicy {
+		return &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: topology}
+	}
+	testCases := []struct {
+		name        string
+		annotations map[string]string
+		policy      *leaderworkerset.PlacementPolicy
+		want        *leaderworkerset.PlacementPolicy
+	}{
+		{name: "no placement"},
+		{name: "None field without annotations", policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone}},
+		{
+			name:        "annotations",
+			annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack", leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "host"},
+			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+		},
+		{
+			name: "field",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+		},
+		{
+			name:        "group field and subgroup annotation",
+			annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "host"},
+			policy:      exclusive("rack"),
+			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+		},
+		{
+			name:        "subgroup annotation only",
+			annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "host"},
+			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := &leaderworkerset.LeaderWorkerSet{}
+			lws.Annotations = tc.annotations
+			lws.Spec.PlacementPolicy = tc.policy
+			lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](2)}
+			if diff := cmp.Diff(tc.want, EffectivePlacementPolicy(lws)); diff != "" {
+				t.Errorf("EffectivePlacementPolicy() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
