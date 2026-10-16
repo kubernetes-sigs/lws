@@ -865,6 +865,74 @@ func TestSubRoleScaleWaitsForInformerObservations(t *testing.T) {
 	}
 }
 
+func TestRemovedSliceRetriesStaleDeletion(t *testing.T) {
+	for _, reason := range []metav1.StatusReason{metav1.StatusReasonConflict, metav1.StatusReasonForbidden} {
+		t.Run(string(reason), func(t *testing.T) {
+			ds := newTestDisaggregatedSet()
+			lws := revisionLWS("old", testRolePrefill, 2, 2, time.Time{}, 2)
+			lws.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+			failure := &apierrors.StatusError{ErrStatus: metav1.Status{Reason: reason}}
+			c := interceptor.NewClient(newTestClient(ds, lws), interceptor.Funcs{
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return failure },
+			})
+			r := newTestReconciler(c)
+			r.LWSManager.pending = testPendingWrites(c)
+			result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+			if reason == metav1.StatusReasonConflict {
+				require.NoError(t, err)
+				require.Equal(t, time.Second, result.RequeueAfter)
+			} else {
+				require.ErrorIs(t, err, failure, "permission failures must remain errors")
+			}
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(lws), &leaderworkersetv1.LeaderWorkerSet{}))
+		})
+	}
+}
+
+func TestConditionalWritesDistinguishStaleObjectsFromOtherErrors(t *testing.T) {
+	for _, tc := range []struct {
+		reason    metav1.StatusReason
+		field     string
+		retry     bool
+		uncertain bool
+	}{
+		{metav1.StatusReasonConflict, "", true, false},
+		{metav1.StatusReasonInvalid, "metadata.uid", true, false},
+		{metav1.StatusReasonInvalid, "metadata.labels", false, false},
+		{metav1.StatusReasonForbidden, "", false, false},
+		{metav1.StatusReasonTimeout, "", false, true},
+	} {
+		t.Run(string(tc.reason)+"/"+tc.field, func(t *testing.T) {
+			failure := &apierrors.StatusError{ErrStatus: metav1.Status{Reason: tc.reason, Details: &metav1.StatusDetails{
+				Causes: []metav1.StatusCause{{Type: metav1.CauseTypeFieldValueInvalid, Field: tc.field}},
+			}}}
+			c := interceptor.NewClient(newTestClient(), interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				return failure
+			}})
+			manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, c))
+			manager.pending = testPendingWrites(nil)
+			lws := revisionLWS("A", testRolePrefill, 4, 4, time.Time{}, 4)
+			lwsErr := manager.mutate(t.Context(), lws, false, func(context.Context) error { return failure })
+			_, podErr := manager.preferSubRoleDeletion(t.Context(), replicagroups.Group{Leader: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "leader", UID: "uid", ResourceVersion: "1"},
+			}}, true)
+			for _, err := range []error{lwsErr, podErr} {
+				if tc.retry {
+					require.ErrorIs(t, err, errReplicaGroupsPending)
+				} else {
+					require.ErrorIs(t, err, failure, "genuine errors must remain visible")
+				}
+			}
+			if tc.uncertain {
+				require.Len(t, manager.pending.writes, 1, "a timeout must retain the write barrier")
+				require.NotNil(t, manager.pending.writes[client.ObjectKeyFromObject(lws)].retry)
+			} else {
+				require.Empty(t, manager.pending.writes, "a definitive rejection reserves nothing")
+			}
+		})
+	}
+}
+
 func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
 	lws := revisionLWS("A", testRolePrefill, 4, 4, time.Now(), 4)
 	base := newTestClient(lws)
@@ -880,7 +948,7 @@ func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
 	})
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 4}, [2]int{1, 1}, [2]int{})
 	err := NewLeaderWorkerSetManager(c).Scale(t.Context(), ds, lws, 2)
-	require.True(t, apierrors.IsConflict(err), "stale scale write must conflict: %v", err)
+	require.ErrorIs(t, err, errReplicaGroupsPending, "stale scale writes must retry")
 	assert.EqualValues(t, 3, getTestLWSReplicas(base, testNamespace, lws.Name))
 
 	// Enabling subroles between the baseline read and patch must also conflict.
@@ -889,7 +957,7 @@ func TestOrdinaryWritesRejectConcurrentChanges(t *testing.T) {
 		current.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey] = `{"pool":4}`
 	}
 	err = NewLeaderWorkerSetManager(c).UpdateInitialReplicas(t.Context(), ds, lws, 5)
-	require.True(t, apierrors.IsConflict(err), "ordinary baseline must conflict with live enablement: %v", err)
+	require.ErrorIs(t, err, errReplicaGroupsPending, "ordinary baseline must retry after live enablement")
 	live := &leaderworkersetv1.LeaderWorkerSet{}
 	require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), live))
 	assert.Equal(t, "4", live.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
@@ -926,7 +994,7 @@ func TestScaleRequiresObservedIdentityAndSpec(t *testing.T) {
 				require.NoError(t, err)
 				assert.EqualValues(t, 3, getTestLWSReplicas(c, testNamespace, live.Name))
 			} else {
-				require.True(t, apierrors.IsConflict(err), "changed scale input must retry: %v", err)
+				require.ErrorIs(t, err, errReplicaGroupsPending, "changed scale input must retry")
 				assert.Equal(t, getLWSReplicas(live), getTestLWSReplicas(c, testNamespace, live.Name))
 			}
 			if change == "sub-roles enabled" {
@@ -1857,7 +1925,7 @@ func TestScalerSeedDistinguishesBootstrapFromDrainedCapacity(t *testing.T) {
 						manager.client = interceptor.NewClient(base, interceptor.Funcs{Patch: func(_ context.Context, _ client.WithWatch, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 							return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), current.Name, errors.New("concurrent write"))
 						}})
-						require.True(t, apierrors.IsConflict(manager.Scale(t.Context(), ds, current, 4)))
+						require.ErrorIs(t, manager.Scale(t.Context(), ds, current, 4), errReplicaGroupsPending)
 						require.True(t, isUnscaledCreation(readTestLWS(t, base, current)), "rejected growth cannot retire bootstrap intent")
 					case "grown then zero":
 						for _, replicas := range []int{4, 0} {
@@ -1965,18 +2033,21 @@ func TestWriteReceiptRecovery(t *testing.T) {
 					if operation == "scale" {
 						return manager.Scale(t.Context(), ds, cachedLWS, 3)
 					}
-					err := manager.prepareSlice(t.Context(), ds, 0)
-					if errors.Is(err, errReplicaGroupsPending) {
-						return nil // Successful takeover writes wait for their receipt.
+					return manager.prepareSlice(t.Context(), ds, 0)
+				}
+				assertAccepted := func(err error) {
+					if operation == "takeover" {
+						require.ErrorIs(t, err, errReplicaGroupsPending, "successful takeover waits for its receipt")
+					} else {
+						require.NoError(t, err)
 					}
-					return err
 				}
 				require.Error(t, issue())
 				if tc.rejected {
 					require.Empty(t, manager.pending.writes, "a definitive rejection reserves nothing")
-					require.True(t, apierrors.IsConflict(issue()), "the stale cache still conflicts")
+					require.ErrorIs(t, issue(), errReplicaGroupsPending, "the stale cache still conflicts")
 					require.NoError(t, base.Get(t.Context(), key, cachedLWS))
-					require.NoError(t, issue(), "a fresh observation allows a new decision")
+					assertAccepted(issue()) // A fresh observation allows a new decision.
 				}
 
 				current := &leaderworkersetv1.LeaderWorkerSet{}
@@ -1999,7 +2070,7 @@ func TestWriteReceiptRecovery(t *testing.T) {
 				if !tc.applied && tc.statusChanged {
 					require.EqualValues(t, 4, getLWSReplicas(cachedLWS))
 					// A new decision based on the current object can now make progress.
-					require.NoError(t, issue())
+					assertAccepted(issue())
 					require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending)
 				}
 				require.NoError(t, base.Get(t.Context(), key, current))
@@ -2054,7 +2125,7 @@ func TestWriteReceiptRetiresDeletedChild(t *testing.T) {
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
 				require.False(t, current.DeletionTimestamp.IsZero(), "physical disappearance is not required")
 			case "replaced":
-				require.True(t, apierrors.IsConflict(manager.Scale(t.Context(), ds, lws, 1)), "an old decision cannot change the replacement")
+				require.ErrorIs(t, manager.Scale(t.Context(), ds, lws, 1), errReplicaGroupsPending, "an old decision cannot change the replacement")
 				require.NoError(t, base.Get(t.Context(), client.ObjectKeyFromObject(lws), current))
 				require.Equal(t, types.UID("replacement-uid"), current.UID)
 				require.EqualValues(t, 7, getLWSReplicas(current))
@@ -2503,8 +2574,51 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 				if change == "resource-version" {
 					require.Equal(t, "preserved", pod.Labels["concurrent"])
 				}
+				// Hash deletion preferences use the same guarded retry policy.
+				stale = pod.DeepCopy()
+				pod.Annotations = map[string]string{"user": "preserved"}
+				require.NoError(t, writer.Update(t.Context(), pod))
+				_, err = manager.preferSubRoleDeletion(t.Context(), replicagroups.Group{Leader: stale}, true)
+				require.ErrorIs(t, err, errReplicaGroupsPending)
+				require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+				require.NotContains(t, pod.Annotations, corev1.PodDeletionCost)
+				_, err = manager.preferSubRoleDeletion(t.Context(), replicagroups.Group{Leader: pod}, true)
+				require.NoError(t, err)
+				require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+				require.Equal(t, subRoleDeletionCost, pod.Annotations[corev1.PodDeletionCost])
+				require.Equal(t, "preserved", pod.Annotations["user"])
 			})
 		}
+	})
+	t.Run("conditional LWS scale", func(t *testing.T) {
+		lws := revisionLWS("scale-retry", testRolePrefill, 4, 0, time.Time{}, 4)
+		lws.UID = ""
+		lws.Spec.StartupPolicy = leaderworkersetv1.LeaderCreatedStartupPolicy
+		lws.Spec.RolloutStrategy.Type = leaderworkersetv1.RollingUpdateStrategyType
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "test", Image: "test.invalid/image"}}
+		require.NoError(t, writer.Create(t.Context(), lws))
+		cachedLWS := lws.DeepCopy()
+		cached := interceptor.NewClient(newTestClient(), interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+				cachedLWS.DeepCopyInto(obj.(*leaderworkersetv1.LeaderWorkerSet))
+				return nil
+			},
+		})
+		manager := NewLeaderWorkerSetManager(writeOnlyTestClient(t, writer))
+		manager.reader, manager.pending = cached, testPendingWrites(cached)
+		lws.Annotations["operator-note"] = "preserved"
+		require.NoError(t, writer.Update(t.Context(), lws))
+		ds := newTestDisaggregatedSet()
+		require.ErrorIs(t, manager.Scale(t.Context(), ds, cachedLWS, 3), errReplicaGroupsPending)
+		require.Empty(t, manager.pending.writes, "the rejected write did not change replicas")
+		require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(lws), cachedLWS)) // Deliver the watch update.
+		require.EqualValues(t, 4, getLWSReplicas(cachedLWS))
+		require.NoError(t, manager.Scale(t.Context(), ds, cachedLWS, 3))
+		require.ErrorIs(t, manager.pending.observed(t.Context(), ds.UID, "0"), errReplicaGroupsPending)
+		require.NoError(t, writer.Get(t.Context(), client.ObjectKeyFromObject(lws), cachedLWS))
+		require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
+		require.EqualValues(t, 3, getLWSReplicas(cachedLWS))
+		require.Equal(t, "preserved", cachedLWS.Annotations["operator-note"])
 	})
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
@@ -2654,7 +2768,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			require.Eventually(t, func() bool {
 				err := manager.prepareSlice(t.Context(), newTestDisaggregatedSet(), 0)
 				if err != nil {
-					require.True(t, errors.Is(err, errReplicaGroupsPending) || apierrors.IsConflict(err), "%v", err)
+					require.ErrorIs(t, err, errReplicaGroupsPending)
 				}
 				return err == nil
 			}, 5*time.Second, 10*time.Millisecond)
