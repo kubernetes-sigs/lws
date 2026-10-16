@@ -265,11 +265,11 @@ taints are used, as today.
 
 `getPatch` writes the effective placement for each level, the field first and
 the annotation second, into the revision (see
-[Update Semantics](#update-semantics)). The controller reads placement from the
-LeaderWorkerSet restored from a group's revision and writes the topology key
-into the same pod-template annotations it propagates today: the leader pod
-template in the LeaderWorkerSet controller and the worker StatefulSet template
-in the pod controller. The pod webhook builds the affinity terms from those pod
+[Update Semantics](#update-semantics)). The LeaderWorkerSet controller writes
+the effective topology key into the leader pod template annotations it
+propagates today. The pod controller copies the key from the group's leader pod
+into the worker StatefulSet template, since the leader was created from the
+group's own revision. The pod webhook builds the affinity terms from those pod
 annotations and does not change.
 
 Every other reader of the LeaderWorkerSet annotations moves to the same
@@ -290,7 +290,7 @@ resolver:
 | `type: None` or unset at either level | `topology` must be empty. |
 | `placementPolicy.subGroup` without subgroups defined | Rejected, as the annotation is today without `subGroupSize`. See [Interaction With SubGroup Placement](#interaction-with-subgroup-placement). |
 | Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. |
-| Field and annotation both set for one level | Rejected if the values differ, including `type: None` with the annotation set. |
+| Field and annotation both set for one level | Rejected if the field is `ExclusiveTopology` with a different key. A level whose `type` is `None` uses the annotation, since the API server defaults `type` to `None` whenever `placementPolicy` is set, including when only `subGroup` is. |
 | Replica-level policy or annotation with WAS gang or topology constraints at the selected level | Rejected, as rule 10 does for the annotation today. Subgroup-level placement stays allowed. See [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling). |
 | Non-`None` policy on a template that carries Kueue topology annotations | Admission warning. See [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling). |
 
@@ -308,10 +308,9 @@ annotation later. No group is replaced, and every revision carries its own
 placement, so a group still on an old revision keeps its constraint when its
 worker StatefulSet is rebuilt.
 
-Revisions created before this change carry no placement in their data. For a
-group on such a revision the pod controller takes the topology key from the
-group's leader pod, which carries the key it was created with. This covers a
-rollout that starts before the first post-upgrade revision replaces it.
+Revisions created before this change carry no placement in their data. The
+worker StatefulSet takes its key from the group's leader pod in every case, so a
+group on such a revision also keeps the key it was created with.
 
 ### Interaction With Workload-Aware Scheduling
 
@@ -408,11 +407,13 @@ annotation. Both sources produce the same revision, so:
 3. Changing the effective placement, through either source, creates a new
    revision and rolls out under `maxUnavailable` and `maxSurge`, replacing the
    untracked rollout above.
-4. `ApplyRevision` restores placement from the revision itself. When the
-   revision predates this change and carries no `placementPolicy`, it clears the
-   field on the restored object, so a field set after the upgrade is seen as a
-   change and the live annotation still supplies the value for unchanged
-   objects.
+4. `ApplyRevision` restores placement from the revision itself and ignores
+   the live annotations, so a revision without placement stays without it.
+   When the revision predates this change and carries no `placementPolicy`, the
+   restored object keeps the live field and annotations, as placement was not
+   part of the revision then. Moving between the annotation and the field
+   therefore keeps such a revision too, and a placement change on it behaves as
+   it does today until the next template change records a new revision.
 
 The field is not defaulted when absent, and an absent policy hashes the same as
 `type: None`, so objects without placement keep their revision.
