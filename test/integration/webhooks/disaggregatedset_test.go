@@ -87,12 +87,37 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 			}
 			gomega.Expect(fetched.Spec.ScalingPolicy).NotTo(gomega.BeNil())
 			gomega.Expect(fetched.Spec.ScalingPolicy.ScaleDownDuringRollout).To(gomega.Equal(want))
+			gomega.Expect(fetched.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(ptr.To[int32](2)))
 		},
 		ginkgo.Entry("omitted policy", nil, disaggregatedset.RolloutScaleDownPolicy(""), true),
 		ginkgo.Entry("empty policy defaults to Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{}, disaggregatedset.RolloutScaleDownDeferred, true),
 		ginkgo.Entry("explicit Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownDeferred}, disaggregatedset.RolloutScaleDownDeferred, true),
 		ginkgo.Entry("explicit Immediate", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownImmediate}, disaggregatedset.RolloutScaleDownImmediate, true),
 		ginkgo.Entry("invalid policy", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: "invalid"}, disaggregatedset.RolloutScaleDownPolicy(""), false),
+	)
+
+	ginkgo.DescribeTable("sub-role scale-up delay validation",
+		func(seconds *int32, valid bool) {
+			disagg := buildDisaggregatedSet().Obj()
+			disagg.Spec.ScalingPolicy = &disaggregatedset.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: seconds}
+			err := k8sClient.Create(ctx, disagg)
+			if !valid {
+				gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+				gomega.Expect(err.Error()).To(gomega.ContainSubstring("subRoleScaleUpDelaySeconds"))
+				return
+			}
+			gomega.Expect(err).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(seconds))
+			disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = nil
+			gomega.Expect(k8sClient.Update(ctx, disagg)).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds).To(gomega.Equal(ptr.To[int32](2)))
+			disagg.Spec.ScalingPolicy.SubRoleScaleUpDelaySeconds = ptr.To[int32](61)
+			gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, disagg))).To(gomega.BeTrue())
+		},
+		ginkgo.Entry("disabled", ptr.To[int32](0), true),
+		ginkgo.Entry("maximum", ptr.To[int32](60), true),
+		ginkgo.Entry("negative", ptr.To[int32](-1), false),
+		ginkgo.Entry("above maximum", ptr.To[int32](61), false),
 	)
 
 	type testValidationCase struct {
