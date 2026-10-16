@@ -207,8 +207,8 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		pod.Spec.Subdomain = pod.Name
 	}
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
 	// Set the controller owner reference for garbage collection and reconciliation.
 	if err := ctrl.SetControllerReference(&leaderSts, pod, scheme.Scheme); err != nil {

@@ -893,6 +893,11 @@ func TestPodCtrlReconcilePodExclusivePlacement(t *testing.T) {
 			lws := podCtrlBasicLWS()
 			lws.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: topologyKey}
 			leader := podCtrlLeaderPod(lws, "test-lws-0")
+			// The leader pod template carries the effective topology key.
+			if leader.Annotations == nil {
+				leader.Annotations = map[string]string{}
+			}
+			leader.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 			leader.Spec.NodeName = tc.nodeName
 			revision := podCtrlRevisionFor(t, scheme, lws, leader)
 

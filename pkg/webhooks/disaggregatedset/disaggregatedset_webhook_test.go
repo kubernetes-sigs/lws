@@ -430,7 +430,7 @@ func TestValidateCreate(t *testing.T) {
 						{
 							Name: "prefill",
 							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
 								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
 							},
 						},
@@ -458,7 +458,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										WorkerTemplate: corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
 										},
 									},
 								},
@@ -484,7 +484,7 @@ func TestValidateCreate(t *testing.T) {
 						{
 							Name: "prefill",
 							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
 								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
 							},
 						},
@@ -512,7 +512,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										LeaderTemplate: &corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
 										},
 									},
 								},
@@ -542,7 +542,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										WorkerTemplate: corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
 										},
 									},
 								},
@@ -1088,6 +1088,7 @@ func TestValidateUpdate(t *testing.T) {
 
 	t.Run("role annotations preserve legacy templates", func(t *testing.T) {
 		subgroupKey := leaderworkerset.SubGroupExclusiveKeyAnnotationKey
+		groupKey := leaderworkerset.ExclusiveKeyAnnotationKey
 		for _, tc := range []struct {
 			name                        string
 			oldAnnotations, annotations map[string]string
@@ -1134,6 +1135,17 @@ func TestValidateUpdate(t *testing.T) {
 			{
 				name:           "revalidate removed empty subgroup annotation",
 				oldAnnotations: map[string]string{subgroupKey: ""},
+				wantError:      "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize",
+			},
+			{
+				name:           "preserve unchanged exclusive-topology annotation",
+				oldAnnotations: map[string]string{groupKey: "rack"},
+				annotations:    map[string]string{groupKey: "rack", "example.com/note": "new"},
+			},
+			{
+				name:           "revalidate changed exclusive-topology annotation",
+				oldAnnotations: map[string]string{groupKey: "rack"},
+				annotations:    map[string]string{groupKey: "zone"},
 				wantError:      "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize",
 			},
 		} {
@@ -1718,6 +1730,84 @@ func TestValidateCreatePodTerminationPolicy(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidatePlacementWithRolePlacement(t *testing.T) {
+	const sliceTopology = "cloud.google.com/gke-nodepool"
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		policy      *leaderworkerset.PlacementPolicy
+		subGroups   bool
+		errorMsg    string
+	}{
+		{
+			name:     "group placementPolicy on the slice topology",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: sliceTopology},
+			errorMsg: "spec.roles[0].spec.placementPolicy.topology: Forbidden",
+		},
+		{
+			name: "subgroup placementPolicy on the slice topology",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: sliceTopology}},
+			subGroups: true,
+			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.topology: Forbidden",
+		},
+		{
+			name:   "group placementPolicy on a finer topology",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"},
+		},
+		{
+			name: "subgroup placementPolicy on a finer topology",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"}},
+			subGroups: true,
+		},
+		{
+			name:        "exclusive-topology annotation on a finer topology",
+			annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "kubernetes.io/hostname"},
+		},
+		{
+			name:        "subgroup-exclusive-topology annotation on a finer topology",
+			annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "kubernetes.io/hostname"},
+			subGroups:   true,
+		},
+		{
+			name:   "placementPolicy None",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone},
+		},
+	}
+
+	webhook := &DisaggregatedSetWebhook{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2)), PlacementPolicy: tt.policy}
+			if tt.subGroups {
+				spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To(int32(1))}
+			}
+			obj := &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: sliceTopology,
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{Name: "prefill", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Annotations: tt.annotations}, Spec: spec}},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			}
+			_, err := webhook.ValidateCreate(context.Background(), obj)
+			if tt.errorMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.errorMsg)
 		})
 	}
 }

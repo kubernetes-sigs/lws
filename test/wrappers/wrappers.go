@@ -85,6 +85,14 @@ func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacement() *LeaderWorkerSetW
 	return lwsWrapper
 }
 
+func (lwsWrapper *LeaderWorkerSetWrapper) ExclusivePlacementPolicy() *LeaderWorkerSetWrapper {
+	lwsWrapper.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+		Type:     leaderworkerset.PlacementExclusiveTopology,
+		Topology: "cloud.google.com/gke-nodepool",
+	}
+	return lwsWrapper
+}
+
 func (lwsWrapper *LeaderWorkerSetWrapper) RestartGroupAfterStart() *LeaderWorkerSetWrapper {
 	lwsWrapper.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.RecreateGroupAfterStart
 	return lwsWrapper
