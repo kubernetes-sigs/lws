@@ -290,6 +290,13 @@ type SubRoleStatus struct {
 	// +required
 	Name string `json:"name"`
 
+	// DesiredReplicas is the number of replica groups the controller is driving
+	// this sub-role toward, totalled across slices: its replicas, or the target of
+	// its DisaggregatedSetRoleScaler when its scaling mode is External. It is unset
+	// while that target is unknown.
+	// +optional
+	DesiredReplicas *int32 `json:"desiredReplicas,omitempty"`
+
 	// Replicas is the number of replica groups assigned to this sub-role.
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
@@ -308,6 +315,15 @@ type RoleStatus struct {
 	// Name is the parent role name.
 	// +required
 	Name string `json:"name"`
+
+	// DesiredReplicas is the number of replicas the controller is driving this role
+	// toward, totalled across slices: its replicas, or the target of its
+	// DisaggregatedSetRoleScaler when its scaling mode is External. A partitioned
+	// role reports the sum of its sub-role targets. It is unset while any of those
+	// targets is unknown, for example before the scaler exists, so it is never
+	// mistaken for a requested zero. The Available condition is judged against it.
+	// +optional
+	DesiredReplicas *int32 `json:"desiredReplicas,omitempty"`
 
 	// Replicas is the total number of replicas for this role.
 	// +optional
