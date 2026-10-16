@@ -762,11 +762,7 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 		}
 		gomega.Expect(k8sClient.Create(ctx, ds)).To(gomega.Succeed())
 		recorder := events.NewFakeRecorder(100)
-		manager := disaggregatedsetcontroller.NewLeaderWorkerSetManager(k8sClient)
-		reconciler := &disaggregatedsetcontroller.DisaggregatedSetReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Record: recorder,
-			LWSManager: manager, ScalerManager: disaggregatedsetcontroller.NewScalerManager(k8sClient, recorder),
-		}
+		reconciler := disaggregatedsetcontroller.NewDisaggregatedSetReconciler(k8sClient, k8sClient.Scheme(), recorder)
 		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
 		result, err := reconciler.Reconcile(ctx, request)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

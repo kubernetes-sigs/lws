@@ -61,13 +61,7 @@ func revisionHashVersion(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) 
 
 func newTestDisaggregatedSetReconciler(c client.Client, scheme *runtime.Scheme) *controller.DisaggregatedSetReconciler {
 	recorder := events.NewFakeRecorder(100)
-	return &controller.DisaggregatedSetReconciler{
-		Client:        c,
-		Scheme:        scheme,
-		LWSManager:    controller.NewLeaderWorkerSetManager(c),
-		ScalerManager: controller.NewScalerManager(c, recorder),
-		Record:        recorder,
-	}
+	return controller.NewDisaggregatedSetReconciler(c, scheme, recorder)
 }
 
 // createOldLeaderWorkerSet creates a LeaderWorkerSet representing an existing LWS with the given revision.
