@@ -340,10 +340,10 @@ LWS scale and group-label assignment
 
 For each `(slice, revision, parent role)`, the Ordinal assignment algorithm:
 
-1. Saves pending reductions/transfers without changing issued counts; pure growth publishes directly.
-2. Repairs partial/newborn labels, then waits for the whole retained Ordinal prefix to be Ready.
+1. Saves pending reductions/transfers and per-child Ready floors without changing issued counts; pure growth publishes directly. Each floor is the child's observed Ready count minus its accepted reduction, clamped at zero.
+2. Repairs partial/newborn labels, then checks that the actual retained Ordinal prefix can supply those floors. Unrelated retained groups need not become Ready.
 3. Keeps valid assignments and fills deficits one group at a time, reobserving workers-first,
-   UID/resource-version guarded writes; donors retain `min(issued, pending)` coherent Ready groups.
+   UID/resource-version guarded writes; donors retain their saved coherent Ready floor, including between individual worker-label writes.
 4. Observes survivors, clears outgoing labels, then atomically publishes issued counts and
    `LWS.spec.replicas = sum(counts)`, clearing pending work. The observer tracks native deletions.
 
@@ -355,10 +355,7 @@ pending work. It never also deletes its preferred victims.
 
 Temporary duplicate labels do not grant planner capacity: `[A,A,B]` may become `[A,B,B]`
 before shrinking to `[A,B]`. Growing `[A,A]` to `A=1,B=2` still requires physical replicas 3.
-Pending targets survive retries/restarts and cannot be superseded. A missing/unhealthy
-Ordinal retained group or an unsatisfied Hash Ready floor stalls subsequent planning,
-even if budgets allow progress; recovery may require user intervention. Newborn/partial
-labels repair before health checks to avoid deadlock.
+Pending targets and Ready floors survive retries/restarts and cannot be superseded. Missing Ordinal slots or too few eligible Ready survivors to cover the saved floors still stall subsequent planning; recovery may require user intervention. An unready retained group alone no longer blocks a safe reduction. Newborn/partial labels repair before health checks to avoid deadlock. Legacy Ordinal count-only plans finish under their original whole-prefix readiness rule; new plans use the saved floors.
 
 No separate assignment CRD is needed. Live labels provide stickiness, and the desired
 counts reconstruct missing labels after a Pod restart.
