@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -110,7 +109,7 @@ func TestManagerSyncGroupReplacementPolicy(t *testing.T) {
 			manager := NewLeaderWorkerSetManager(fakeClient)
 
 			err := manager.SyncGroupReplacementPolicy(context.Background(), observed, leaderworkersetv1.GroupReplacementImmediate)
-			require.True(t, apierrors.IsConflict(err), "stale policy write must conflict: %v", err)
+			require.ErrorIs(t, err, errReplicaGroupsPending, "stale policy write must retry")
 			var got leaderworkersetv1.LeaderWorkerSet
 			require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(live), &got))
 			require.Equal(t, live, &got, "a stale observation must not change the live object")

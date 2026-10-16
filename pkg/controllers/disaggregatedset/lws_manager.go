@@ -60,6 +60,16 @@ func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {
 
 var errReplicaGroupsPending = errors.New("replica-group observation no longer matches the rollout")
 
+// Rejected writes from stale observations need a normal retry. Genuine
+// validation errors and uncertain write outcomes must remain errors.
+func retryStaleWrite(err error) error {
+	cause, _ := apierrors.StatusCause(err, metav1.CauseTypeFieldValueInvalid)
+	if apierrors.IsConflict(err) || apierrors.IsInvalid(err) && cause.Field == "metadata.uid" {
+		return errReplicaGroupsPending
+	}
+	return err
+}
+
 type replicaReadiness struct {
 	spec, initial int // Issued and frozen baseline counts for a child role.
 	raw           int // Ready groups, including groups committed to removal.
@@ -391,8 +401,7 @@ func (manager *LeaderWorkerSetManager) scale(ctx context.Context, ds *disaggrega
 	if leaderWorkerSet.UID != observed.UID || leaderWorkerSet.Generation != observed.Generation ||
 		getLWSReplicas(leaderWorkerSet) != getLWSReplicas(observed) || !leaderWorkerSet.DeletionTimestamp.IsZero() ||
 		leaderWorkerSet.Annotations[subRoleReplicasAnnotation] != "" {
-		return apierrors.NewConflict(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), name,
-			errors.New("LeaderWorkerSet changed since scale observation"))
+		return errReplicaGroupsPending
 	}
 
 	before := leaderWorkerSet.DeepCopy()
@@ -770,9 +779,11 @@ func (manager *LeaderWorkerSetManager) mutate(ctx context.Context, lws *leaderwo
 		delete(lws.Annotations, observationReceiptAnnotation)
 	}
 	if manager.pending == nil {
-		return apply(ctx)
+		return retryStaleWrite(apply(ctx))
 	}
-	return manager.pending.mutate(ctx, lws, deleting, apply)
+	// Classify after receipt tracking has handled the original API error. In
+	// particular, a timeout must keep its barrier until the outcome is observed.
+	return retryStaleWrite(manager.pending.mutate(ctx, lws, deleting, apply))
 }
 
 // prepareSlice invalidates conditional LWS requests left in flight by a previous
