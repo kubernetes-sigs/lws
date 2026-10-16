@@ -96,7 +96,7 @@ endif
 
 # Update these variables when preparing a new release or a release branch.
 # Then run `make prepare-release-branch`
-RELEASE_VERSION=v0.11.1
+RELEASE_VERSION=v1.0.0
 RELEASE_BRANCH=main
 # Version used form Helm which is not using the leading "v"
 CHART_VERSION := $(shell echo $(RELEASE_VERSION) | cut -c2-)

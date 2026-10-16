@@ -174,7 +174,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: registry.k8s.io/lws/lws:v0.11.1
+          value: registry.k8s.io/lws/lws:v1.0.0
 
   # ports
 

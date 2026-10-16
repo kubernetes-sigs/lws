@@ -7,7 +7,7 @@ renders the webhook and metrics certificates with a self-signed Issuer when enab
         app.kubernetes.io/instance: serving-cert
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/name: lws
-        app.kubernetes.io/version: v0.11.1
+        app.kubernetes.io/version: v1.0.0
         helm.sh/chart: lws-0.1.0
       name: lws-serving-cert
       namespace: lws-system
@@ -28,7 +28,7 @@ renders the webhook and metrics certificates with a self-signed Issuer when enab
         app.kubernetes.io/instance: serving-cert
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/name: lws
-        app.kubernetes.io/version: v0.11.1
+        app.kubernetes.io/version: v1.0.0
         helm.sh/chart: lws-0.1.0
       name: lws-selfsigned-issuer
       namespace: lws-system
@@ -42,7 +42,7 @@ renders the webhook and metrics certificates with a self-signed Issuer when enab
         app.kubernetes.io/instance: serving-cert
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/name: lws
-        app.kubernetes.io/version: v0.11.1
+        app.kubernetes.io/version: v1.0.0
         helm.sh/chart: lws-0.1.0
       name: lws-metrics-cert
       namespace: lws-system
