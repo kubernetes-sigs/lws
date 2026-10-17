@@ -5,7 +5,7 @@ release:
   name: lws
   namespace: lws-system
 tests:
-  - it: adds the DisaggregatedSet validating webhook by default
+  - it: includes the DisaggregatedSet validating webhook
     documentSelector:
       path: kind
       value: ValidatingWebhookConfiguration
@@ -24,7 +24,7 @@ tests:
                 path: /validate-disaggregatedset-x-k8s-io-v1-disaggregatedset
           any: true
 
-  - it: omits the DisaggregatedSet validating webhook when disabled
+  - it: ignores the removed enableDisaggregatedSet option from saved values
     set:
       enableDisaggregatedSet: false
     documentSelector:
@@ -33,8 +33,8 @@ tests:
     asserts:
       - lengthEqual:
           path: webhooks
-          count: 2
-      - notContains:
+          count: 3
+      - contains:
           path: webhooks
           content:
             name: vdisaggregatedset.kb.io
