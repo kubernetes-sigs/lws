@@ -42,6 +42,26 @@ tests:
           path: data["controller_manager_config.yaml"]
           pattern: "(?m)^internalCertManagement:\\n  enable: false$"
 
+  - it: renders leader election timing when set
+    set:
+      leaderElection:
+        leaseDuration: 60s
+        renewDeadline: 30s
+        retryPeriod: 6s
+    asserts:
+      - matchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "(?m)^leaderElection:\\n  leaderElect: true\\n  leaseDuration: 60s\\n  renewDeadline: 30s\\n  retryPeriod: 6s\\nwebhook:$"
+
+  - it: ignores leader election keys other than timing
+    set:
+      leaderElection:
+        leaderElect: false
+    asserts:
+      - matchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "(?m)^leaderElection:\\n  leaderElect: true\\nwebhook:$"
+
   - it: renders feature gates when set
     set:
       featureGates:
