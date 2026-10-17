@@ -14,7 +14,7 @@ enableCertManager: false
 # enableDisaggregatedSet installs the DisaggregatedSet editor/viewer/admin
 # ClusterRoles and the validating webhook. The CRD (under crds/), the
 # bundled controller, and its manager RBAC are always installed.
-enableDisaggregatedSet: false
+enableDisaggregatedSet: true
 # replicaCount above 1 runs standby managers: leader election keeps a single
 # active reconciler, while every replica serves the webhooks.
 replicaCount: 1

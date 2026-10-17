@@ -64,10 +64,17 @@ for more information on installing LWS with metrics using our Helm chart.
 
 ##### DisaggregatedSet
 
-The DisaggregatedSet CRD and the manager permissions required by its bundled
-controller are always installed with the chart. To also install the
-editor/viewer/admin ClusterRoles and validating webhook, set
-`enableDisaggregatedSet` to `true`.
+The DisaggregatedSet CRDs, controller permissions, validating webhook, and
+editor/viewer/admin ClusterRoles are installed by default. No extra flag is needed.
+Set `enableDisaggregatedSet=false` to omit only the validating webhook and
+editor/viewer/admin ClusterRoles; it does not disable the bundled controller or CRDs.
+
+Published charts through v1.0.0 default this value to `false` and still need
+`enableDisaggregatedSet=true`. When upgrading to a chart with the new default,
+`--reuse-values` can retain the old `false` value. Use `--reset-then-reuse-values`
+to adopt new defaults while retaining explicit overrides. If the release explicitly
+saved `enableDisaggregatedSet=false`, override it with
+`--set enableDisaggregatedSet=true` when upgrading to enable validation.
 
 ### Upgrading the chart
 
@@ -133,7 +140,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
 | `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
-| `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
+| `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRDs, bundled controller, and its required RBAC rules are always installed) | `true` |
 | `replicaCount`                             | Number of manager replicas (leader election keeps one active) | `1`                                  |
 | `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
 | `pdb.enabled`                              | Create a PodDisruptionBudget for the manager (only when `replicaCount` > 1) | `true`                 |

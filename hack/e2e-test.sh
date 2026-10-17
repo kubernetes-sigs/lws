@@ -217,7 +217,6 @@ function upgrade_to_current_helm {
         --set image.manager.repository="$image_repo" \
         --set image.manager.tag="$image_tag" \
         --set image.manager.pullPolicy=IfNotPresent \
-        --set enableDisaggregatedSet=true \
         --wait --timeout 5m
     $KUBECTL rollout status deployment/lws-controller-manager \
         -n "$LWS_NAMESPACE" --timeout=5m
