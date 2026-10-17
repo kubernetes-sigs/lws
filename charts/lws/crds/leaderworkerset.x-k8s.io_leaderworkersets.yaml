@@ -17522,6 +17522,57 @@ spec:
                   required:
                     - subdomainPolicy
                   type: object
+                placementPolicy:
+                  description: |-
+                    placementPolicy defines the topology placement of each group and, in
+                    subGroup, of each subgroup. It replaces the
+                    leaderworkerset.sigs.k8s.io/exclusive-topology and
+                    leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology annotations, and
+                    setting a level in both with different values is rejected. Changing the
+                    effective placement creates a new revision.
+                  properties:
+                    subGroup:
+                      description: |-
+                        subGroup defines the topology placement of each subgroup within a group.
+                        It requires leaderWorkerTemplate.subGroupPolicy.
+                      properties:
+                        topology:
+                          description: |-
+                            topology is the node label key that defines the topology domain of a
+                            subgroup. Required when type is ExclusiveTopology.
+                          type: string
+                        type:
+                          default: None
+                          description: type selects the subgroup level placement guarantee. Defaults to None.
+                          enum:
+                            - None
+                            - ExclusiveTopology
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                        - message: topology is required when type is ExclusiveTopology
+                          rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
+                        - message: topology must be empty when type is None
+                          rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
+                    topology:
+                      description: |-
+                        topology is the node label key that defines the topology domain of a
+                        group, for example a rack, a block or a zone. Required when type is
+                        ExclusiveTopology.
+                      type: string
+                    type:
+                      default: None
+                      description: type selects the group level placement guarantee. Defaults to None.
+                      enum:
+                        - None
+                        - ExclusiveTopology
+                      type: string
+                  type: object
+                  x-kubernetes-validations:
+                    - message: topology is required when type is ExclusiveTopology
+                      rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
+                    - message: topology must be empty when type is None
+                      rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
                 podTerminationPolicy:
                   default: Sequential
                   description: |-
