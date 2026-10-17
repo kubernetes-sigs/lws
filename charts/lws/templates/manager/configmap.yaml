@@ -12,6 +12,9 @@ data:
     kind: Configuration
     leaderElection:
       leaderElect: true
+      {{- with pick .Values.leaderElection "leaseDuration" "renewDeadline" "retryPeriod" }}
+{{ toYaml . | indent 6 }}
+      {{- end }}
     webhook:
       port: {{ .Values.service.port }}
     internalCertManagement:

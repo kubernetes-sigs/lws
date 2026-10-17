@@ -159,3 +159,4 @@ The following table lists the configurable parameters of the LWS chart and their
 | `affinity`                                 | Affinity                                       | `{}`                                                |
 | `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |
 | `featureGates`                             | Alpha LWS feature gates, e.g. `{WorkloadAwareScheduling: true}` | `{}`                               |
+| `leaderElection`                           | Manager lease timing (`leaseDuration`, `renewDeadline`, `retryPeriod`); controller defaults when empty | `{}` |
