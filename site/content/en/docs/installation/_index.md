@@ -286,17 +286,28 @@ For kubectl and Kustomize installs, the standard v0.9.0+ manifests include the D
 CRD, controller permissions, and validating webhook. No separate DisaggregatedSet installation
 step is required.
 
-The Helm chart always includes the validating webhook and user-facing
-editor/viewer/admin ClusterRoles. Follow the standard
-[Helm installation](#install-by-helm); no separate DisaggregatedSet step is needed.
+For Helm charts up to and including **v1.0.0**, you must pass
+`--set enableDisaggregatedSet=true` to install the validating webhook and
+user-facing editor/viewer/admin ClusterRoles. The controller and CRDs are already included.
 
-The `enableDisaggregatedSet` option has been removed. Saved `false` values are
-ignored, including with `--reuse-values`: upgrading enables validation for
-DisaggregatedSet create/update requests that previously bypassed the webhook.
-Remove the obsolete option from your values files.
+This option was intended to be removed for v1.0.0, but was accidentally left in
+the chart. Starting with **v1.0.1**, it is removed: the validating webhook and
+these ClusterRoles are always installed.
 
-Published charts through v1.0.0 still require `--set enableDisaggregatedSet=true`
-when installing or upgrading to those older chart versions.
+Install v1.0.1 without the extra flag:
+
+```shell
+helm install lws oci://registry.k8s.io/lws/charts/lws \
+  --version=1.0.1 \
+  --namespace lws-system \
+  --create-namespace \
+  --wait --timeout 300s
+```
+
+In v1.0.1 and later, old `enableDisaggregatedSet` values are ignored, even with
+`--reuse-values`. If you previously set it to `false`, upgrading enables webhook
+validation for new or updated DisaggregatedSets. You can remove the obsolete
+option from your values files.
 
 ### Verify Installation
 
