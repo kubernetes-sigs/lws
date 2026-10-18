@@ -252,6 +252,18 @@ with DisaggregatedSet reconciliation.</p>
 <tbody>
     
   
+<tr><td><code>scaleUpDuringRollout</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RolloutScaleUpPolicy"><code>RolloutScaleUpPolicy</code></a>
+</td>
+<td>
+   <p>ScaleUpDuringRollout controls target growth while old revisions remain.
+RolloutCoupled preserves readiness-paced growth. Immediate also tops up
+target replicas to desired minus replicas requested from all old revisions
+of the same role. Loading groups count, so readiness loss alone does not
+trigger extra growth. Old-revision retirement checks are unchanged.
+Renamed-role replacement limits still apply.</p>
+</td>
+</tr>
 <tr><td><code>scaleDownDuringRollout</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy"><code>RolloutScaleDownPolicy</code></a>
 </td>
@@ -316,8 +328,8 @@ Changing Slices scales copies up or down and does not trigger a rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
 </td>
 <td>
-   <p>ScalingPolicy controls scale-down during rolling updates. Omit it to
-preserve the default Deferred behavior.</p>
+   <p>ScalingPolicy controls scale-up and scale-down during rolling updates.
+Omit it for RolloutCoupled growth and Deferred target reductions.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>
@@ -621,6 +633,21 @@ For roles still present, reductions preserve effective desired - maxUnavailable
 Ready replicas, or avoid worsening a shortfall if fewer are currently Ready.
 Deferred External roles use at least the target's current Spec as effective
 desired while old replicas of that role remain.</p>
+
+
+
+
+## `RolloutScaleUpPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScaleUpPolicy}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [DisaggregatedSetScalingPolicy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy)
+
+
+<p>RolloutScaleUpPolicy controls how target growth catches up with demand during
+a rolling update. Both policies preserve rollout surge and availability bounds.</p>
 
 
 

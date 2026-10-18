@@ -106,6 +106,20 @@ type RoleScaling struct {
 	Mode RoleScalingMode `json:"mode,omitempty"`
 }
 
+// RolloutScaleUpPolicy controls how target growth catches up with demand during
+// a rolling update. Both policies preserve rollout surge and availability bounds.
+// +kubebuilder:validation:Enum=RolloutCoupled;Immediate
+type RolloutScaleUpPolicy string
+
+const (
+	// RolloutScaleUpCoupled keeps target growth paced by rollout readiness.
+	RolloutScaleUpCoupled RolloutScaleUpPolicy = "RolloutCoupled"
+
+	// RolloutScaleUpImmediate fills gaps between desired and requested replicas
+	// without waiting for existing groups to become Ready.
+	RolloutScaleUpImmediate RolloutScaleUpPolicy = "Immediate"
+)
+
 // RolloutScaleDownPolicy controls when demand-driven target replica reductions are
 // considered during an active rolling update. Both policies allow scale-up and
 // old-revision retirement within the rollout's availability and surge bounds.
@@ -138,6 +152,16 @@ const (
 // DisaggregatedSetScalingPolicy configures how replica target changes interact
 // with DisaggregatedSet reconciliation.
 type DisaggregatedSetScalingPolicy struct {
+	// ScaleUpDuringRollout controls target growth while old revisions remain.
+	// RolloutCoupled preserves readiness-paced growth. Immediate also tops up
+	// target replicas to desired minus replicas requested from all old revisions
+	// of the same role. Loading groups count, so readiness loss alone does not
+	// trigger extra growth. Old-revision retirement checks are unchanged.
+	// Renamed-role replacement limits still apply.
+	// +optional
+	// +kubebuilder:default=RolloutCoupled
+	ScaleUpDuringRollout RolloutScaleUpPolicy `json:"scaleUpDuringRollout,omitempty"`
+
 	// ScaleDownDuringRollout controls demand-driven target replica reductions.
 	// Deferred waits until old revisions finish draining. Immediate considers
 	// reductions during the rollout, preferring safe old-revision drains.
@@ -251,8 +275,8 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
 
-	// ScalingPolicy controls scale-down during rolling updates. Omit it to
-	// preserve the default Deferred behavior.
+	// ScalingPolicy controls scale-up and scale-down during rolling updates.
+	// Omit it for RolloutCoupled growth and Deferred target reductions.
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 

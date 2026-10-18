@@ -19603,8 +19603,8 @@ spec:
                 x-kubernetes-list-type: map
               scalingPolicy:
                 description: |-
-                  ScalingPolicy controls scale-down during rolling updates. Omit it to
-                  preserve the default Deferred behavior.
+                  ScalingPolicy controls scale-up and scale-down during rolling updates.
+                  Omit it for RolloutCoupled growth and Deferred target reductions.
                 properties:
                   scaleDownDuringRollout:
                     default: Deferred
@@ -19615,6 +19615,19 @@ spec:
                       Both policies allow scale-up and old-revision drains within rollout bounds.
                     enum:
                     - Deferred
+                    - Immediate
+                    type: string
+                  scaleUpDuringRollout:
+                    default: RolloutCoupled
+                    description: |-
+                      ScaleUpDuringRollout controls target growth while old revisions remain.
+                      RolloutCoupled preserves readiness-paced growth. Immediate also tops up
+                      target replicas to desired minus replicas requested from all old revisions
+                      of the same role. Loading groups count, so readiness loss alone does not
+                      trigger extra growth. Old-revision retirement checks are unchanged.
+                      Renamed-role replacement limits still apply.
+                    enum:
+                    - RolloutCoupled
                     - Immediate
                     type: string
                   subRoleScaleDelaySeconds:
