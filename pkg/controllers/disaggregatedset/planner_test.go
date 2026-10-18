@@ -1099,6 +1099,78 @@ func TestHardNewReplicaLimits(t *testing.T) {
 	assert.Equal(t, 8, hardNewReplicaLimits(snapshotForRolloutState(state))[0])
 }
 
+func TestImmediateScaleUpPlannerTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name                                        string
+		initial, old, parked, issued, ready, target []int
+		want                                        []int
+	}{
+		{"loading groups count", []int{4}, []int{4}, nil, []int{2}, []int{0}, []int{10}, []int{6}},
+		{"parked revisions count", []int{2}, []int{2}, []int{3}, []int{2}, []int{0}, []int{10}, []int{5}},
+		{"candidate ordering does not change top-up", []int{3}, []int{3}, []int{2}, []int{2}, []int{0}, []int{10}, []int{5}},
+		{"asymmetric request bypasses only growth pacing", []int{4, 4}, []int{4, 4}, nil, []int{2, 2}, []int{0, 0}, []int{20, 6}, []int{16, 2}},
+		{"one old role already drained", []int{4, 4}, []int{0, 4}, nil, []int{2, 2}, []int{0, 0}, []int{10, 10}, []int{10, 6}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := make([]RollingUpdateConfig, len(tc.target))
+			for i := range cfg {
+				cfg[i].MaxSurge = 1
+			}
+			for _, downImmediately := range []bool{false, true} {
+				state := rolloutState(tc.initial, tc.old, tc.old, tc.parked, tc.parked, tc.issued, tc.ready, tc.target, cfg)
+				state.ScaleUpDuringRollout, state.ScaleDownDuringRollout = true, downImmediately
+				step := ComputeNextStep(state)
+				require.NotNil(t, step)
+				require.Equal(t, tc.want, step.New)
+				require.Equal(t, tc.old, step.Past, "requesting groups cannot pay for deleting Ready groups")
+				require.Equal(t, OrdinaryStep, step.Kind)
+				require.NoError(t, validateUpdateStep(state, step))
+				assertScalingSafety(t, state, step)
+
+				// A duplicate observation or a restart cannot spend the top-up twice.
+				state.Target.SpecReplicas = slices.Clone(step.New)
+				for range 3 {
+					require.Nil(t, ComputeNextStep(state))
+				}
+				// Still inside surge, but outside the requested-count top-up and
+				// ordinary readiness allowance: the executor must reject this.
+				forged := &UpdateStep{Past: slices.Clone(tc.old), New: slices.Clone(tc.want)}
+				forged.New[len(forged.New)-1]++
+				require.Error(t, validateUpdateStep(state, forged))
+			}
+		})
+	}
+}
+
+func TestImmediateScaleUpDoesNotCreditPlannedDrains(t *testing.T) {
+	state := rolloutState([]int{5, 5}, []int{5, 5}, []int{5, 5}, nil, nil,
+		[]int{2, 2}, []int{2, 2}, []int{6, 6}, configs([]int{0, 0}, []int{2, 2}))
+	state.ScaleUpDuringRollout = true
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	require.Less(t, step.Past[0], 5)
+	require.Equal(t, []int{2, 2}, step.New)
+	require.NoError(t, validateUpdateStep(state, step))
+	step.New = []int{3, 3}
+	require.Error(t, validateUpdateStep(state, step), "old Spec has not actually decreased yet")
+}
+
+func TestImmediateScaleUpPreservesRenamedRolePacing(t *testing.T) {
+	for _, ready := range [][]int{{0, 0, 1, 0}, {0, 0, 1, 1}} {
+		state := rolloutState([]int{4, 4, 0, 0}, []int{4, 4, 0, 0}, []int{4, 4, 0, 0}, nil, nil,
+			[]int{0, 0, 1, 1}, ready, []int{0, 0, 20, 20}, configs([]int{0, 0, 20, 1}, []int{1, 1, 0, 0}))
+		ordinary := ComputeNextStep(state)
+		state.ScaleUpDuringRollout = true
+		step := ComputeNextStep(state)
+		require.Equal(t, ordinary, step, "a renamed role's absent history is not fresh scale-up demand")
+		if step != nil {
+			require.NoError(t, validateUpdateStep(state, step))
+		}
+		forged := &UpdateStep{Past: slices.Clone(state.ActiveOld.SpecReplicas), New: []int{0, 0, 20, 1}}
+		require.Error(t, validateUpdateStep(state, forged), "larger surge must not bypass renamed-role coordination")
+	}
+}
+
 func TestComputeAllStepsCompletes(t *testing.T) {
 	for _, tc := range []struct {
 		name               string

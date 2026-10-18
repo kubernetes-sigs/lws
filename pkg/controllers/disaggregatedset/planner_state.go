@@ -62,6 +62,8 @@ type RolloutState struct {
 	Config               []RollingUpdateConfig
 	// Opt-in target reductions use the latest desired count as the surge base.
 	ScaleDownDuringRollout bool
+	// Opt-in growth fills the gap between desired and already-requested groups.
+	ScaleUpDuringRollout bool
 }
 
 // A live required role whose budget permits zero Ready groups explicitly

@@ -98,6 +98,7 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 	t.Parallel() // Each rollout builds its own fake client and executor.
 	type layout struct {
 		name               string
+		up                 disaggregatedsetv1.RolloutScaleUpPolicy
 		initial, current   [][]int32
 		desired, target    []int32
 		surge, unavailable []int
@@ -154,13 +155,18 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 			}
 		}
 	}
+	for _, tc := range slices.Clone(cases) {
+		tc.name += "/ImmediateScaleUp"
+		tc.up = disaggregatedsetv1.RolloutScaleUpImmediate
+		cases = append(cases, tc)
+	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		for _, policy := range []disaggregatedsetv1.RolloutScaleDownPolicy{disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
 			for _, tc := range cases {
 				t.Run(fmt.Sprintf("%s/%s/%s", identity, policy, tc.name), func(t *testing.T) {
 					t.Logf("initial=%v current=%v desired=%v surge=%v unavailable=%v", tc.initial, tc.current, tc.desired, tc.surge, tc.unavailable)
 					ds := newTestDisaggregatedSet()
-					ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: policy}
+					ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: tc.up, ScaleDownDuringRollout: policy}
 					desired, budgets := map[string]int{}, map[string]int{}
 					for role, count := range tc.desired {
 						name := fmt.Sprintf("role-%d", role)
@@ -869,6 +875,18 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 			oldSpec[i] += parked.SpecReplicas[i]
 		}
 	}
+	hasDisjointOld := false
+	for index, revision := range revisions {
+		if index == 1 {
+			continue // The target is not old history.
+		}
+		hasReplicas, overlaps := false, false
+		for i, count := range revision.spec {
+			hasReplicas = hasReplicas || count > 0
+			overlaps = overlaps || (revision.required[i] && state.Target.DesiredReplicas[i] > 0)
+		}
+		hasDisjointOld = hasDisjointOld || (hasReplicas && !overlaps)
+	}
 	n := len(state.Config)
 	beforeServing, afterServing, beforeRole, afterRole := make([]int, n), make([]int, n), make([]int, n), make([]int, n)
 	parkedServing := make([]int, n)
@@ -901,7 +919,8 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		}
 	}
 	phaseTargets, growing, oldReference, oldProgress, oldNext := make([]int, n), make([]int, n), make([]int, n), make([]int, n), make([]int, n)
-	scaleCorrection := make([]bool, n)
+	scaleCorrection, growthCorrection := make([]bool, n), make([]bool, n)
+	requestedTopUp := make([]int, n)
 	surgeBaselines := slices.Clone(state.Target.DesiredReplicas)
 	scaleUp := false
 	steps := 0
@@ -928,6 +947,10 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		}
 		phaseTargets[i] = max(state.Target.SpecReplicas[i], phaseTargets[i])
 		growing[i] = max(state.Target.SpecReplicas[i], step.New[i])
+		if state.ScaleUpDuringRollout && (state.AvailabilityBaseline[i] > 0 || !hasDisjointOld) {
+			requestedTopUp[i] = max(0, state.Target.DesiredReplicas[i]-oldSpec[i])
+			growthCorrection[i] = step.New[i] <= requestedTopUp[i]
+		}
 		oldReference[i] = state.ActiveOld.InitialReplicas[i]
 		if (state.ScaleDownDuringRollout || scaleUp) && state.Target.DesiredReplicas[i] > 0 {
 			physical := oldSpec[i] + state.Target.SpecReplicas[i]
@@ -938,7 +961,7 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 		oldNext[i] = oldReference[i] - step.Past[i]
 		steps = max(steps, state.ActiveOld.InitialReplicas[i], state.Target.DesiredReplicas[i])
 	}
-	assertMovingWindow(t, state.Target.SpecReplicas, phaseTargets, growing, nil)
+	assertMovingWindow(t, state.Target.SpecReplicas, phaseTargets, growing, growthCorrection)
 	assertMovingWindow(t, oldProgress, oldReference, oldNext, scaleCorrection)
 	outageAllowed := false
 	if !slices.Equal(step.Past, state.ActiveOld.SpecReplicas) {
@@ -978,7 +1001,7 @@ func assertScalingSafety(t *testing.T, state RolloutState, step *UpdateStep) {
 			if old > 0 {
 				count := max(state.ActiveOld.InitialReplicas[i], state.Target.DesiredReplicas[i])
 				allowance := (count*budget + steps - 1) / steps
-				if step.New[i] > state.Target.ReadyReplicas[i]+allowance {
+				if step.New[i] > max(state.Target.ReadyReplicas[i]+allowance, requestedTopUp[i]) {
 					t.Fatalf("role %d exceeds growth allowance %d: state=%+v step=%+v", i, allowance, state, step)
 				}
 			}
@@ -1009,63 +1032,73 @@ func assertMovingWindow(t *testing.T, current, counts, proposed []int, scaleCorr
 }
 
 func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
-	rng := rand.New(rand.NewSource(1023))
-	for scenario := range 20000 {
-		n := 2 + rng.Intn(2)
-		initial := make([]int, n)
-		for i := range initial {
-			initial[i] = 5
-		}
-		state := rolloutState(initial, make([]int, n), make([]int, n), make([]int, n), make([]int, n),
-			make([]int, n), make([]int, n), make([]int, n), make([]RollingUpdateConfig, n))
-		state.ScaleDownDuringRollout = true
-		state.Target.AllUnscheduled = make([]bool, n)
-		for i := range n {
-			state.ActiveOld.SpecReplicas[i] = rng.Intn(6)
-			state.ParkedOld[0].SpecReplicas[i] = rng.Intn(4)
-			state.Target.SpecReplicas[i] = rng.Intn(8)
-			state.Target.DesiredReplicas[i] = rng.Intn(7)
-			state.Config[i] = RollingUpdateConfig{MaxSurge: rng.Intn(3), MaxUnavailable: rng.Intn(3)}
-			for _, counts := range []struct{ spec, raw, retained []int }{
-				{state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas},
-				{state.ParkedOld[0].SpecReplicas, state.ParkedOld[0].RawReadyReplicas, state.ParkedOld[0].ReadyReplicas},
-				{state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas},
-			} {
-				counts.raw[i] = rng.Intn(counts.spec[i] + 1)
-				counts.retained[i] = rng.Intn(counts.raw[i] + 1)
+	for _, immediateUp := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
+			rng := rand.New(rand.NewSource(1023))
+			for scenario := range 20000 {
+				n := 2 + rng.Intn(2)
+				initial := make([]int, n)
+				for i := range initial {
+					initial[i] = 5
+				}
+				state := rolloutState(initial, make([]int, n), make([]int, n), make([]int, n), make([]int, n),
+					make([]int, n), make([]int, n), make([]int, n), make([]RollingUpdateConfig, n))
+				state.ScaleDownDuringRollout = true
+				state.ScaleUpDuringRollout = immediateUp
+				state.Target.AllUnscheduled = make([]bool, n)
+				for i := range n {
+					state.ActiveOld.SpecReplicas[i] = rng.Intn(6)
+					state.ParkedOld[0].SpecReplicas[i] = rng.Intn(4)
+					state.Target.SpecReplicas[i] = rng.Intn(8)
+					state.Target.DesiredReplicas[i] = rng.Intn(7)
+					state.Config[i] = RollingUpdateConfig{MaxSurge: rng.Intn(3), MaxUnavailable: rng.Intn(3)}
+					for _, counts := range []struct{ spec, raw, retained []int }{
+						{state.ActiveOld.SpecReplicas, state.ActiveOld.RawReadyReplicas, state.ActiveOld.ReadyReplicas},
+						{state.ParkedOld[0].SpecReplicas, state.ParkedOld[0].RawReadyReplicas, state.ParkedOld[0].ReadyReplicas},
+						{state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas},
+					} {
+						counts.raw[i] = rng.Intn(counts.spec[i] + 1)
+						counts.retained[i] = rng.Intn(counts.raw[i] + 1)
+					}
+					state.Target.AllUnscheduled[i] = state.Target.RawReadyReplicas[i] == 0 && rng.Intn(2) == 0
+				}
+				state.Target.RequiredRoles = requiredRoles(state.Target.DesiredReplicas)
+				state.ParkedOld[0].RequiredRoles = requiredRoles(initial)
+				state.AvailabilityBaseline = rolloutState(initial, state.ActiveOld.SpecReplicas, nil,
+					state.ParkedOld[0].SpecReplicas, nil, nil, nil, state.Target.DesiredReplicas, nil).AvailabilityBaseline
+				if step := ComputeNextStep(state); step != nil {
+					require.NoError(t, validateUpdateStep(state, step), "scenario %d state=%+v step=%+v", scenario, state, step)
+					assertScalingSafety(t, state, step)
+				}
 			}
-			state.Target.AllUnscheduled[i] = state.Target.RawReadyReplicas[i] == 0 && rng.Intn(2) == 0
-		}
-		state.Target.RequiredRoles = requiredRoles(state.Target.DesiredReplicas)
-		state.ParkedOld[0].RequiredRoles = requiredRoles(initial)
-		state.AvailabilityBaseline = rolloutState(initial, state.ActiveOld.SpecReplicas, nil,
-			state.ParkedOld[0].SpecReplicas, nil, nil, nil, state.Target.DesiredReplicas, nil).AvailabilityBaseline
-		if step := ComputeNextStep(state); step != nil {
-			require.NoError(t, validateUpdateStep(state, step), "scenario %d state=%+v step=%+v", scenario, state, step)
-			assertScalingSafety(t, state, step)
-		}
+		})
 	}
 }
 
 func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 	executor := newTestExecutor(newTestClient())
-	rng := rand.New(rand.NewSource(81259))
-	for range 1000 {
-		initial := []int{rng.Intn(6), rng.Intn(6)}
-		state := rolloutState(initial, initial, initial, []int{1, 1}, []int{1, 1}, []int{0, 0}, []int{0, 0}, initial,
-			configs([]int{rng.Intn(3), rng.Intn(3)}, []int{rng.Intn(3), rng.Intn(3)}))
-		for i := range state.Config {
-			if state.Config[i].MaxSurge+state.Config[i].MaxUnavailable == 0 {
-				state.Config[i].MaxSurge = 1
-			}
-		}
-		state.Target.AllUnscheduled = make([]bool, 2)
-		assertMovingRolloutConverges(t, executor, &state, 120, func(tick int) {
-			if tick < 4 {
-				state.Target.DesiredReplicas = []int{rng.Intn(8), rng.Intn(8)}
-			}
-			for i := range state.Target.AllUnscheduled {
-				state.Target.AllUnscheduled[i] = state.Target.RawReadyReplicas[i] == 0 && rng.Intn(2) == 0
+	for _, immediateUp := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
+			rng := rand.New(rand.NewSource(81259))
+			for range 1000 {
+				initial := []int{rng.Intn(6), rng.Intn(6)}
+				state := rolloutState(initial, initial, initial, []int{1, 1}, []int{1, 1}, []int{0, 0}, []int{0, 0}, initial,
+					configs([]int{rng.Intn(3), rng.Intn(3)}, []int{rng.Intn(3), rng.Intn(3)}))
+				for i := range state.Config {
+					if state.Config[i].MaxSurge+state.Config[i].MaxUnavailable == 0 {
+						state.Config[i].MaxSurge = 1
+					}
+				}
+				state.Target.AllUnscheduled = make([]bool, 2)
+				state.ScaleUpDuringRollout = immediateUp
+				assertMovingRolloutConverges(t, executor, &state, 120, func(tick int) {
+					if tick < 4 {
+						state.Target.DesiredReplicas = []int{rng.Intn(8), rng.Intn(8)}
+					}
+					for i := range state.Target.AllUnscheduled {
+						state.Target.AllUnscheduled[i] = state.Target.RawReadyReplicas[i] == 0 && rng.Intn(2) == 0
+					}
+				})
 			}
 		})
 	}
@@ -1133,7 +1166,7 @@ func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor,
 			readiness[lws.Name] = observed
 		}
 		inputs := rolloutInputs{allRoleNames: roleNames, targetReplicas: state.Target.DesiredReplicas,
-			config: state.Config, readiness: readiness, scaleDownDuringRollout: true}
+			config: state.Config, readiness: readiness, scaleUpDuringRollout: state.ScaleUpDuringRollout, scaleDownDuringRollout: true}
 		selected := disaggregatedsetutils.RevisionRoles{}
 		var observed RolloutState
 		var step *UpdateStep
@@ -1143,6 +1176,7 @@ func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor,
 			require.NoError(t, err)
 		} else {
 			observed = rolloutStateForRevision(roleNames, old, selected, target, inputs.targetReplicas, inputs.config, readiness)
+			observed.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
 			observed.ScaleDownDuringRollout = true
 			step = ComputeNextStep(observed)
 		}
@@ -1234,18 +1268,23 @@ func TestScalingDuringRolloutFiveEditsReachPhysicalExcess(t *testing.T) {
 func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
 	t.Parallel() // Its RNG, executor and simulated workloads are not shared.
 	executor := newTestExecutor(newTestClient())
-	for _, seed := range []int64{4041023, 9071105, 11371023} {
-		rng := rand.New(rand.NewSource(seed))
-		for range 1000 {
-			initial := []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
-			state := rolloutState(initial, initial, initial, nil, nil, []int{0, 0}, []int{0, 0}, initial,
-				configs([]int{0, 1}, []int{1, 1}))
-			assertMovingRolloutConverges(t, executor, &state, 100, func(tick int) {
-				if tick < 5 {
-					state.Target.DesiredReplicas = []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
+	for _, immediateUp := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
+			for _, seed := range []int64{4041023, 9071105, 11371023} {
+				rng := rand.New(rand.NewSource(seed))
+				for range 1000 {
+					initial := []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
+					state := rolloutState(initial, initial, initial, nil, nil, []int{0, 0}, []int{0, 0}, initial,
+						configs([]int{0, 1}, []int{1, 1}))
+					state.ScaleUpDuringRollout = immediateUp
+					assertMovingRolloutConverges(t, executor, &state, 100, func(tick int) {
+						if tick < 5 {
+							state.Target.DesiredReplicas = []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
+						}
+					})
 				}
-			})
-		}
+			}
+		})
 	}
 }
 
@@ -1253,11 +1292,17 @@ func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 	for _, policy := range []*disaggregatedsetv1.DisaggregatedSetScalingPolicy{
 		nil, {}, {ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownDeferred},
 		{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpCoupled},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownDeferred},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate},
 	} {
 		ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 2}, [2]int{1, 1}, [2]int{})
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+		legacyRevision := disaggregatedsetutils.ComputeRevisionV1(ds.Spec.Roles)
 		ds.Spec.ScalingPolicy = policy
 		assert.Equal(t, revision, disaggregatedsetutils.ComputeRevision(ds.Spec.Roles), "policy edits do not roll Pods")
+		assert.Equal(t, legacyRevision, disaggregatedsetutils.ComputeRevisionV1(ds.Spec.Roles), "policy edits also preserve legacy revisions")
 		objects := revisionLWSObjects("old", [2]int32{}, [2]int32{}, [2]int32{5, 3}, time.Now())
 		objects = append(objects, revisionLWSObjects(revision, [2]int32{5, 3}, [2]int32{5, 3}, [2]int32{5, 3}, time.Now())...)
 		c := newTestClient(objects...)
@@ -1269,6 +1314,80 @@ func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 			want = [2]int32{4, 2}
 		}
 		assertRevisionReplicas(t, c, revision, want)
+	}
+}
+
+func TestScalingDuringRolloutPoliciesReachPlannerIndependently(t *testing.T) {
+	for _, up := range []disaggregatedsetv1.RolloutScaleUpPolicy{"", disaggregatedsetv1.RolloutScaleUpCoupled, disaggregatedsetv1.RolloutScaleUpImmediate} {
+		for _, down := range []disaggregatedsetv1.RolloutScaleDownPolicy{"", disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+			t.Run(fmt.Sprintf("up=%s/down=%s", up, down), func(t *testing.T) {
+				ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{2, 2}, [2]int{1, 1})
+				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: up, ScaleDownDuringRollout: down}
+				objects := revisionLWSObjects("old", [2]int32{4, 4}, [2]int32{4, 4}, [2]int32{4, 4}, time.Now())
+				objects = append(objects, revisionLWSObjects("target", [2]int32{2, 2}, [2]int32{1, 1}, [2]int32{8, 8}, time.Now())...)
+				executor := newTestExecutor(newTestClient(objects...))
+				old, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "target")
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				inputs, err := executor.prepareRolloutInputs(t.Context(), ds, old, *target, resolveDesiredReplicasByRole(ds, nil))
+				require.NoError(t, err)
+				wantUp, wantDown := up == disaggregatedsetv1.RolloutScaleUpImmediate, down == disaggregatedsetv1.RolloutScaleDownImmediate
+				assert.Equal(t, wantUp, inputs.scaleUpDuringRollout)
+				assert.Equal(t, wantDown, inputs.scaleDownDuringRollout)
+				_, state, step, err := executor.selectNextRolloutStep(t.Context(), orderedRevisionCandidates(old, inputs.readiness), old, *target, inputs)
+				require.NoError(t, err)
+				require.NotNil(t, step)
+				assert.Equal(t, wantUp, state.ScaleUpDuringRollout)
+				assert.Equal(t, wantDown, state.ScaleDownDuringRollout)
+			})
+		}
+	}
+}
+
+func TestImmediateScaleUpUsesRequestedCapacity(t *testing.T) {
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, down := range []disaggregatedsetv1.RolloutScaleDownPolicy{disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+			for _, immediateUp := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/down=%s/immediateUp=%v", identity, down, immediateUp), func(t *testing.T) {
+					ds := newTwoRoleTestDisaggregatedSet([2]int32{10, 10}, [2]int{1, 1}, [2]int{})
+					ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: down}
+					if immediateUp {
+						ds.Spec.ScalingPolicy.ScaleUpDuringRollout = disaggregatedsetv1.RolloutScaleUpImmediate
+					}
+					for i := range ds.Spec.Roles {
+						ds.Spec.Roles[i].Spec.GroupIdentity = identity
+					}
+					objects := revisionLWSObjects("old", [2]int32{4, 4}, [2]int32{4, 4}, [2]int32{4, 4}, time.Now())
+					objects = append(objects, revisionLWSObjects("target", [2]int32{2, 2}, [2]int32{}, [2]int32{10, 10}, time.Now())...)
+					for _, object := range objects {
+						object.(*leaderworkersetv1.LeaderWorkerSet).Spec.GroupIdentity = identity
+					}
+					c := newTestClient(objects...)
+					executor := newTestExecutor(c)
+					want := int32(2)
+					for tick, desired := range []int32{10, 10, 12, 10, 14, 12} {
+						if tick == 1 {
+							// Losing readiness does not free requested capacity.
+							for _, role := range testRoleNames() {
+								var old leaderworkersetv1.LeaderWorkerSet
+								require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "test-0-old-" + role}, &old))
+								old.Status.ReadyReplicas = 2
+								require.NoError(t, c.Status().Update(t.Context(), &old))
+							}
+						}
+						for i := range ds.Spec.Roles {
+							ds.Spec.Roles[i].Spec.Replicas = ptr.To(desired)
+						}
+						if immediateUp {
+							want = max(want, desired-4)
+						}
+						reconcileExistingForTest(t, executor, ds, "target")
+						assertRevisionReplicas(t, c, "old", [2]int32{4, 4})
+						assertRevisionReplicas(t, c, "target", [2]int32{want, want})
+					}
+				})
+			}
+		}
 	}
 }
 
