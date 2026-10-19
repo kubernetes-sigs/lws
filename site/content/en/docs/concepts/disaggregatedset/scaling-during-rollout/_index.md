@@ -11,11 +11,17 @@ A rolling update replaces revision A with B. Demand can change while both are ru
 The example below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares Deferred and Immediate using autoscaler requests, with both rollout budgets set to 10%.
 
 <figure class="td-max-width-on-larger-screens">
-<img src="/images/disaggregatedset-scale-down-comparison.gif?v=add7c184" alt="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready." width="1400" height="900" loading="lazy" class="img-fluid">
+<!-- Keep a compact area for native playback controls below the picture. -->
+<div style="position: relative; padding-top: calc(64.285714% + 2rem);">
+<video controls autoplay muted playsinline preload="metadata" poster="/images/disaggregatedset-scale-down-comparison-poster.png" width="1400" height="900" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready.">
+  <source src="/videos/disaggregatedset-scale-down-comparison.mp4" type="video/mp4">
+  <a href="/videos/disaggregatedset-scale-down-comparison.mp4">Download the scale-down comparison.</a>
+</video>
+</div>
 <figcaption class="small text-muted mt-2">Real planner decisions with simulated readiness and timing. This example assumes deletions remove Ready groups first.</figcaption>
 </figure>
 
-After seeing this image you might ask:
+After watching the animation, you might ask:
 
 **Why not reduce B straight to 20 Prefill groups?** With `maxUnavailable: 10%`, at least **18 must stay Ready**. At 23 groups, 18 are Ready and 5 are loading. Reaching 20 requires three deletions. The planner chooses a count, not which groups are deleted: losing three Ready groups would leave only **15**. It cannot assume that only loading groups will be removed, so it waits for more groups to become Ready.
 
