@@ -709,7 +709,6 @@ func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws 
 // serverSideApply applies the configuration with the lws field manager. If there
 // are conflicts in the fields owned by the lws controller, lws obtains the
 // ownership and force overrides them to the desired values.
-// TODO b/316776287 add E2E test for SSA
 func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyConfig runtime.ApplyConfiguration) error {
 	return r.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership)
 }
