@@ -269,12 +269,12 @@ func buildRolloutInputs(
 
 func scaleUpDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
 	return ds.Spec.ScalingPolicy != nil &&
-		ds.Spec.ScalingPolicy.ScaleUpDuringRollout == disaggregatedsetv1.RolloutScaleUpImmediate
+		ds.Spec.ScalingPolicy.ScaleUpDuringRollout == disaggregatedsetv1.RolloutScalingImmediate
 }
 
 func scaleDownDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
 	return ds.Spec.ScalingPolicy != nil &&
-		ds.Spec.ScalingPolicy.ScaleDownDuringRollout == disaggregatedsetv1.RolloutScaleDownImmediate
+		ds.Spec.ScalingPolicy.ScaleDownDuringRollout == disaggregatedsetv1.RolloutScalingImmediate
 }
 
 // selectNextRolloutStep asks the planner about old revisions in preference

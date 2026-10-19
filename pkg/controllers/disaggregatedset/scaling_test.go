@@ -98,7 +98,7 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 	t.Parallel() // Each rollout builds its own fake client and executor.
 	type layout struct {
 		name               string
-		up                 disaggregatedsetv1.RolloutScaleUpPolicy
+		up                 disaggregatedsetv1.RolloutScalingPolicy
 		initial, current   [][]int32
 		desired, target    []int32
 		surge, unavailable []int
@@ -157,11 +157,11 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 	}
 	for _, tc := range slices.Clone(cases) {
 		tc.name += "/ImmediateScaleUp"
-		tc.up = disaggregatedsetv1.RolloutScaleUpImmediate
+		tc.up = disaggregatedsetv1.RolloutScalingImmediate
 		cases = append(cases, tc)
 	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
-		for _, policy := range []disaggregatedsetv1.RolloutScaleDownPolicy{disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+		for _, policy := range []disaggregatedsetv1.RolloutScalingPolicy{disaggregatedsetv1.RolloutScalingDeferred, disaggregatedsetv1.RolloutScalingImmediate} {
 			for _, tc := range cases {
 				t.Run(fmt.Sprintf("%s/%s/%s", identity, policy, tc.name), func(t *testing.T) {
 					t.Logf("initial=%v current=%v desired=%v surge=%v unavailable=%v", tc.initial, tc.current, tc.desired, tc.surge, tc.unavailable)
@@ -318,7 +318,7 @@ func TestRolloutWithDisjointAndOverlappingOldRevisions(t *testing.T) {
 							}
 							require.GreaterOrEqual(t, retainedIndividual, min(beforeIndividual, floor), "role %d preserves individual Ready groups", role)
 							ceiling := desired + int32(tc.surge[role])
-							if policy == disaggregatedsetv1.RolloutScaleDownDeferred {
+							if policy == disaggregatedsetv1.RolloutScalingDeferred {
 								ceiling = max(baseline, desired) + int32(tc.surge[role])
 							}
 							if bootstrap {
@@ -713,7 +713,7 @@ func TestSubRoleScalingDuringRolloutPolicies(t *testing.T) {
 		f.ds.Spec.ScalingPolicy = nil
 		want := 5
 		if immediate {
-			f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
+			f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
 			want = 2
 		}
 		inputs := buildRolloutInputs(f.ds, old, target.revision("target"), map[string]int{"model/pool": 2}, observed)
@@ -731,7 +731,7 @@ func TestScalingDuringRolloutObservesScheduledGroups(t *testing.T) {
 		for _, boundMember := range []string{"none", "leader", "worker"} {
 			t.Run(fmt.Sprintf("%s/bound=%s", identity, boundMember), func(t *testing.T) {
 				ds := newTestDisaggregatedSet(makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0)))
-				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
+				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
 				old := revisionLWS("old", testRolePrefill, 4, 4, time.Unix(1000, 0), 4)
 				target := revisionLWS("target", testRolePrefill, 5, 0, time.Unix(2000, 0), 5)
 				old.Spec.GroupIdentity, target.Spec.GroupIdentity = identity, identity
@@ -1290,12 +1290,12 @@ func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
 
 func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 	for _, policy := range []*disaggregatedsetv1.DisaggregatedSetScalingPolicy{
-		nil, {}, {ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownDeferred},
-		{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate},
-		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpCoupled},
-		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate},
-		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownDeferred},
-		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScaleUpImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate},
+		nil, {}, {ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingDeferred},
+		{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingDeferred},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingImmediate},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingDeferred},
+		{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingImmediate, ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate},
 	} {
 		ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 2}, [2]int{1, 1}, [2]int{})
 		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
@@ -1318,8 +1318,8 @@ func TestScalingDuringRolloutExecutorPolicies(t *testing.T) {
 }
 
 func TestScalingDuringRolloutPoliciesReachPlannerIndependently(t *testing.T) {
-	for _, up := range []disaggregatedsetv1.RolloutScaleUpPolicy{"", disaggregatedsetv1.RolloutScaleUpCoupled, disaggregatedsetv1.RolloutScaleUpImmediate} {
-		for _, down := range []disaggregatedsetv1.RolloutScaleDownPolicy{"", disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+	for _, up := range []disaggregatedsetv1.RolloutScalingPolicy{"", disaggregatedsetv1.RolloutScalingDeferred, disaggregatedsetv1.RolloutScalingImmediate} {
+		for _, down := range []disaggregatedsetv1.RolloutScalingPolicy{"", disaggregatedsetv1.RolloutScalingDeferred, disaggregatedsetv1.RolloutScalingImmediate} {
 			t.Run(fmt.Sprintf("up=%s/down=%s", up, down), func(t *testing.T) {
 				ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{2, 2}, [2]int{1, 1})
 				ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: up, ScaleDownDuringRollout: down}
@@ -1331,7 +1331,7 @@ func TestScalingDuringRolloutPoliciesReachPlannerIndependently(t *testing.T) {
 				require.NotNil(t, target)
 				inputs, err := executor.prepareRolloutInputs(t.Context(), ds, old, *target, resolveDesiredReplicasByRole(ds, nil))
 				require.NoError(t, err)
-				wantUp, wantDown := up == disaggregatedsetv1.RolloutScaleUpImmediate, down == disaggregatedsetv1.RolloutScaleDownImmediate
+				wantUp, wantDown := up == disaggregatedsetv1.RolloutScalingImmediate, down == disaggregatedsetv1.RolloutScalingImmediate
 				assert.Equal(t, wantUp, inputs.scaleUpDuringRollout)
 				assert.Equal(t, wantDown, inputs.scaleDownDuringRollout)
 				_, state, step, err := executor.selectNextRolloutStep(t.Context(), orderedRevisionCandidates(old, inputs.readiness), old, *target, inputs)
@@ -1346,13 +1346,13 @@ func TestScalingDuringRolloutPoliciesReachPlannerIndependently(t *testing.T) {
 
 func TestImmediateScaleUpUsesRequestedCapacity(t *testing.T) {
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
-		for _, down := range []disaggregatedsetv1.RolloutScaleDownPolicy{disaggregatedsetv1.RolloutScaleDownDeferred, disaggregatedsetv1.RolloutScaleDownImmediate} {
+		for _, down := range []disaggregatedsetv1.RolloutScalingPolicy{disaggregatedsetv1.RolloutScalingDeferred, disaggregatedsetv1.RolloutScalingImmediate} {
 			for _, immediateUp := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/down=%s/immediateUp=%v", identity, down, immediateUp), func(t *testing.T) {
 					ds := newTwoRoleTestDisaggregatedSet([2]int32{10, 10}, [2]int{1, 1}, [2]int{})
 					ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: down}
 					if immediateUp {
-						ds.Spec.ScalingPolicy.ScaleUpDuringRollout = disaggregatedsetv1.RolloutScaleUpImmediate
+						ds.Spec.ScalingPolicy.ScaleUpDuringRollout = disaggregatedsetv1.RolloutScalingImmediate
 					}
 					for i := range ds.Spec.Roles {
 						ds.Spec.Roles[i].Spec.GroupIdentity = identity
@@ -1398,7 +1398,7 @@ func TestScalingDuringRolloutPrefersAnyOldDrainOverTargetShrink(t *testing.T) {
 	objects = append(objects, revisionLWSObjects("hashC", [2]int32{3, 3}, [2]int32{}, [2]int32{3, 3}, now.Add(2*time.Hour))...)
 	c := newTestClient(objects...)
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 2}, [2]int{1, 1}, [2]int{})
-	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
+	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
 	reconcileExistingForTest(t, newTestExecutor(c), ds, "hashC")
 	assertRevisionReplicas(t, c, "hashA", [2]int32{2, 2})
 	assertRevisionReplicas(t, c, "hashB", [2]int32{})
@@ -1461,7 +1461,7 @@ func TestScalingDuringRolloutExposesLatestExternalTarget(t *testing.T) {
 		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2}, nil)
 	}
 	assert.Equal(t, []int{5}, readTarget(), "default keeps the in-flight External target")
-	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScaleDownImmediate}
+	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
 	assert.Equal(t, []int{2}, readTarget(), "opt-in exposes the actual RoleScaler target")
 }
 

@@ -45,7 +45,7 @@ spec:
     scaleDownDuringRollout: Immediate
 ```
 
-Scale-up already works during a rollout. Its default, `RolloutCoupled`, follows the normal rollout pacing; `Immediate` also grows the target to fill the difference between desired replicas and the replicas still requested in older revisions. This does not increase `maxSurge` or authorize deleting old replicas. Scale-down defaults to `Deferred`, which keeps already-requested target replicas until old revisions finish draining; its `Immediate` option considers reductions earlier, preferring safe old-revision drains. Either field can be set independently. Neither option promises instant readiness or deletion.
+Scale-up already works during a rollout. Its default, `Deferred`, follows the normal rollout pacing; `Immediate` also grows the target to fill the difference between desired replicas and the replicas still requested in older revisions. This does not increase `maxSurge` or authorize deleting old replicas. Scale-down defaults to `Deferred`, which keeps already-requested target replicas until old revisions finish draining; its `Immediate` option considers reductions earlier, preferring safe old-revision drains. Either field can be set independently. Neither option promises instant readiness or deletion.
 
 This extends the planner/executor design from [PR #907](https://github.com/kubernetes-sigs/lws/pull/907) and retains the availability safeguards in [PR #1105](https://github.com/kubernetes-sigs/lws/pull/1105). It uses the shared replica-group observer from [PR #1137](https://github.com/kubernetes-sigs/lws/pull/1137). It does not replace the planner or introduce a second scaling controller.
 
@@ -92,8 +92,10 @@ Configure the two directions independently under `spec.scalingPolicy`:
 
 | Field | Default | `Immediate` |
 | --- | --- | --- |
-| `scaleUpDuringRollout` | `RolloutCoupled`: grow the target through the normal rollout batches. | Fill the requested count in the new revision: desired replicas minus replicas still requested in old revisions, subject to renamed-role replacement safeguards. |
+| `scaleUpDuringRollout` | `Deferred`: grow the target through the normal rollout batches. | Fill the requested count in the new revision: desired replicas minus replicas still requested in old revisions, subject to renamed-role replacement safeguards. |
 | `scaleDownDuringRollout` | `Deferred`: keep already-requested target groups until old revisions drain. | Use the latest surge ceiling, preferring safe old-revision reductions; reduce excess target replicas when old revisions must remain. |
+
+For scale-up, `Deferred` still grows the new revision during the rollout; it waits for room in the normal readiness-paced batches, not for the whole rollout to finish.
 
 The target comes from `roles[].spec.replicas` for Static roles or `DisaggregatedSetRoleScaler.spec.replicas` for External roles. Both use the same planner. Each policy is set once on the DisaggregatedSet and applies to its roles and slices. Ordinal and Hash use the same rules.
 
@@ -119,7 +121,7 @@ The normal pending-work allowance is one group in this symmetric example, but tw
 
 | `scaleUpDuringRollout` | Next target Spec | Why |
 | --- | ---: | --- |
-| `RolloutCoupled` | 2 | Keep the existing target groups and wait for readiness before growing further. |
+| `Deferred` | 2 | Keep the existing target groups and wait for readiness before growing further. |
 | `Immediate` | 6 | Fill the requested total: ten desired minus four old groups. |
 
 Immediate scale-up requests four more groups without waiting for the two pending groups. Both decisions keep all four old groups; the larger step reaches `4 + 6 = 10`, the desired count, without using the extra surge group. Only actual readiness later permits old replicas to drain. Requested groups cannot pay for a reduction.
@@ -328,12 +330,14 @@ RoleScaler status continues to report observed replicas across revisions, so it 
 
 The optional `DisaggregatedSetScalingPolicy` has two independent fields:
 
-- `scaleUpDuringRollout`, of type `RolloutScaleUpPolicy`: `RolloutCoupled` (default) or `Immediate`.
-- `scaleDownDuringRollout`, of type `RolloutScaleDownPolicy`: `Deferred` (default) or `Immediate`.
+- `scaleUpDuringRollout`: `Deferred` (default) or `Immediate`.
+- `scaleDownDuringRollout`: `Deferred` (default) or `Immediate`.
+
+Both fields use the same `RolloutScalingPolicy` type and the shared Go constants `RolloutScalingDeferred` and `RolloutScalingImmediate`. The previous scale-down type and constants remain deprecated aliases for Go source compatibility.
 
 The CRD defaults each omitted field separately. An omitted policy, an empty policy, and explicit defaults preserve existing behavior. All four combinations are supported. Only `scaleDownDuringRollout: Immediate` enables demand-driven target reductions during overlap.
 
-Replica counts and both fields remain outside the application revision hash. Changing them does not create another revision. Switching scale-up back to `RolloutCoupled` stops further immediate top-ups but does not cancel groups already requested. Switching scale-down back to `Deferred` stops further opt-in reductions; it cannot undo reductions already applied or disable existing rollout recovery.
+Replica counts and both fields remain outside the application revision hash. Changing them does not create another revision. Switching scale-up back to `Deferred` stops further immediate top-ups but does not cancel groups already requested. Switching scale-down back to `Deferred` stops further opt-in reductions; it cannot undo reductions already applied or disable existing rollout recovery.
 
 The controller and CRD must both support the new field before it is used. Remove the opt-in before downgrading to a version without it. The child workloads remain ordinary LWS objects and no separate scaling-operation state needs migration.
 
@@ -379,7 +383,7 @@ Keep validation tests separate from planner expectations where practical, so the
 Use a disposable cluster, direct replica changes, and deterministically delayed readiness:
 
 1. Compare `Deferred` and `Immediate` while decreasing a target below already-created target Spec.
-2. Compare `scaleUpDuringRollout: RolloutCoupled` and `Immediate` while some target groups are not Ready. Verify that `Immediate` fills the gap between desired and observed old Spec, preserving old Ready capacity and normal surge limits. Repeat the observation and change only readiness to verify that neither creates another top-up batch.
+2. Compare `scaleUpDuringRollout: Deferred` and `Immediate` while some target groups are not Ready. Verify that `Immediate` fills the gap between desired and observed old Spec, preserving old Ready capacity and normal surge limits. Repeat the observation and change only readiness to verify that neither creates another top-up batch.
 3. Release readiness and verify old-first progress followed by exact convergence.
 4. Check the configured budgets, required-role completeness, and retained readiness throughout the run, not only its final counts.
 
@@ -430,4 +434,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 - 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.
 - 2026-10-13: Apply target availability and scheduled-startup protection to renamed-role surplus recovery under both policies. Retain safe cancellation of wholly unscheduled surplus and genuine excess above desired; document that protected startup work can delay capacity recovery.
 - 2026-10-13: Prefer safe old-revision progress over permitted target reductions under both policies, including renamed-role surplus recovery.
-- 2026-10-19: Add independent `scaleUpDuringRollout: RolloutCoupled | Immediate`. Immediate fills the requested replica count using desired minus observed Spec across old revisions, bypassing pending-work and new-side fractional pacing only up to that count and preserving normal rollout growth above it. Preserve defaults, scale-down behavior, availability, and renamed-role protection; do not introduce Ready-deficit credits or persistent scaling state.
+- 2026-10-19: Add independent `scaleUpDuringRollout: Deferred | Immediate`. Immediate fills the requested replica count using desired minus observed Spec across old revisions, bypassing pending-work and new-side fractional pacing only up to that count and preserving normal rollout growth above it. Preserve defaults, scale-down behavior, availability, and renamed-role protection; do not introduce Ready-deficit credits or persistent scaling state.

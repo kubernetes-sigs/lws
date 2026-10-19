@@ -68,7 +68,7 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 		return disagg
 	}
 
-	policy := func(up disaggregatedset.RolloutScaleUpPolicy, down disaggregatedset.RolloutScaleDownPolicy) *disaggregatedset.DisaggregatedSetScalingPolicy {
+	policy := func(up, down disaggregatedset.RolloutScalingPolicy) *disaggregatedset.DisaggregatedSetScalingPolicy {
 		return &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: up, ScaleDownDuringRollout: down}
 	}
 	ginkgo.DescribeTable("rollout scaling policy defaulting and validation",
@@ -91,15 +91,15 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 			gomega.Expect(fetched.Spec.ScalingPolicy).To(gomega.Equal(want))
 		},
 		ginkgo.Entry("omitted policy", nil, nil, ""),
-		ginkgo.Entry("empty policy defaults both fields", policy("", ""), policy("RolloutCoupled", "Deferred"), ""),
+		ginkgo.Entry("empty policy defaults both fields", policy("", ""), policy("Deferred", "Deferred"), ""),
 		ginkgo.Entry("scale-up only defaults scale-down", policy("Immediate", ""), policy("Immediate", "Deferred"), ""),
-		ginkgo.Entry("scale-down only defaults scale-up", policy("", "Immediate"), policy("RolloutCoupled", "Immediate"), ""),
-		ginkgo.Entry("RolloutCoupled and Deferred", policy("RolloutCoupled", "Deferred"), policy("RolloutCoupled", "Deferred"), ""),
-		ginkgo.Entry("RolloutCoupled and Immediate", policy("RolloutCoupled", "Immediate"), policy("RolloutCoupled", "Immediate"), ""),
+		ginkgo.Entry("scale-down only defaults scale-up", policy("", "Immediate"), policy("Deferred", "Immediate"), ""),
+		ginkgo.Entry("Deferred and Deferred", policy("Deferred", "Deferred"), policy("Deferred", "Deferred"), ""),
+		ginkgo.Entry("Deferred and Immediate", policy("Deferred", "Immediate"), policy("Deferred", "Immediate"), ""),
 		ginkgo.Entry("Immediate and Deferred", policy("Immediate", "Deferred"), policy("Immediate", "Deferred"), ""),
 		ginkgo.Entry("Immediate and Immediate", policy("Immediate", "Immediate"), policy("Immediate", "Immediate"), ""),
 		ginkgo.Entry("invalid scale-up policy", policy("invalid", "Deferred"), nil, "scaleUpDuringRollout"),
-		ginkgo.Entry("invalid scale-down policy", policy("RolloutCoupled", "invalid"), nil, "scaleDownDuringRollout"),
+		ginkgo.Entry("invalid scale-down policy", policy("Deferred", "invalid"), nil, "scaleDownDuringRollout"),
 	)
 
 	ginkgo.DescribeTable("sub-role scale delay validation",
