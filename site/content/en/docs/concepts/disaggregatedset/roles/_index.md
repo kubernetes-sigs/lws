@@ -65,6 +65,8 @@ Because each role maps to an independent child LeaderWorkerSet, each role inheri
 
 ## Virtual roles
 
+For a walkthrough and routing examples, see [Virtual Roles (with llm-d)](../virtual-roles-llm-d/).
+
 `subRoles: [{name: interactive, replicas: 3}, {name: batch, replicas: 1}]` partitions
 one parent's shared-template LWS into routing pools, totaling four groups per slice.
 Parent `spec.replicas` is ignored and parent `scaling` must be omitted. Children may
