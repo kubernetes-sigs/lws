@@ -22,6 +22,7 @@ matches the default manifest:
       template:
         metadata:
           annotations:
+            checksum/manager-config: 1c772344349db82132205b08a774838c7d1b2dcbb9996c52940cf96994c76271
             kubectl.kubernetes.io/default-container: manager
           labels:
             app.kubernetes.io/instance: lws
