@@ -79,6 +79,6 @@ Controller manager image reference. A digest, when set, takes precedence over th
 {{- if $image.digest }}
 {{- printf "%s@%s" $image.repository $image.digest }}
 {{- else }}
-{{- printf "%s:%s" $image.repository (default .Chart.AppVersion $image.tag) }}
+{{- printf "%s:%v" $image.repository (default .Chart.AppVersion $image.tag) }}
 {{- end }}
 {{- end }}
