@@ -56,6 +56,9 @@ strategy for the set is owned by the DisaggregatedSet controller (see below).
 
 ## Rollout availability
 
+For a visual introduction to coordinated updates, see [Rollout Strategy](rollout-strategy/).
+It explains the fractional coordination window and how it works alongside each role's `maxSurge` and `maxUnavailable`.
+
 Each role's `maxUnavailable` limits how many of its groups can be unavailable.
 For fixed replica targets, its availability floor is
 `max(0, replicas - maxUnavailable)`. If a required role still present in the target
