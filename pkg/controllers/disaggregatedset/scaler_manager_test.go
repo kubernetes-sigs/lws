@@ -95,7 +95,8 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 					require.NoError(t, f.manager.client.Update(t.Context(), pod))
 				}
 			}
-			r := &DisaggregatedSetReconciler{Client: f.manager.client, LWSManager: f.manager}
+			r := newTestReconciler(f.manager.client)
+			r.LWSManager = f.manager
 			desired := map[string]int{"model": 1, "model/a": 1}
 			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
 			require.Equal(t, []disaggregatedsetv1.RoleStatus{
@@ -337,7 +338,8 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			} else if failure == "set" {
 				require.NoError(t, c.Delete(t.Context(), f.ds))
 			}
-			r := &DisaggregatedSetReconciler{Client: c, LWSManager: f.manager, ScalerManager: m}
+			r := newTestReconciler(c)
+			r.LWSManager, r.ScalerManager = f.manager, m
 			err = r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 3, "model/a": 2, "model/b": 1, "model/empty": 0}, scalers)
 			require.Equal(t, failure != "", err != nil)
 			want := []disaggregatedsetv1.RoleStatus{
