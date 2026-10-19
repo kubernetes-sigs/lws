@@ -269,6 +269,48 @@ func TestPodCtrlSyncGroupReadyCondition(t *testing.T) {
 	}
 }
 
+// The kubelet writes the pod's own conditions while the controller holds an
+// older copy of the pod. Setting the group-ready condition from that copy must
+// not remove them.
+func TestPodCtrlSyncGroupReadyConditionKeepsConcurrentConditions(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	lws := podCtrlBasicLWS()
+	scheduled := corev1.PodCondition{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}
+	stale := podCtrlLeaderPod(lws, "test-lws-0")
+	stale.Status.Conditions = []corev1.PodCondition{scheduled}
+
+	stored := stale.DeepCopy()
+	stored.Status.Conditions = []corev1.PodCondition{
+		scheduled,
+		{Type: corev1.PodInitialized, Status: corev1.ConditionTrue},
+		{Type: corev1.ContainersReady, Status: corev1.ConditionTrue},
+		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(stored).
+		WithStatusSubresource(&corev1.Pod{}).
+		Build()
+	reconciler := &PodReconciler{Client: c, Scheme: scheme, Record: events.NewFakeRecorder(1)}
+
+	if err := reconciler.syncGroupReadyCondition(context.Background(), stale, true); err != nil {
+		t.Fatalf("syncGroupReadyCondition() error = %v", err)
+	}
+
+	var got corev1.Pod
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(stored), &got); err != nil {
+		t.Fatalf("getting patched pod: %v", err)
+	}
+	want := append(stored.Status.Conditions, corev1.PodCondition{
+		Type: leaderworkerset.GroupReadyConditionType, Status: corev1.ConditionTrue, Reason: "WorkerStatefulSetReady",
+	})
+	byType := cmpopts.SortSlices(func(a, b corev1.PodCondition) bool { return a.Type < b.Type })
+	if diff := cmp.Diff(want, got.Status.Conditions, byType,
+		cmpopts.IgnoreFields(corev1.PodCondition{}, "LastTransitionTime")); diff != "" {
+		t.Errorf("unexpected pod conditions (-want,+got):\n%s", diff)
+	}
+}
+
 func TestPodCtrlSyncGroupReadyConditionReturnsPatchError(t *testing.T) {
 	scheme := podCtrlTestScheme(t)
 	lws := podCtrlBasicLWS()
