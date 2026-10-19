@@ -11,7 +11,13 @@ During a DisaggregatedSet rollout, old and new Pods run together. LWS creates an
 Prefill and Decode from different revisions may use incompatible KV-cache formats or transfer protocols. The screener keeps the two phases on the same revision.
 
 <figure class="td-max-width-on-larger-screens">
-<img src="/images/disaggregatedset-llm-d-routing.gif" alt="One routing box lists two deployment options: a shared llm-d router, or one llm-d router per role plus the llm-d coordinator. Below it, a 2-Prefill / 10-Decode deployment rolls from A to B. B receives no traffic until both roles have a Ready Pod, then its share grows with its Ready Decode count. The same gating applies to either deployment option." width="1400" height="875" loading="lazy" class="img-fluid">
+<!-- Keep a compact area for native playback controls below the picture. -->
+<div style="position: relative; padding-top: calc(75% + 2rem);">
+<video controls autoplay muted playsinline preload="metadata" poster="/images/disaggregatedset-llm-d-routing-poster.png" width="1400" height="1050" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="Revision gating with llm-d during a DisaggregatedSet rollout">
+  <source src="/videos/disaggregatedset-llm-d-routing.mp4" type="video/mp4">
+  <a href="/videos/disaggregatedset-llm-d-routing.mp4">Download the revision gating animation.</a>
+</video>
+</div>
 <figcaption class="small text-muted mt-2">The same gating applies to either router deployment option. Each square is a Pod; percentages are expected shares of new requests, not exact quotas. Selected snapshots and timing are illustrative.</figcaption>
 </figure>
 
