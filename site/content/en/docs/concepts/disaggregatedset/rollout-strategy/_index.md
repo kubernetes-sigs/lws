@@ -13,7 +13,13 @@ DisaggregatedSet coordinates their replacement **by proportion, not by equal num
 The example below replaces **4 Encode, 13 Prefill, and 7 Decode groups** from revision A with revision B.
 
 <figure class="td-max-width-on-larger-screens">
-<img src="/images/disaggregatedset-fractional-rollout.gif" alt="A rollout of 4 Encode, 13 Prefill, and 7 Decode groups. Old groups leave as replacements become Ready, with removal progress kept inside a moving 25-percentage-point window and availability checked separately." width="1200" height="700" loading="lazy" class="img-fluid">
+<!-- Keep a compact area for native playback controls below the picture. -->
+<div style="position: relative; padding-top: calc(58.333333% + 2rem);">
+<video controls autoplay muted playsinline preload="metadata" poster="/images/disaggregatedset-fractional-rollout-poster.png" class="img-fluid d-block" width="1200" height="700" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="A rollout of 4 Encode, 13 Prefill, and 7 Decode groups. Old groups leave as replacements become Ready, with removal progress kept inside a moving 25-percentage-point window and availability checked separately.">
+  <source src="/videos/disaggregatedset-fractional-rollout.mp4" type="video/mp4">
+  <a href="/videos/disaggregatedset-fractional-rollout.mp4">Download the rollout animation.</a>
+</video>
+</div>
 <figcaption class="small text-muted mt-2">Old A groups retire as new B groups become Ready. The moving 25-point window keeps the roles progressing together; both rollout budgets are 10%. Each square is a single-Pod group. Timing is illustrative.</figcaption>
 </figure>
 
