@@ -1302,6 +1302,54 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
 	})
 
+	t.Run("validates External budgets at a denominator of 100", func(t *testing.T) {
+		zero, zeroPercent, quarter := intstr.FromInt32(0), intstr.FromString("0%"), intstr.FromString("25%")
+		for _, tc := range []struct {
+			name        string
+			replicas    int32
+			external    bool
+			unavailable intstr.IntOrString
+			wantError   bool
+		}{
+			{name: "External percentage that rounds to zero at its replicas", replicas: 1, external: true, unavailable: quarter},
+			{name: "External percentage with replicas above one", replicas: 3, external: true, unavailable: quarter},
+			{name: "External zero percentage", replicas: 1, external: true, unavailable: zeroPercent, wantError: true},
+			{name: "External zero integer", replicas: 3, external: true, unavailable: zero, wantError: true},
+			{name: "Static percentage that rounds to zero", replicas: 3, unavailable: quarter, wantError: true},
+			{name: "Static percentage that resolves to one", replicas: 4, unavailable: quarter},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				obj := wrappers.BuildDisaggregatedSet("test", "default").
+					WithRole("prefill", 1, "nginx").
+					WithRole("decode", 1, "nginx").Obj()
+				for i := range obj.Spec.Roles {
+					role := &obj.Spec.Roles[i]
+					role.Spec.Replicas = ptr.To(tc.replicas)
+					role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+						MaxSurge:       zero,
+						MaxUnavailable: tc.unavailable,
+					}
+					if tc.external {
+						role.Scaling = external
+					}
+				}
+				oldObj := obj.DeepCopy()
+				for i := range oldObj.Spec.Roles {
+					oldObj.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(1)
+				}
+				_, createErr := webhook.ValidateCreate(ctx, obj)
+				_, updateErr := webhook.ValidateUpdate(ctx, oldObj, obj)
+				for _, err := range []error{createErr, updateErr} {
+					if tc.wantError {
+						require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
+					} else {
+						require.NoError(t, err)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("warns when External + replicas > 1", func(t *testing.T) {
 		obj := &disaggv1.DisaggregatedSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"},

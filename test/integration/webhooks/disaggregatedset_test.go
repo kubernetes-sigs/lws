@@ -220,6 +220,48 @@ var _ = ginkgo.Describe("disaggregatedset zero-replica rollout validation", func
 	})
 })
 
+var _ = ginkgo.Describe("disaggregatedset External role rollout budgets", func() {
+	ginkgo.DescribeTable("validates budgets of roles with defaulted replicas",
+		func(external bool, maxUnavailable intstr.IntOrString, wantError string) {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ns-"}}
+			gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+			disagg := wrappers.BuildDisaggregatedSet("external-budgets", ns.Name).
+				WithRole("prefill", 1, "nginx:1.14.2").
+				WithRole("decode", 1, "nginx:1.14.2").Obj()
+			for i := range disagg.Spec.Roles {
+				role := &disagg.Spec.Roles[i]
+				role.Spec.Replicas = nil
+				role.Spec.RolloutStrategy = leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxSurge:       intstr.FromInt32(0),
+						MaxUnavailable: maxUnavailable,
+					},
+				}
+				role.Spec.StartupPolicy = leaderworkerset.LeaderCreatedStartupPolicy
+				if external {
+					role.Scaling = &disaggregatedset.RoleScaling{Mode: disaggregatedset.RoleScalingExternal}
+				}
+			}
+
+			err := k8sClient.Create(ctx, disagg)
+			if wantError != "" {
+				gomega.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(wantError)))
+				return
+			}
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), disagg)).To(gomega.Succeed())
+			for _, role := range disagg.Spec.Roles {
+				gomega.Expect(role.Spec.Replicas).To(gomega.Equal(ptr.To[int32](1)), role.Name)
+			}
+		},
+		ginkgo.Entry("accepts an External percentage that rounds to zero at the default replicas", true, intstr.FromString("25%"), ""),
+		ginkgo.Entry("rejects an External pair that is zero at every size", true, intstr.FromString("0%"), "rollingUpdateConfiguration.maxUnavailable"),
+		ginkgo.Entry("rejects a Static percentage that rounds to zero at the default replicas", false, intstr.FromString("25%"), "rollingUpdateConfiguration.maxUnavailable"),
+	)
+})
+
 var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 
 	var ns *corev1.Namespace

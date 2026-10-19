@@ -423,8 +423,12 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 			))
 		}
 
-		// Preserve DS's replica inputs; resolving External targets is separate.
+		// External roles ignore spec.replicas, so their budgets are resolved at
+		// denominator 100, where p% resolves to p: only an always-zero pair fails.
 		replicas := ptr.Deref(validationReplicasForRole(role), 0)
+		if replicas > 0 && role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {
+			replicas = 100
+		}
 		allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 	}
 
