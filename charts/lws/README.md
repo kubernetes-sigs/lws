@@ -151,6 +151,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `imagePullSecrets`                         | Image pull secrets                             | `[]`                                                |
 | `image.manager.repository`                 | Repository for manager image                   | `registry.k8s.io/lws/lws`                           |
 | `image.manager.tag`                        | Tag for manager image                          | `main`                                              |
+| `image.manager.digest`                     | Digest for manager image (e.g. `sha256:...`); takes precedence over `tag` | `""`                     |
 | `image.manager.pullPolicy`                 | Pull policy for manager image                  | `Always`                                            |
 | `podAnnotations`                           | Annotations for pods                           | `{}`                                                |
 | `podSecurityContext.runAsNonRoot`          | Run pod as non-root user                       | `true`                                              |

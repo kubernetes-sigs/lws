@@ -216,6 +216,8 @@ tests:
 
   - it: falls back to the chart appVersion when the image tag is empty
     template: templates/manager/deployment.yaml
+    chart:
+      appVersion: 0.0.0-dev
     set:
       image:
         manager:
@@ -223,7 +225,31 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: registry.k8s.io/lws/lws:v1.0.0
+          value: registry.k8s.io/lws/lws:0.0.0-dev
+
+  - it: pins the image by digest
+    template: templates/manager/deployment.yaml
+    set:
+      image:
+        manager:
+          digest: sha256:abc123
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.k8s.io/lws/lws@sha256:abc123
+
+  - it: ignores the tag when a digest is set
+    template: templates/manager/deployment.yaml
+    set:
+      image:
+        manager:
+          repository: example.com/lws/lws
+          tag: v0.9.0
+          digest: sha256:abc123
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example.com/lws/lws@sha256:abc123
 
   # ports
 
