@@ -85,3 +85,11 @@ affinity: {}
 gangSchedulingManagement: {}
 # Alpha LWS feature gates. WorkloadAwareScheduling is disabled by default.
 featureGates: {}
+# leaderElection overrides the manager's lease timing. Empty keeps the
+# controller defaults (15s lease, 10s renew deadline, 2s retry period).
+# For example:
+# leaderElection:
+#   leaseDuration: 60s
+#   renewDeadline: 30s
+#   retryPeriod: 6s
+leaderElection: {}
