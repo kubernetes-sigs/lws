@@ -4,12 +4,89 @@
 footer {
     min-height: auto;
   }
+
+  .docs-version-toggle {
+    border: 0;
+    background: transparent;
+    white-space: normal;
+    text-align: left;
+  }
+
+  .docs-version-menu {
+    width: 26rem;
+    min-width: 0;
+    max-width: calc(100vw - 2rem);
+    max-height: 70vh;
+    overflow-y: auto;
+
+    .dropdown-item { white-space: normal; }
+  }
+
+  .docs-version-option {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+
+    code {
+      margin-left: auto;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+  }
+
+  .docs-version-toggle code,
+  .docs-version-menu code { color: inherit; }
+
+  .docs-version-banner {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+    margin: 1rem 0 1.5rem;
+    padding: .75rem 1rem;
+    border-left: .25rem solid #326ce5;
+    background: #f1f5fe;
+    font-size: .9rem;
+
+    &--development {
+      border-left-color: #b47700;
+      background: #fff3d6;
+    }
+  }
   
   // --------------------------------------------------
   // prevent overflow of long names in sidebar
   // --------------------------------------------------
   .td-sidebar-nav__section > ul {
     overflow-wrap: break-word;
+  }
+
+  // Leave more room for names without flattening the navigation hierarchy.
+  nav.foldable-nav {
+    .with-child,
+    .without-child,
+    .ul-1 > li,
+    .dropdown {
+      padding-left: .75rem;
+    }
+
+    .ul-1 .with-child > label::before {
+      left: 0;
+      padding-left: .05em;
+      padding-right: .05em;
+    }
+  }
+
+  @include media-breakpoint-up(md) {
+    .td-main > .row > .td-sidebar {
+      flex: 0 0 clamp(20rem, 24vw, 24rem);
+      width: clamp(20rem, 24vw, 24rem);
+    }
+
+    .td-main > .row > main {
+      flex: 1 1 0;
+      width: auto;
+      min-width: 0;
+    }
   }
   
   .td-overlay--dark::after {
@@ -18,7 +95,9 @@ footer {
   
   #main_navbar {
     justify-content: end;
-    padding-right: 16px;
+    min-width: 0;
+
+    .docs-section-toggle i { padding-right: 0; }
   }
   
   .row > * {
@@ -30,47 +109,73 @@ footer {
   }
   
   // --------------------------------------------------
-  // custom navbar with larger logo, dropdown on mobile
+  // Use the same combined mark as the overview, in normal flow beside navigation.
   // --------------------------------------------------
   .td-navbar {
-    min-height: auto;
+    min-height: 5rem;
+    gap: .75rem;
+    padding: 0 1rem;
   
     .navbar-brand {
       margin: 0;
       padding: 0;
-  
-      .text-uppercase {
-        display: none;
+      flex-shrink: 0;
+    }
+
+    @include media-breakpoint-up(md) {
+      &.td-navbar--docs .navbar-brand {
+        // Let the larger badge hang into the sidebar's existing top clearance.
+        // Its width stays in normal flow, beside the navigation links.
+        height: 5rem;
       }
-  
-      .navbar-logo {
-        svg {
-          display: inline-block;
-          position: absolute;
-          top: 0;
-          z-index: 33;
-          padding: 10px;
-          height: 95px;
-          background: white;
-          border: 2px solid #4279f4;
-          border-top: none;
-  
-          @include media-breakpoint-down(md) {
-            width: 80px;
-            height: auto;
-            padding: 6px;
-          }
-        }
-      }
+
+      &.td-navbar--docs img.navbar-logo { width: 12.5rem; }
+    }
+
+    img.navbar-logo {
+      display: block;
+      width: 9.375rem;
+      height: auto;
     }
   
     .navbar-nav {
+      align-items: center;
+      gap: .5rem;
+      overflow: visible;
+
       @include media-breakpoint-down(md) {
         font-size: .875rem;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        width: 100%;
+
         .dropdown {
           min-width: inherit;
         }
       }
+    }
+
+    .docs-section-toggle {
+      color: white;
+      width: 2.75rem;
+      height: 2.75rem;
+      padding: .5rem;
+      font-size: 1.25rem;
+    }
+
+    @include media-breakpoint-down(md) {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      gap: .25rem .75rem;
+      padding: .25rem 1rem;
+
+      .navbar-brand { margin-inline: auto; }
+
+      img.navbar-logo {
+        width: 11rem;
+      }
+
+      #main_navbar { flex-basis: 100%; }
     }
   }
   
@@ -81,7 +186,19 @@ footer {
       padding-top: 30px;
   
       @include media-breakpoint-down(md) {
-        padding-top: 10px;
+        padding-top: 0;
+      }
+    }
+
+    @include media-breakpoint-down(md) {
+      // The header now owns the mobile toggle. Preserve any real search input.
+      .td-sidebar__toggle { display: none; }
+      .td-sidebar-nav {
+        margin-left: 0;
+        margin-right: 0;
+      }
+      .td-sidebar__search:has(> .td-sidebar__toggle:only-child) {
+        display: none !important;
       }
     }
   }
@@ -89,8 +206,9 @@ footer {
   .td-sidebar-toc {
     @supports (position: sticky) {
         position: sticky;
-        top: 60px;
-        height: calc(100vh - 120px);
+        top: 5rem;
+        height: calc(100vh - 5rem);
+        height: calc(100dvh - 5rem);
         overflow-y: auto;
     }
   }

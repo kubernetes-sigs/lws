@@ -1,0 +1,23 @@
+{{- $page := . -}}
+{{- with .Param "docs_version" -}}
+  {{- $key := . -}}
+  {{- with $page.Site.Data.docs_versions -}}
+    {{- $current := dict -}}
+    {{- $latest := dict -}}
+    {{- range .versions -}}
+      {{- if eq .key $key }}{{ $current = . }}{{ end -}}
+      {{- if .latest }}{{ $latest = . }}{{ end -}}
+    {{- end -}}
+    {{ if not $current.latest }}
+    <aside class="docs-version-banner{{ if eq $key "main" }} docs-version-banner--development{{ end }}" aria-label="Documentation version">
+      {{ if eq $key "main" }}
+        <strong><i class="fa-solid fa-code-branch" aria-hidden="true"></i> Development documentation · main <code>{{ substr $current.commit 0 8 }}</code></strong>
+        <span>This version may describe unreleased features.</span>
+      {{ else }}
+        <strong>Versioned documentation · {{ $current.label }}</strong>
+      {{ end }}
+      <a href="{{ $latest.url }}">View latest stable ({{ $latest.label }})</a>
+    </aside>
+    {{ end }}
+  {{- end -}}
+{{- end -}}

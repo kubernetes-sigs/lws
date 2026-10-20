@@ -396,9 +396,21 @@ code-generator:
 	cp -f $(CODEGEN_ROOT)/generate-internal-groups.sh $(PROJECT_DIR)/bin/
 	cp -f $(CODEGEN_ROOT)/kube_codegen.sh $(PROJECT_DIR)/bin/
 
+.PHONY: site-snapshots
+site-snapshots: ## Generate versioned docs from release branches; see site/README.md.
+	python3 hack/releasing/snapshot-docs.py $(DOCS_SNAPSHOT_ARGS)
+
 .PHONY: site-server
-site-server: hugo
-	(cd site; $(HUGO) server)
+site-server: hugo site-snapshots
+	(cd site; $(HUGO) server --source _generated --destination ../public --cleanDestinationDir)
+
+.PHONY: site-build
+site-build: hugo site-snapshots
+	(cd site; $(HUGO) --source _generated --destination ../public --cleanDestinationDir --gc --minify)
+
+.PHONY: site-test
+site-test: ## Test docs snapshots without network access or Hugo.
+	python3 hack/releasing/test_snapshot_docs.py
 
 ##@ Release
 .PHONY: artifacts

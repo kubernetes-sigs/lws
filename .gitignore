@@ -33,3 +33,12 @@ vendor
 
 # Directory with CRDs for dependencies
 dep-crds
+
+# Local/generated website snapshots and build output
+/site/_generated/
+/site/.docs-snapshot-*/
+/site/public/
+/site/resources/
+/site/node_modules/
+/site/.hugo_build.lock
+__pycache__/

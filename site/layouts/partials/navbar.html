@@ -1,13 +1,19 @@
 {{ $cover := and (.HasShortcode "blocks/cover") (not .Site.Params.ui.navbar_translucent_over_cover_disable) }}
-<nav class="js-navbar-scroll navbar navbar-expand-md navbar-dark {{ if $cover}} td-navbar-cover {{ end }} td-navbar">
-        <a class="navbar-brand" href="{{ .Site.Home.RelPermalink }}">
-		<span class="navbar-logo">{{ if .Site.Params.ui.navbar_logo }}{{ with resources.Get "icons/logo.svg" }}{{ ( . | minify).Content | safeHTML }}{{ end }}{{ end }}</span><span class="text-uppercase font-weight-bold">{{ .Site.Title }}</span>
+<nav class="js-navbar-scroll navbar navbar-expand-md navbar-dark {{ if $cover}} td-navbar-cover {{ end }} td-navbar{{ if eq .Type "docs" }} td-navbar--docs{{ end }}">
+	<a class="navbar-brand" href="{{ .Site.Home.RelPermalink }}" aria-label="LeaderWorkerSet and DisaggregatedSet home">
+		{{ if .Site.Params.ui.navbar_logo }}
+		<img class="navbar-logo" src="{{ "images/lws-ds-logos.svg" | relURL }}" alt="DisaggregatedSet and LeaderWorkerSet" width="191" height="100">
+		{{ else }}{{ .Site.Title }}{{ end }}
 	</a>
-	<button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#main_navbar" aria-controls="main_navbar" aria-expanded="false" aria-label="Toggle navigation">
-		<span class="navbar-toggler-icon"></span>
-	</button>
-	<div class="collapse navbar-collapse ml-md-auto" id="main_navbar">
-		<ul class="navbar-nav ml-auto pt-4 pt-md-0 my-2 my-md-1">
+	<div class="navbar-collapse" id="main_navbar">
+		<ul class="navbar-nav ms-auto my-0">
+			{{ if eq .Type "docs" }}
+			<li class="nav-item d-md-none">
+				<button class="btn docs-section-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#td-section-nav" aria-controls="td-section-nav" aria-expanded="false" aria-label="Toggle section navigation">
+					<i class="fa-solid fa-bars" aria-hidden="true"></i>
+				</button>
+			</li>
+			{{ end }}
 			{{ $p := . }}
 			{{ range .Site.Menus.main }}
 			<li class="nav-item mr-2 mr-lg-4 mt-1 mt-lg-0">
@@ -22,7 +28,7 @@
 				<a class="nav-link{{if $active }} active{{end}}" href="{{ with .Page }}{{ .RelPermalink }}{{ else }}{{ .URL | relLangURL }}{{ end }}" {{ if ne $url.Host $baseurl.Host }}target="_blank" {{ end }}>{{ with .Pre}}{{ $pre }}{{ end }}<span{{if $active }} class="active"{{end}}>{{ .Name }}</span>{{ with .Post}}{{ $post }}{{ end }}</a>
 			</li>
 			{{ end }}
-			{{ if  .Site.Params.versions }}
+			{{ if or .Site.Data.docs_versions .Site.Params.versions }}
 			<li class="nav-item dropdown mt-1 mt-lg-0 mr-2">
 				{{ partial "navbar-version-selector.html" . }}
 			</li>
