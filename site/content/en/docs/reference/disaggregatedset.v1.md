@@ -262,6 +262,20 @@ reductions during the rollout, preferring safe old-revision drains.
 Both policies allow scale-up and old-revision drains within rollout bounds.</p>
 </td>
 </tr>
+<tr><td><code>subRoleScaleUpDelaySeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>SubRoleScaleUpDelaySeconds delays growth of an existing sub-role LWS so
+nearby target updates can be applied together. Valid values are 0 to 60;
+defaults to 2, and zero disables the delay. Only steady-state net growth waits:
+ordinary roles, zero-to-positive scaling, and template rollouts do not.
+The first growth request starts a fixed window; later updates do not extend
+it. At expiry, the latest targets apply. The wait is cancelled if their sum
+no longer exceeds current replicas. This adds scale-up latency and does not
+combine updates arriving after the window.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -306,8 +320,8 @@ Changing Slices scales copies up or down and does not trigger a rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
 </td>
 <td>
-   <p>ScalingPolicy controls scale-down during rolling updates. Omit it to
-preserve the default Deferred behavior.</p>
+   <p>ScalingPolicy controls replica target changes. Omit it for Deferred
+scale-down during rollouts and a 2-second delay for steady-state sub-role growth.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>

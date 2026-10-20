@@ -46,6 +46,7 @@ import (
 	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -3205,6 +3206,120 @@ func TestSubRoleScalingWaitsUntilRequestedTargetsAreAccepted(t *testing.T) {
 			require.EqualValues(t, 2, getLWSReplicas(f.observe().LWS), "repairing metadata or labels is not an accepted scale-up")
 			require.Empty(t, executor.Record.(*events.FakeRecorder).Events)
 		})
+	}
+}
+
+func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
+	type request struct {
+		at                 time.Duration
+		interactive, batch int32
+		physical           int
+	}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name      string
+			delay     *int32
+			bootstrap bool
+			requests  []request
+		}{
+			{"opposite changes reuse existing groups by default", nil, false, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"latest growth uses the original default deadline", nil, false, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
+			{"explicit zero disables the delay", ptr.To[int32](0), false, []request{{0, 6, 8, 14}}},
+			{"custom delay overrides the default", ptr.To[int32](3), false, []request{{0, 6, 8, 12}, {2 * time.Second, 6, 8, 12}, {3 * time.Second, 6, 8, 14}}},
+			{"initial population is not delayed", nil, true, []request{{0, 2, 1, 3}}},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				var children []string
+				if !tc.bootstrap {
+					children = append(slices.Repeat([]string{"batch"}, 8), slices.Repeat([]string{"interactive"}, 4)...)
+				}
+				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+					{Name: "interactive", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+					{Name: "batch", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+				}}}
+				if tc.delay != nil {
+					f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: tc.delay}
+				}
+				clock := clocktesting.NewFakeClock(time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC))
+				f.manager.clock = clock
+				started := clock.Now()
+				delay := time.Duration(ptr.Deref(tc.delay, 2)) * time.Second
+				before := f.observe().Groups
+				ceiling := len(children)
+				checkPhysicalWrite := func(object client.Object) {
+					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						require.GreaterOrEqual(t, int(getLWSReplicas(lws)), len(children), "must not temporarily shrink the physical pool")
+						require.LessOrEqual(t, int(getLWSReplicas(lws)), ceiling, "must not temporarily issue unwanted growth")
+					}
+				}
+				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+						checkPhysicalWrite(object)
+						return c.Patch(ctx, object, patch, options...)
+					},
+					Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+						checkPhysicalWrite(object)
+						return c.Update(ctx, object, options...)
+					},
+				})
+				scalerManager := NewScalerManager(f.manager.client, events.NewFakeRecorder(10))
+				initialCounts, err := subRoleCounts(f.lws, subRoleReplicasAnnotation)
+				require.NoError(t, err)
+				seed := func(role string) (int32, error) { return int32(initialCounts[strings.TrimPrefix(role, "model/")]), nil }
+				reconciler := &DisaggregatedSetReconciler{LWSManager: f.manager}
+				var expectedCounts map[string]int
+				for _, request := range tc.requests {
+					clock.SetTime(started.Add(request.at))
+					ceiling = request.physical
+					expectedCounts = map[string]int{"interactive": int(request.interactive), "batch": int(request.batch)}
+					scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+					require.NoError(t, err)
+					for child, replicas := range expectedCounts {
+						scaler := scalers["model/"+child]
+						scaler.Spec.Replicas = int32(replicas)
+						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
+					}
+					for attempt := range 12 {
+						// Read both actual scaler objects again, just as top-level reconciliation does.
+						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+						require.NoError(t, err)
+						desired := resolveDesiredReplicasByRole(f.ds, scalers)
+						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, &f.ds.Spec.Roles[0], "model", desired)
+						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+						if attempt == 0 && delay > 0 && !tc.bootstrap && request.physical < int(request.interactive+request.batch) {
+							require.Equal(t, started.Add(delay).Format(time.RFC3339Nano),
+								f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "the first reconcile must persist the original deadline, even while updating the baseline")
+						}
+						f.native()
+					}
+					require.EqualValues(t, request.physical, getLWSReplicas(f.observe().LWS), "at %s", request.at)
+					if request.physical == int(request.interactive+request.batch) {
+						counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+						require.NoError(t, err)
+						require.Equal(t, expectedCounts, counts, "same-size transfers must not wait for the growth deadline")
+					}
+				}
+				after := f.observe()
+				require.Empty(t, after.LWS.Annotations[subRolePlanAnnotation])
+				require.Empty(t, after.LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
+				if tc.name == "opposite changes reuse existing groups by default" {
+					require.Len(t, after.Groups, len(before))
+					actual := map[string]int{}
+					for i, group := range after.Groups {
+						require.Len(t, group.Pods, len(before[i].Pods))
+						for j, pod := range group.Pods {
+							require.Equal(t, before[i].Pods[j].UID, pod.UID, "reuse every original leader and worker")
+						}
+						child, coherent := groupSubRole(group)
+						require.True(t, coherent)
+						require.True(t, group.Ready)
+						actual[child]++
+					}
+					require.Equal(t, expectedCounts, actual)
+				}
+			})
+		}
 	}
 }
 

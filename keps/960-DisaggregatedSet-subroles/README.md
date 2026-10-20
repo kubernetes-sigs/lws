@@ -405,6 +405,29 @@ enabling sub-roles preserves total capacity. For a fresh role, each External sca
 seeded at one replica for vanilla-HPA bootstrap; scale-to-zero-aware autoscalers may
 subsequently write zero.
 
+Independent scaler writes can arrive separately even when their final targets only
+move capacity between sub-roles. By default, the controller waits two seconds for
+these writes before growing an existing physical LWS. The delay is configurable:
+
+```yaml
+spec:
+  scalingPolicy:
+    subRoleScaleUpDelaySeconds: 2
+```
+
+For example, an LWS has `short=4, long=4`. The `short` scaler first requests 6,
+temporarily raising the total to 10. If `long` requests 2 within the window, the
+total returns to 8: the controller cancels the growth delay and redistributes the
+existing groups instead of creating two groups and later removing two.
+
+The field accepts 0 to 60 seconds; omitted defaults to 2, and zero disables the delay. Each
+physical LWS starts a fixed deadline on its first steady-state net-growth request.
+Later writes do not extend it, and reconciliation uses the latest targets. A total
+at or below current replicas cancels the wait. Initial scaling from zero, ordinary
+roles, and template rollouts bypass it. This intentionally adds latency to genuine
+growth; writes outside the window can still cause separate physical scaling. It
+does not coordinate the autoscalers or change the rollout planner.
+
 ### Routing and Service Compatibility
 
 llm-d's Kubernetes discovery watches selected Pods and refreshes endpoint metadata on
@@ -521,6 +544,7 @@ existing tests to make this code solid enough prior to implementation.
 ## Implementation History
 
 - 2026-08-04: Initial provisional KEP draft.
+- 2026-10-16: Added a configurable, fixed scale-up window for existing sub-role pools, defaulting to two seconds; zero disables it. Nearby target updates can reuse groups without temporary physical growth.
 
 ## Drawbacks
 
