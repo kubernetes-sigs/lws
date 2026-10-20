@@ -411,6 +411,7 @@ site-build: hugo site-snapshots
 .PHONY: site-test
 site-test: ## Test docs snapshots without network access or Hugo.
 	python3 hack/releasing/test_snapshot_docs.py
+	python3 hack/releasing/test_docs_build_trigger.py
 
 ##@ Release
 .PHONY: artifacts

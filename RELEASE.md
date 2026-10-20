@@ -15,3 +15,8 @@ The build discovers stable tags and refreshes each `/vX.Y/docs/` snapshot from
 `release-X.Y`; the latest tagged release becomes the default. Backport relevant
 documentation fixes to the release branch before rebuilding. Keep unreleased
 feature documentation on `main`. See [the local generation and preview guide](site/README.md).
+
+When creating a new release branch, ensure it carries
+`.github/workflows/docs-release-refresh.yaml`. Together with the production
+`NETLIFY_DOCS_BUILD_HOOK` secret, it refreshes the combined website when later
+documentation changes are merged into that release branch.

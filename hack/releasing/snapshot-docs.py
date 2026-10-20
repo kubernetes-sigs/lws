@@ -357,7 +357,7 @@ def main():
     parser.add_argument("--repo", type=Path, default=REPO_ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--remote", default=REMOTE, help="Git remote name or URL to fetch (default: upstream LWS URL)")
     parser.add_argument("--no-fetch", action="store_true", help="Use cached snapshot refs, or local tags/branches if no cache exists")
-    parser.add_argument("--min-version", default="1.0", help="Oldest minor series to include, e.g. 0.11 (default: 1.0)")
+    parser.add_argument("--min-version", default="0.10", help="Oldest minor series to include, e.g. 1.0 (default: 0.10)")
     parser.add_argument("--main-ref", help="Override main content source with a local ref (e.g. HEAD for a docs preview)")
     args = parser.parse_args()
     try:

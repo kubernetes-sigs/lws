@@ -16,7 +16,9 @@ ignored build directory, regenerated from Git by
 
 Stable `vMAJOR.MINOR.PATCH` tags discover the release series and label each with
 its highest patch tag. Prereleases and unrelated tags are ignored. The default
-starts at v1.0. A release branch without a stable tag is not published; a tagged
+starts at v0.10. For example, the menu shows v1.0.0, then main, v0.11.1, and
+v0.10.0, not separate entries for v0.11.0 and v0.11.1.
+A release branch without a stable tag is not published; a tagged
 series without its release branch fails the build rather than showing main's
 content under a release label.
 
@@ -52,8 +54,8 @@ Useful variants:
 # Regenerate offline using refs already fetched by the script.
 python3 hack/releasing/snapshot-docs.py --no-fetch
 
-# Include older series (only those with a website can be generated).
-python3 hack/releasing/snapshot-docs.py --min-version 0.11
+# Restrict the menu to v1.0 and newer (main remains available).
+python3 hack/releasing/snapshot-docs.py --min-version 1.0
 
 # Preview committed documentation changes on your branch as Development.
 python3 hack/releasing/snapshot-docs.py --no-fetch --main-ref HEAD
@@ -90,6 +92,47 @@ Netlify deploy previews and branch deploys use `--main-ref HEAD`: select
 Development to review the PR's documentation changes. Production uses upstream
 `main`. The `--cleanDestinationDir` build flag removes stale files from the
 generated `site/public` output; do not store hand-written files there.
+
+### When a build runs
+
+| Event | Build | Result |
+| --- | --- | --- |
+| Merge into `main` | Existing Netlify Git integration builds `main` | Development docs refresh; release snapshots are regenerated too. |
+| Merge docs/examples into `release-X.Y` | Release-refresh workflow calls the production build hook | A **main-based** build rereads the changed release branch and updates `/vX.Y/docs/`, without a new tag. |
+| Publish a stable GitHub release | Same workflow calls the hook | Highest stable patch labels and the latest-default selection refresh. |
+| Open/update a PR | Netlify deploy preview builds the PR checkout | Select Development to read the PR's docs; production is unchanged. |
+| Run the generator locally | No deployment | Preview the same versioned site locally. |
+
+This is one combined website, not a deployment of an old release branch over
+production. Always run the current generator and templates from `main`, then
+read each version's content from its release branch. A release docs change
+needs a **production rebuild**, not merely an isolated Netlify branch preview.
+
+### One-time maintainer setup
+
+The private review PR does not configure or deploy the upstream website.
+Before enabling automatic release-branch refreshes upstream:
+
+1. Create a production Netlify build hook targeting `main` and save its URL as
+   the GitHub Actions secret `NETLIFY_DOCS_BUILD_HOOK`. Do not commit the URL.
+2. Merge the tooling into `main`, then backport **only**
+   `.github/workflows/docs-release-refresh.yaml` to every maintained release
+   branch, starting with `release-0.10`, `release-0.11`, and `release-1.0`.
+   GitHub loads a push workflow from the pushed branch, so a workflow that
+   exists only on `main` cannot observe those branch pushes.
+3. Run **Refresh released documentation** manually once and confirm the new
+   production deployment in Netlify. Then merge a small release-doc change and
+   verify its `/vX.Y/docs/` page updates without creating a tag.
+
+The workflow checks out `main`, has read-only repository permissions, and sends
+only the build-hook request. It never pushes commits or uploads artifacts.
+Missing configuration fails explicitly. It ignores deleted branches and
+draft/prerelease releases. Prow can call the same helper from a postsubmit if
+maintainers prefer; configuring a test-infra job is outside this repository.
+
+`make site-test` covers release-branch updates without tags and mocks the
+outgoing HTTP request to verify the correct build branch and event filtering.
+These are local tests, not a claim that a live Netlify hook has been configured.
 
 Tags determine what is **stable**, not whether an image/chart upload has
 finished. Publish the release and Helm chart before triggering the production

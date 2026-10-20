@@ -172,6 +172,24 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/refs/heads/main/docs/
             self.assertEqual(entry["url"], "/" + entry["key"] + "/docs/")
             self.assertEqual(entry["latest"], entry["key"] == "v1.0")
 
+    def test_release_branch_updates_rebuild_without_a_new_tag(self):
+        self.generate()
+        previous_release = self.manifest()["versions"][0]
+        previous_main = self.page("main").read_bytes()
+        self.git("switch", "-q", "release-1.0")
+        self.write_site("MERGED RELEASE DOCUMENTATION FIX", "v1.0.0")
+        self.commit("Merge documentation fix after publication")
+        updated_commit = self.git("rev-parse", "HEAD")
+        self.git("switch", "-q", "main")
+        self.generate()
+        release = self.manifest()["versions"][0]
+        self.assertEqual(release["label"], previous_release["label"])
+        self.assertEqual(release["url"], previous_release["url"])
+        self.assertNotEqual(release["commit"], previous_release["commit"])
+        self.assertEqual(release["commit"], updated_commit)
+        self.assertIn("MERGED RELEASE DOCUMENTATION FIX", self.page("v1.0").read_text())
+        self.assertEqual(self.page("main").read_bytes(), previous_main)
+
     def test_patch_tags_group_and_versions_sort_numerically(self):
         self.add_release("1.9")
         self.add_release("1.10")
@@ -252,10 +270,13 @@ chart_version = "0.6.2"
     def test_minimum_version_is_numeric_and_can_include_older_series(self):
         for series in ("0.9", "0.10", "0.11"):
             self.add_release(series)
+        self.git("tag", "v0.11.1", "release-0.11")
         self.generate()
-        self.assertEqual([entry["key"] for entry in self.manifest()["versions"]], ["v1.0", "main"])
-        self.generate("--min-version", "0.10")
         self.assertEqual([entry["key"] for entry in self.manifest()["versions"]], ["v1.0", "main", "v0.11", "v0.10"])
+        self.assertEqual([entry["label"] for entry in self.manifest()["versions"]],
+                         ["v1.0.0", "main", "v0.11.1", "v0.10.0"])
+        self.generate("--min-version", "1.0")
+        self.assertEqual([entry["key"] for entry in self.manifest()["versions"]], ["v1.0", "main"])
 
     def test_missing_release_branch_preserves_previous_output(self):
         self.generate()
