@@ -84,6 +84,8 @@ automatically lowers a positive availability floor to zero.
 
 ## Scaling during a rollout
 
+For an animated comparison of Deferred and Immediate scale-down, see [Scaling During a Rollout](scaling-during-rollout/).
+
 This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets. Changing replicas or the scaling policy does not create a new revision.
 
 | `scalingPolicy.scaleDownDuringRollout` | Scale-up during a rollout | Scale-down during a rollout |
