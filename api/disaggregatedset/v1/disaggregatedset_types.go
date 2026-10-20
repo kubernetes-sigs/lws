@@ -106,45 +106,68 @@ type RoleScaling struct {
 	Mode RoleScalingMode `json:"mode,omitempty"`
 }
 
-// RolloutScaleDownPolicy controls when demand-driven target replica reductions are
-// considered during an active rolling update. Both policies allow scale-up and
-// old-revision retirement within the rollout's availability and surge bounds.
-// For roles still present, reductions preserve effective desired - maxUnavailable
-// Ready replicas, or avoid worsening a shortfall if fewer are currently Ready.
-// Deferred External roles use at least the target's current Spec as effective
-// desired while old replicas of that role remain.
+// RolloutScalingPolicy controls when a replica target change is applied during
+// a rolling update. The scale-up and scale-down fields select it independently.
 // +kubebuilder:validation:Enum=Deferred;Immediate
-type RolloutScaleDownPolicy string
+type RolloutScalingPolicy string
 
 const (
-	// RolloutScaleDownDeferred preserves the existing rollout behavior. Scale-up
-	// proceeds within rollout bounds; demand-driven target reductions wait until
-	// old revisions finish draining. Old replicas may still drain during the
-	// rollout. Renamed-role surplus recovery uses the same target availability
-	// and scheduled-startup protection as other target reductions.
-	// The surge ceiling is max(initial old replicas, effective desired) + maxSurge.
-	// External roles retain their target Spec clamp while old replicas overlap.
-	RolloutScaleDownDeferred RolloutScaleDownPolicy = "Deferred"
+	// RolloutScalingDeferred keeps scaling paced by the rolling update.
+	RolloutScalingDeferred RolloutScalingPolicy = "Deferred"
 
-	// RolloutScaleDownImmediate considers scale-down during the rollout with a
-	// surge ceiling of desired + maxSurge. For roles still present in the target,
-	// old and target reductions use max(0, desired - maxUnavailable) as their
-	// availability floor. Safe old-revision drains are preferred; target
-	// replicas may shrink when old revisions must remain. Availability and
-	// startup protection can delay reductions: Immediate does not mean instant.
-	RolloutScaleDownImmediate RolloutScaleDownPolicy = "Immediate"
+	// RolloutScalingImmediate considers the replica target change immediately,
+	// subject to the direction's availability and startup safeguards.
+	RolloutScalingImmediate RolloutScalingPolicy = "Immediate"
+)
+
+// RolloutScaleDownPolicy is an alias for RolloutScalingPolicy.
+//
+// Deprecated: Use RolloutScalingPolicy.
+type RolloutScaleDownPolicy = RolloutScalingPolicy
+
+const (
+	// RolloutScaleDownDeferred is an alias for RolloutScalingDeferred.
+	//
+	// Deprecated: Use RolloutScalingDeferred.
+	RolloutScaleDownDeferred = RolloutScalingDeferred
+
+	// RolloutScaleDownImmediate is an alias for RolloutScalingImmediate.
+	//
+	// Deprecated: Use RolloutScalingImmediate.
+	RolloutScaleDownImmediate = RolloutScalingImmediate
 )
 
 // DisaggregatedSetScalingPolicy configures how replica target changes interact
 // with DisaggregatedSet reconciliation.
 type DisaggregatedSetScalingPolicy struct {
+	// ScaleUpDuringRollout controls target growth while old revisions remain.
+	// Deferred preserves readiness-paced growth, without waiting for the entire
+	// rollout to finish. Immediate also tops up target replicas to desired minus
+	// replicas requested from all old revisions of the same role. Loading groups
+	// count, so readiness loss alone does not trigger extra growth.
+	// Old-revision retirement checks are unchanged.
+	// Renamed-role replacement limits still apply.
+	// +optional
+	// +kubebuilder:default=Deferred
+	ScaleUpDuringRollout RolloutScalingPolicy `json:"scaleUpDuringRollout,omitempty"`
+
 	// ScaleDownDuringRollout controls demand-driven target replica reductions.
 	// Deferred waits until old revisions finish draining. Immediate considers
 	// reductions during the rollout, preferring safe old-revision drains.
 	// Both policies allow scale-up and old-revision drains within rollout bounds.
+	// Deferred uses max(initial old replicas, effective desired) + maxSurge as
+	// the surge ceiling. External roles retain at least the target's current Spec
+	// as effective desired while old replicas of that role remain.
+	// Immediate uses desired + maxSurge as the surge ceiling and may shrink
+	// target replicas when old revisions must remain. Under both policies,
+	// reductions of roles still present preserve max(0, effective desired -
+	// maxUnavailable) Ready replicas, or avoid worsening an existing shortfall.
+	// Renamed-role surplus recovery uses the same availability and scheduled-startup
+	// protection as other target reductions. These safeguards may delay
+	// reductions: Immediate does not mean instant deletion.
 	// +optional
 	// +kubebuilder:default=Deferred
-	ScaleDownDuringRollout RolloutScaleDownPolicy `json:"scaleDownDuringRollout,omitempty"`
+	ScaleDownDuringRollout RolloutScalingPolicy `json:"scaleDownDuringRollout,omitempty"`
 }
 
 // DisaggregatedSubRoleSpec defines a scaling and routing pool sharing its parent's templates.
@@ -241,8 +264,9 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
 
-	// ScalingPolicy controls scale-down during rolling updates. Omit it to
-	// preserve the default Deferred behavior.
+	// ScalingPolicy controls scale-up and scale-down during rolling updates.
+	// Omit it to use Deferred for both directions: readiness-paced growth and
+	// target reductions after old revisions drain.
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 

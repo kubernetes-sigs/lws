@@ -252,14 +252,37 @@ with DisaggregatedSet reconciliation.</p>
 <tbody>
     
   
+<tr><td><code>scaleUpDuringRollout</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy"><code>RolloutScalingPolicy</code></a>
+</td>
+<td>
+   <p>ScaleUpDuringRollout controls target growth while old revisions remain.
+Deferred preserves readiness-paced growth, without waiting for the entire
+rollout to finish. Immediate also tops up target replicas to desired minus
+replicas requested from all old revisions of the same role. Loading groups
+count, so readiness loss alone does not trigger extra growth.
+Old-revision retirement checks are unchanged.
+Renamed-role replacement limits still apply.</p>
+</td>
+</tr>
 <tr><td><code>scaleDownDuringRollout</code><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy"><code>RolloutScaleDownPolicy</code></a>
+<a href="#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy"><code>RolloutScalingPolicy</code></a>
 </td>
 <td>
    <p>ScaleDownDuringRollout controls demand-driven target replica reductions.
 Deferred waits until old revisions finish draining. Immediate considers
 reductions during the rollout, preferring safe old-revision drains.
-Both policies allow scale-up and old-revision drains within rollout bounds.</p>
+Both policies allow scale-up and old-revision drains within rollout bounds.
+Deferred uses max(initial old replicas, effective desired) + maxSurge as
+the surge ceiling. External roles retain at least the target's current Spec
+as effective desired while old replicas of that role remain.
+Immediate uses desired + maxSurge as the surge ceiling and may shrink
+target replicas when old revisions must remain. Under both policies,
+reductions of roles still present preserve max(0, effective desired -
+maxUnavailable) Ready replicas, or avoid worsening an existing shortfall.
+Renamed-role surplus recovery uses the same availability and scheduled-startup
+protection as other target reductions. These safeguards may delay
+reductions: Immediate does not mean instant deletion.</p>
 </td>
 </tr>
 </tbody>
@@ -306,8 +329,9 @@ Changing Slices scales copies up or down and does not trigger a rollout.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy"><code>DisaggregatedSetScalingPolicy</code></a>
 </td>
 <td>
-   <p>ScalingPolicy controls scale-down during rolling updates. Omit it to
-preserve the default Deferred behavior.</p>
+   <p>ScalingPolicy controls scale-up and scale-down during rolling updates.
+Omit it to use Deferred for both directions: readiness-paced growth and
+target reductions after old revisions drain.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>
@@ -595,7 +619,7 @@ while draining. Do not add child counts to their parent aggregate.</p>
 </tbody>
 </table>
 
-## `RolloutScaleDownPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScaleDownPolicy}
+## `RolloutScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy}
     
 (Alias of `string`)
 
@@ -604,13 +628,8 @@ while draining. Do not add child counts to their parent aggregate.</p>
 - [DisaggregatedSetScalingPolicy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy)
 
 
-<p>RolloutScaleDownPolicy controls when demand-driven target replica reductions are
-considered during an active rolling update. Both policies allow scale-up and
-old-revision retirement within the rollout's availability and surge bounds.
-For roles still present, reductions preserve effective desired - maxUnavailable
-Ready replicas, or avoid worsening a shortfall if fewer are currently Ready.
-Deferred External roles use at least the target's current Spec as effective
-desired while old replicas of that role remain.</p>
+<p>RolloutScalingPolicy controls when a replica target change is applied during
+a rolling update. The scale-up and scale-down fields select it independently.</p>
 
 
 

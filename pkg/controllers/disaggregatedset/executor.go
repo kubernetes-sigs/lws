@@ -64,6 +64,7 @@ type rolloutInputs struct {
 	targetReplicas         RoleReplicaState
 	config                 []RollingUpdateConfig
 	readiness              rolloutReadiness
+	scaleUpDuringRollout   bool
 	scaleDownDuringRollout bool
 }
 
@@ -203,6 +204,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			// Drained objects may still exist. The target must converge exactly,
 			// using the same retained-readiness bounds as any other reduction.
 			state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, disaggregatedsetutils.RevisionRoles{}, targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
+			state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
 			state.ScaleDownDuringRollout = true
 			if step := ComputeNextStep(state); step != nil {
 				if err := executor.applyRolloutStep(ctx, disaggregatedSet, targetRevision, inputs, disaggregatedsetutils.RevisionRoles{}, state, step); err != nil {
@@ -260,13 +262,19 @@ func buildRolloutInputs(
 		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole, readiness),
 		config:                 extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole),
 		readiness:              readiness,
+		scaleUpDuringRollout:   scaleUpDuringRolloutEnabled(disaggregatedSet),
 		scaleDownDuringRollout: scaleDownDuringRolloutEnabled(disaggregatedSet),
 	}
 }
 
+func scaleUpDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
+	return ds.Spec.ScalingPolicy != nil &&
+		ds.Spec.ScalingPolicy.ScaleUpDuringRollout == disaggregatedsetv1.RolloutScalingImmediate
+}
+
 func scaleDownDuringRolloutEnabled(ds *disaggregatedsetv1.DisaggregatedSet) bool {
 	return ds.Spec.ScalingPolicy != nil &&
-		ds.Spec.ScalingPolicy.ScaleDownDuringRollout == disaggregatedsetv1.RolloutScaleDownImmediate
+		ds.Spec.ScalingPolicy.ScaleDownDuringRollout == disaggregatedsetv1.RolloutScalingImmediate
 }
 
 // selectNextRolloutStep asks the planner about old revisions in preference
@@ -288,6 +296,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	candidateStates := make([]RolloutState, len(candidates))
 	for i, candidate := range candidates {
 		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
+		state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
 		state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
 		candidateStates[i] = state
 		step := ComputeNextStep(state)
@@ -959,7 +968,7 @@ func (plan rolloutPlan) validateTargets(step *UpdateStep, limits RoleReplicaStat
 	for i := range growth {
 		growth[i] = max(growth[i], snapshot.Target.SpecReplicas[i])
 	}
-	if bounded := boundGrowingRoleTargetsToWindow(snapshot.Target.SpecReplicas, phase, growth); !slices.Equal(bounded, growth) {
+	if bounded := boundGrowingSnapshotTargets(snapshot, phase, growth); !slices.Equal(bounded, growth) {
 		return fmt.Errorf("new targets exceed the fractional coordination window")
 	}
 	usedBootstrap := false
