@@ -194,6 +194,46 @@ func TestIsNotMoreThan100Percent(t *testing.T) {
 	}
 }
 
+func TestValidateUnknownTargetRollingUpdateBudget(t *testing.T) {
+	zeroPair := "must not be 0 when `maxSurge` is 0"
+	tests := []struct {
+		name               string
+		surge, unavailable intstr.IntOrString
+		wantField          string
+		wantDetail         string
+	}{
+		{name: "percentage that rounds to zero at a small count", surge: intstr.FromInt32(0), unavailable: intstr.FromString("25%")},
+		{name: "smallest percentage", surge: intstr.FromInt32(0), unavailable: intstr.FromString("1%")},
+		{name: "integer", surge: intstr.FromInt32(0), unavailable: intstr.FromInt32(3)},
+		{name: "surge only", surge: intstr.FromInt32(1), unavailable: intstr.FromInt32(0)},
+		{name: "zero integers", surge: intstr.FromInt32(0), unavailable: intstr.FromInt32(0), wantField: "maxUnavailable", wantDetail: zeroPair},
+		{name: "zero percentages", surge: intstr.FromString("0%"), unavailable: intstr.FromString("0%"), wantField: "maxUnavailable", wantDetail: zeroPair},
+		{name: "zero percentage with leading zeros", surge: intstr.FromInt32(0), unavailable: intstr.FromString("00%"), wantField: "maxUnavailable", wantDetail: zeroPair},
+		{name: "negative surge", surge: intstr.FromInt32(-1), unavailable: intstr.FromInt32(1), wantField: "maxSurge", wantDetail: "must be greater than or equal to 0"},
+		{name: "unavailable above 100%", surge: intstr.FromInt32(0), unavailable: intstr.FromString("101%"), wantField: "maxUnavailable", wantDetail: "must not be greater than 100%"},
+		{name: "malformed unavailable", surge: intstr.FromInt32(0), unavailable: intstr.FromString("bad"), wantField: "maxUnavailable", wantDetail: "a valid percent string"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := field.NewPath("test")
+			errs := ValidateUnknownTargetRollingUpdateBudget(&v1.RollingUpdateConfiguration{MaxSurge: tc.surge, MaxUnavailable: tc.unavailable}, path)
+			if tc.wantField == "" {
+				if len(errs) != 0 {
+					t.Fatalf("unexpected errors: %v", errs)
+				}
+				return
+			}
+			if len(errs) != 1 || errs[0].Field != "test."+tc.wantField || !strings.Contains(errs[0].Detail, tc.wantDetail) {
+				t.Fatalf("want one error on test.%s containing %q, got %v", tc.wantField, tc.wantDetail, errs)
+			}
+		})
+	}
+
+	if errs := ValidateUnknownTargetRollingUpdateBudget(nil, field.NewPath("test")); len(errs) != 0 {
+		t.Fatalf("unexpected errors for a nil configuration: %v", errs)
+	}
+}
+
 func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	tests := []struct {
 		name      string

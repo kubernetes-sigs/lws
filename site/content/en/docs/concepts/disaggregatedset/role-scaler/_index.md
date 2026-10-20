@@ -48,6 +48,7 @@ However, because child LeaderWorkerSets include dynamic revision hashes in their
 2. **Stable Target:** The scaler's name remains constant regardless of how many rolling updates or revision changes occur.
 3. **Reconciled Replicas:** The external autoscaler (HPA or KEDA) writes the desired replica count to the scaler's `/scale` endpoint. The DisaggregatedSet controller reads this value and scales the corresponding child LeaderWorkerSet accordingly.
 4. **Observable Target:** The DisaggregatedSet reports the target it is driving each role toward in `status.roleStatuses[].desiredReplicas`, next to its `replicas`, `readyReplicas` and `updatedReplicas`, so you can check a role's progress without reading its scaler. The field is unset until the scaler exists.
+5. **Rollout Budgets:** Percentages in the role's `rolloutStrategy.rollingUpdateConfiguration` resolve against the scaler's target. Because that target is unknown at admission, validation rejects `maxSurge` and `maxUnavailable` only when both are zero at every size, such as `0` and `0%`.
 
 {{% alert title="Note" color="info" %}}
 External role scaling (`scaling.mode: External`) currently requires `spec.slices: 1` (or omitted, which defaults to 1). Admission validation rejects configurations with `slices > 1` when any role uses `scaling.mode: External`.
