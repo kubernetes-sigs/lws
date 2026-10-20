@@ -100,8 +100,8 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 			desired := map[string]int{"model": 1, "model/a": 1}
 			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
 			require.Equal(t, []disaggregatedsetv1.RoleStatus{
-				{Name: "model", DesiredReplicas: ptr.To[int32](1), Replicas: tc.parent, ReadyReplicas: tc.parent, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
-					{Name: "a", DesiredReplicas: ptr.To[int32](1), Replicas: tc.childCount, ReadyReplicas: tc.childCount, UpdatedReplicas: 1},
+				{Name: "model", DesiredReplicas: ptr.To[int32](1), MinAvailableReplicas: ptr.To[int32](0), Replicas: tc.parent, ReadyReplicas: tc.parent, AvailableReplicas: tc.parent, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
+					{Name: "a", DesiredReplicas: ptr.To[int32](1), MinAvailableReplicas: ptr.To[int32](0), Replicas: tc.childCount, ReadyReplicas: tc.childCount, AvailableReplicas: tc.childCount, UpdatedReplicas: 1},
 				}},
 			}, f.ds.Status.RoleStatuses)
 			require.Equal(t, tc.assigned, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)))
@@ -343,9 +343,10 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			err = r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 3, "model/a": 2, "model/b": 1, "model/empty": 0}, scalers)
 			require.Equal(t, failure != "", err != nil)
 			want := []disaggregatedsetv1.RoleStatus{
-				{Name: "model", DesiredReplicas: ptr.To[int32](3), Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 2, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
-					{Name: "b", DesiredReplicas: ptr.To[int32](1), Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
-					{Name: "a", DesiredReplicas: ptr.To[int32](2), Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1}, {Name: "empty", DesiredReplicas: ptr.To[int32](0)},
+				{Name: "model", DesiredReplicas: ptr.To[int32](3), MinAvailableReplicas: ptr.To[int32](1), Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3, UpdatedReplicas: 2, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
+					{Name: "b", DesiredReplicas: ptr.To[int32](1), MinAvailableReplicas: ptr.To[int32](0), Replicas: 1, ReadyReplicas: 1, AvailableReplicas: 1, UpdatedReplicas: 1},
+					{Name: "a", DesiredReplicas: ptr.To[int32](2), MinAvailableReplicas: ptr.To[int32](1), Replicas: 2, ReadyReplicas: 2, AvailableReplicas: 2, UpdatedReplicas: 1},
+					{Name: "empty", DesiredReplicas: ptr.To[int32](0), MinAvailableReplicas: ptr.To[int32](0)},
 				}},
 			}
 			wantScaler := int32(2)

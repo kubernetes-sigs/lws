@@ -21,6 +21,7 @@ workload primitive.
     - [Bootstrap surge](#bootstrap-surge)
     - [Automatic unschedulable target recovery](#automatic-unschedulable-target-recovery)
     - [Reconcile ordering and completion](#reconcile-ordering-and-completion)
+    - [Reporting availability](#reporting-availability)
   - [Example: Pipelining an 8P/4D Rollout](#example-pipelining-an-8p4d-rollout)
   - [Service Orchestration](#service-orchestration)
   - [Controller Architecture](#controller-architecture)
@@ -355,6 +356,20 @@ Fully drained old revisions are cleaned continuously. If a non-zero old revision
 
 A rollout is complete only when every old role Spec is zero, every new role Spec has reached its target, and every new role has at least its target number of committed Ready replicas.
 
+#### Reporting availability
+
+The `Available` condition reports completion: every role and sub-role has reached its `desiredReplicas`, with all of them Ready and updated. It is False during every rollout and scale-up, including those that never drop below what the user permitted. Clients that need to know whether enough is serving, such as health checks, alerts, and parent controllers like KServe, would otherwise have to reimplement these availability rules ([#1191](https://github.com/kubernetes-sigs/lws/issues/1191)).
+
+The controller therefore also publishes the planner's view of availability, without changing the meaning of `Available` or the planner's rules:
+
+- `RoleStatus.minAvailableReplicas` and `SubRoleStatus.minAvailableReplicas` publish `availabilityFloor` for each current role: in each slice, `max(0, desired - MaxUnavailable)`, with `MaxUnavailable` resolved against the latest requested count exactly as for rollout steps, totalled across slices. A partitioned parent reports the sum of its children's floors. The field is unset while any contributing target is unknown. For a role still present in the target, `unreplaced` is zero, so this is the planner's floor. Removed roles have no published status, so their historical floors are not shown. Under `Deferred`, an External role's effective desired count can exceed its latest target while old replicas overlap; the planner then protects more Ready replicas than the published floor.
+- `RoleStatus.availableReplicas` and `SubRoleStatus.availableReplicas` count Ready groups that can serve. As in the planner's usable capacity, Ready groups count only in a revision of a slice in which every role that revision requires has at least one Ready group. A role is required by a revision while its intended replica count, `max(Spec, initial-replicas)`, is positive; each sub-role is required by its issued or frozen sub-role count. Old revisions of removed roles take part in this check, each of their workloads counting as one unit. Ready capacity is summed across revisions and slices, so old and new groups both count while each can serve on its own. The count uses the same Ready groups as `readyReplicas` and never exceeds it.
+- A new `MinimumReplicasAvailable` condition is True while every parent and child has `availableReplicas >= minAvailableReplicas`, False with the roles below their floors listed in its message, and Unknown while any floor is unknown. It is independent of the `Available`/`Progressing` pair.
+
+Per-role floors alone cannot express that a request needs every required role: a Ready Prefill is not serving capacity while its revision's Decode has no Ready group. Counting only usable groups answers that without a separate set-level rule, and a role whose policy permits zero Ready groups still makes the condition False when it leaves its peers without usable capacity.
+
+The floor follows the latest target, matching a Deployment's `MinimumReplicasAvailable` (`available >= desired - maxUnavailable`). A scale-up larger than `maxUnavailable` therefore reports False until enough new groups are Ready; a percentage budget scales with the target. Reporting the scale-up as satisfied would need the pre-scale-up count, which a stateless controller does not keep.
+
 ### Example: Pipelining an 8P/4D Rollout
 
 Consider a template-only update with `MaxSurge=2` and `MaxUnavailable=2`. The largest role creates a `1/8` progress grid:
@@ -418,6 +433,7 @@ to implement this enhancement.
 - Rolling update planner: constraint intersection, fractional windows, same-revision usable readiness, worst-case Ready loss, revision completeness, bootstrap surge, scheduler-unschedulable recovery, and blocked-state feasibility
 - Executor: first-executable candidate selection, pending drains, slow-role readiness, scheduler-unschedulable recovery, terminating targets, External shrink, and staged interrupted rollouts
 - Cleanup: repeated interrupted revisions retain at most one drained rollout marker
+- Status: per-slice floor resolution, same-revision usable capacity across slices and removed roles, and `MinimumReplicasAvailable` staying True through rollouts and scale-ups within `maxUnavailable`
 - API validation: role count, unique names, replica constraints
 
 #### Integration tests
@@ -459,6 +475,7 @@ to implement this enhancement.
 - 2026-10-13: Let `Deferred` scale-up release safe old capacity above its policy's surge ceiling, matching coordination-bootstrap eligibility. Keep availability and revision completeness checks; do not enable demand-driven target reductions.
 - 2026-10-13: Apply target availability and scheduled-startup protection to renamed-role surplus recovery under both policies. Retain safe cancellation of wholly unscheduled surplus and genuine excess above desired; document that protected startup work can delay capacity recovery.
 - 2026-10-13: Prefer safe old-revision progress over permitted target reductions under both policies, including renamed-role surplus recovery.
+- 2026-10-20: Published each role's availability floor (`minAvailableReplicas`) and usable Ready capacity (`availableReplicas`) in status, with a `MinimumReplicasAvailable` condition separate from rollout completion ([#1191](https://github.com/kubernetes-sigs/lws/issues/1191)). The planner's rules are unchanged.
 
 ## Drawbacks
 

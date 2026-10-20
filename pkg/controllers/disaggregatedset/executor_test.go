@@ -3254,7 +3254,7 @@ func TestSubRoleBaselineRepairAndLiveMembership(t *testing.T) {
 				leader.Status.Phase = corev1.PodFailed
 				require.NoError(t, f.manager.client.Status().Update(t.Context(), leader))
 			}
-			status, _, err := f.manager.subRoleStatus(t.Context(), &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}, []*leaderworkersetv1.LeaderWorkerSet{s.LWS}, s.LWS.Name)
+			status, _, err := f.manager.subRoleStatus(t.Context(), &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}, []*leaderworkersetv1.LeaderWorkerSet{s.LWS}, s.LWS.Name, servingCapacity{})
 			require.NoError(t, err)
 			require.Equal(t, []int32{1, 0, 1}, []int32{status.Replicas, status.SubRoleStatuses[0].Replicas, status.SubRoleStatuses[1].Replicas}, "failed and terminating leaders must not inflate status replicas")
 			for _, membership := range []map[string]int{{}, {"re-enabled": 3}} {
