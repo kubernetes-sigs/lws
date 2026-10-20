@@ -21,8 +21,8 @@ ignored build directory, regenerated from Git by
 
 Stable `vMAJOR.MINOR.PATCH` tags discover the release series and label each with
 its highest patch tag. Prereleases and unrelated tags are ignored. The default
-starts at v0.10. For example, the menu shows v1.0.0, then main, v0.11.1, and
-v0.10.0, not separate entries for v0.11.0 and v0.11.1.
+starts at v0.11. For example, the menu shows v1.0.0, then main and v0.11.1,
+not separate entries for v0.11.0 and v0.11.1.
 A release branch without a stable tag is not published; a tagged
 series without its release branch fails the build rather than showing main's
 content under a release label.
@@ -148,11 +148,9 @@ a separate, release-appropriate update.
 
 ## SEO titles
 
-The shared site title is `LeaderWorkerSet & DisaggregatedSet`, so every page's
-HTML title names both APIs: for example,
-`Installation | LeaderWorkerSet & DisaggregatedSet`. The overview uses
-`Distributed Inference APIs | LeaderWorkerSet & DisaggregatedSet` in every
-documentation version, including the `/docs/overview/` redirect. This is applied
-by the shared head template, not by modifying historical branch content or page
-headings. It makes the purpose of the site clearer in browser tabs and search
-results, including when readers arrive via llm-d.
+The shared head template combines each page's front-matter title with the site
+title, `LeaderWorkerSet & DisaggregatedSet`. For example, the overview becomes
+`Distributed Inference APIs | LeaderWorkerSet & DisaggregatedSet`, and the
+installation page becomes `Installation | LeaderWorkerSet & DisaggregatedSet`.
+No page-specific overrides are needed. This makes browser tabs and search
+results clearer, including when readers arrive via llm-d.

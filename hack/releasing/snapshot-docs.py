@@ -242,14 +242,12 @@ def write_redirect(root, route, target, label="Latest stable documentation", rul
             rules[source + "/"] = target
     destination = root / route.strip("/") / "index.html"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    title = ("Distributed Inference APIs | LeaderWorkerSet & DisaggregatedSet"
-             if target.endswith("/docs/overview/") else label)
     destination.write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<meta name="robots" content="noindex">'
         f'<link rel="canonical" href="{html.escape(target, quote=True)}">'
         f'<meta http-equiv="refresh" content="0; url={html.escape(target, quote=True)}">'
-        f'<title>{html.escape(title)}</title><script>location.replace({json.dumps(target)}'
+        f'<title>{html.escape(label)}</title><script>location.replace({json.dumps(target)}'
         '+location.search+location.hash);</script>'
         f'<a href="{html.escape(target, quote=True)}">{html.escape(label)}</a></html>\n'
     )
@@ -386,7 +384,7 @@ def main():
     parser.add_argument("--repo", type=Path, default=REPO_ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--remote", default=REMOTE, help="Git remote name or URL to fetch (default: upstream LWS URL)")
     parser.add_argument("--no-fetch", action="store_true", help="Use cached snapshot refs, or local tags/branches if no cache exists")
-    parser.add_argument("--min-version", default="0.10", help="Oldest minor series to include, e.g. 1.0 (default: 0.10)")
+    parser.add_argument("--min-version", default="0.11", help="Oldest minor series to include, e.g. 1.0 (default: 0.11)")
     parser.add_argument("--main-ref", help="Override main content source with a local ref (e.g. HEAD for a docs preview)")
     args = parser.parse_args()
     try:

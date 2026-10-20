@@ -19,11 +19,7 @@
   {{- if .IsHome -}}
     {{ .Site.Title -}}
   {{ else -}}
-    {{- $pageTitle := .Title -}}
-    {{- if strings.HasSuffix .Path "/docs/overview" -}}
-      {{- $pageTitle = "Distributed Inference APIs" -}}
-    {{- end -}}
-    {{ with $pageTitle }}{{ . }} | {{ end -}}
+    {{ with .Title }}{{ . }} | {{ end -}}
     {{ .Site.Title -}}
   {{ end -}}
 </title>

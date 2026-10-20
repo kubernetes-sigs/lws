@@ -108,14 +108,14 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
                 for p in self.output.rglob("*") if p.is_file()}
 
     def test_numeric_release_selection_and_minimum(self):
-        for series in ("0.9", "0.10", "0.11", "1.9", "1.10"):
+        for series in ("0.9", "0.11", "1.9", "1.10"):
             self.add_release(series)
         for tag in ("v0.11.1", "v1.10.2", "v1.10.10", "v99.0.0-rc.1", "migrate"):
             self.git("tag", tag)
         data = self.generate()
         self.assertEqual(data["latest"], "v1.10")
         self.assertEqual([v["label"] for v in data["versions"]],
-                         ["v1.10.10", "main", "v1.9.0", "v1.0.0", "v0.11.1", "v0.10.0"])
+                         ["v1.10.10", "main", "v1.9.0", "v1.0.0", "v0.11.1"])
         self.assertEqual(data["versions"][0]["prefix"], "stable")
         self.assertEqual(data["versions"][0]["url"], "/stable/docs/")
         self.assertIn('url = "/stable/docs/"', (self.output / "hugo.toml").read_text())
