@@ -1,6 +1,9 @@
 name: Refresh released documentation
 
 # Main pushes already deploy through the repository's Netlify Git integration.
+# Prow runs LWS tests/merge checks; it does not refresh this combined website.
+# This cross-branch refresh needs no Prow edits. See site/README.md for the
+# required build-hook secret; configuring an equivalent Prow job is an alternative.
 # Backport this workflow to each supported release branch: push workflows are
 # loaded from the pushed branch. The helper itself always comes from main.
 on:

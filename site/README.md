@@ -110,8 +110,17 @@ needs a **production rebuild**, not merely an isolated Netlify branch preview.
 
 ### One-time maintainer setup
 
-The private review PR does not configure or deploy the upstream website.
-Before enabling automatic release-branch refreshes upstream:
+The website is published by Netlify, independently of Prow's test and merge
+jobs. The build command lives in [`netlify.toml`](../netlify.toml); upstream PRs
+report a separate `deploy/netlify` check. The current
+[LWS Prow jobs](https://github.com/kubernetes/test-infra/blob/master/config/jobs/kubernetes-sigs/lws/lws-presubmit.yaml)
+run tests and verification, not website publication.
+
+The release-refresh workflow complements that setup: it asks Netlify to rebuild
+the **production main site** after another branch changes. It neither replaces
+Prow nor deploys a release-branch preview over production. No Prow change is
+required for this approach. Merging the code alone does not configure the hook;
+repository/Netlify maintainers must complete these steps:
 
 1. Create a production Netlify build hook targeting `main` and save its URL as
    the GitHub Actions secret `NETLIFY_DOCS_BUILD_HOOK`. Do not commit the URL.
@@ -127,8 +136,10 @@ Before enabling automatic release-branch refreshes upstream:
 The workflow checks out `main`, has read-only repository permissions, and sends
 only the build-hook request. It never pushes commits or uploads artifacts.
 Missing configuration fails explicitly. It ignores deleted branches and
-draft/prerelease releases. Prow can call the same helper from a postsubmit if
-maintainers prefer; configuring a test-infra job is outside this repository.
+draft/prerelease releases. If maintainers prefer Prow, an equivalent postsubmit
+belongs in a separate PR to `kubernetes/test-infra`, under
+`config/jobs/kubernetes-sigs/lws/`, with its build-hook secret provisioned by
+the test-infra owners. Use one trigger mechanism, not both.
 
 `make site-test` covers release-branch updates without tags and mocks the
 outgoing HTTP request to verify the correct build branch and event filtering.
