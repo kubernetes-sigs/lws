@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 )
 
 // Functions in this package are adapted from https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/statefulset/ and
@@ -77,6 +78,9 @@ func NewRevision(ctx context.Context, k8sClient client.Client, lws *leaderworker
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind(lws.Kind)),
+			},
+			Annotations: map[string]string{
+				placementRecordedAnnotationKey: "true",
 			},
 			Namespace: lws.Namespace,
 		},
@@ -166,9 +170,21 @@ func ListRevisions(ctx context.Context, k8sClient client.Client, parent metav1.O
 // ApplyRevision returns a new LeaderWorkerSet constructed by restoring the state in revision to set. If the returned error
 // is nil, the returned LeaderWorkerSet is valid.
 func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*leaderworkerset.LeaderWorkerSet, error) {
-	// clone := lws.DeepCopy()
+	placementInData, err := revisionDataHasPlacement(revision)
+	if err != nil {
+		return nil, err
+	}
+	recordsPlacement := placementInData || revision.Annotations[placementRecordedAnnotationKey] == "true"
+	original := lws
+	if placementInData && lws.Spec.PlacementPolicy == nil {
+		// A strategic merge patch drops a "$patch: replace" map whose key is
+		// missing from the original, so give the recorded placement a key to
+		// replace.
+		original = lws.DeepCopy()
+		original.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{}
+	}
 	str := &bytes.Buffer{}
-	err := unstructured.UnstructuredJSONScheme.Encode(lws, str)
+	err = unstructured.UnstructuredJSONScheme.Encode(original, str)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +195,19 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	restoredLws := &leaderworkerset.LeaderWorkerSet{}
 	if err = json.Unmarshal(patched, restoredLws); err != nil {
 		return nil, err
+	}
+	// A revision that records placement is authoritative for it, so the live
+	// exclusive-topology annotations must not add to it. A revision created
+	// before placement was recorded keeps the live field and annotations, since
+	// placement was not part of the revision then.
+	// A revision that records no placement leaves no placementPolicy in its
+	// data, so the patch keeps the live field; clear it.
+	if recordsPlacement {
+		delete(restoredLws.Annotations, leaderworkerset.ExclusiveKeyAnnotationKey)
+		delete(restoredLws.Annotations, leaderworkerset.SubGroupExclusiveKeyAnnotationKey)
+		if !placementInData {
+			restoredLws.Spec.PlacementPolicy = nil
+		}
 	}
 	// maxGroupRestarts is a live recovery budget, not part of the workload
 	// template identity. Preserve the value from the current object so neither
@@ -193,6 +222,37 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 		restoredLws.Spec.LeaderWorkerTemplate.RestartBackoff = restartBackoff.DeepCopy()
 	}
 	return restoredLws, nil
+}
+
+// placementRecordedAnnotationKey marks a revision created by a controller that
+// records the effective placement. Such a revision is authoritative for
+// placement even when it has none, which its data cannot say: a revision
+// without placement leaves placementPolicy out of its data so that its hash
+// matches the one a LeaderWorkerSet without placement had before placement was
+// recorded. The hash covers only the data, so the annotation does not change it.
+const placementRecordedAnnotationKey = "leaderworkerset.sigs.k8s.io/placement-recorded"
+
+// revisionRecordsPlacement reports whether a revision records the effective
+// placement, which revisions created before spec.placementPolicy did not.
+func revisionRecordsPlacement(revision *appsv1.ControllerRevision) (bool, error) {
+	if revision.Annotations[placementRecordedAnnotationKey] == "true" {
+		return true, nil
+	}
+	return revisionDataHasPlacement(revision)
+}
+
+// revisionDataHasPlacement reports whether a revision's data carries a
+// placementPolicy, which it does only when the recorded placement is exclusive
+// at some level.
+func revisionDataHasPlacement(revision *appsv1.ControllerRevision) (bool, error) {
+	var data struct {
+		Spec map[string]json.RawMessage `json:"spec"`
+	}
+	if err := json.Unmarshal(revision.Data.Raw, &data); err != nil {
+		return false, err
+	}
+	_, found := data.Spec["placementPolicy"]
+	return found, nil
 }
 
 // EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
@@ -288,6 +348,13 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 		}
 	}
 
+	// Record the placement that spec.placementPolicy and the exclusive-topology
+	// annotations resolve to, so both sources of the same placement share a
+	// revision. Nothing is recorded when neither level is exclusive, so a
+	// LeaderWorkerSet without placement keeps the revision it had before
+	// placement was recorded, and upgrading the controller rolls no groups.
+	clone.Spec.PlacementPolicy = utils.EffectivePlacementPolicy(clone)
+
 	if err := unstructured.UnstructuredJSONScheme.Encode(clone, str); err != nil {
 		return nil, err
 	}
@@ -302,6 +369,10 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	specCopy["networkConfig"] = networkConfig
 	template := spec["leaderWorkerTemplate"].(map[string]interface{})
 	specCopy["leaderWorkerTemplate"] = template
+	if placementPolicy, ok := spec["placementPolicy"].(map[string]interface{}); ok {
+		specCopy["placementPolicy"] = placementPolicy
+		placementPolicy["$patch"] = "replace"
+	}
 	networkConfig["$patch"] = "replace"
 	template["$patch"] = "replace"
 	// maxGroupRestarts is a live recovery budget and must not affect revision

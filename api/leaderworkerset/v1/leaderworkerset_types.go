@@ -207,6 +207,15 @@ type LeaderWorkerSetSpec struct {
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 
+	// placementPolicy defines the topology placement of each group and, in
+	// subGroup, of each subgroup. It replaces the
+	// leaderworkerset.sigs.k8s.io/exclusive-topology and
+	// leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology annotations, and
+	// setting a level in both with different values is rejected. Changing the
+	// effective placement creates a new revision.
+	// +optional
+	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+
 	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
 	// This field is immutable.
 	// +optional
@@ -527,6 +536,59 @@ const (
 	// Groups will look like:
 	// (1, ... subGroupSize), (subGroupSize + 1, ... 2 * subGroupSize), ...
 	SubGroupPolicyTypeLeaderExcluded SubGroupPolicyType = "LeaderExcluded"
+)
+
+// PlacementPolicy defines the topology placement of the pods in each group,
+// and optionally in each subgroup.
+// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
+// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+type PlacementPolicy struct {
+	// type selects the group level placement guarantee. Defaults to None.
+	// +kubebuilder:default=None
+	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
+	// +optional
+	Type PlacementType `json:"type,omitempty"`
+
+	// topology is the node label key that defines the topology domain of a
+	// group, for example a rack, a block or a zone. Required when type is
+	// ExclusiveTopology.
+	// +optional
+	Topology string `json:"topology,omitempty"`
+
+	// subGroup defines the topology placement of each subgroup within a group.
+	// It requires leaderWorkerTemplate.subGroupPolicy.
+	// +optional
+	SubGroup *SubGroupPlacementPolicy `json:"subGroup,omitempty"`
+}
+
+// SubGroupPlacementPolicy defines the topology placement of the pods in each
+// subgroup.
+// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
+// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+type SubGroupPlacementPolicy struct {
+	// type selects the subgroup level placement guarantee. Defaults to None.
+	// +kubebuilder:default=None
+	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
+	// +optional
+	Type PlacementType `json:"type,omitempty"`
+
+	// topology is the node label key that defines the topology domain of a
+	// subgroup. Required when type is ExclusiveTopology.
+	// +optional
+	Topology string `json:"topology,omitempty"`
+}
+
+// PlacementType defines the topology placement guarantee.
+type PlacementType string
+
+const (
+	// PlacementNone injects no placement affinity.
+	PlacementNone PlacementType = "None"
+
+	// PlacementExclusiveTopology places all pods of a group, or of a subgroup,
+	// in one topology domain and keeps the pods of other groups, or subgroups,
+	// out of that domain.
+	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
 )
 
 type NetworkConfig struct {

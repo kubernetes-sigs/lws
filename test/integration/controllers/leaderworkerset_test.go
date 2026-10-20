@@ -468,6 +468,19 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Leader/worker pods/Statefulset have required labels and annotations when exclusive placement is set by placementPolicy", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).ExclusivePlacementPolicy()
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, false)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(4)

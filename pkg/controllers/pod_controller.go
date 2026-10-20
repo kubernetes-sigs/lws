@@ -376,7 +376,10 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 	statefulSet.Spec.Template.WithAnnotations(templateAnnotations)
 
 	// if exclusive placement is enabled but leader pod is not scheduled, don't create the worker sts
-	if topologyKey, found := leaderWorkerSet.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; found {
+	// The key comes from the leader pod, not the LeaderWorkerSet: a group on an
+	// old revision keeps the placement it started with while a rollout moves the
+	// value between the annotation and the placementPolicy field.
+	if topologyKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {
 		// check if the leader pod is scheduled.
 		if pod.Spec.NodeName == "" {
 			log.V(2).Info(fmt.Sprintf("Pod %q is not scheduled yet", pod.Name))
@@ -1618,16 +1621,18 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	// Exclusive placement keys are copied from the leader pod so workers of an
+	// old-revision group keep the placement their leader was created with.
+	if topologyKey := leaderPod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {
+		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
 			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
 		}
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
-		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
-			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+		if topologyKey := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; topologyKey != "" {
+			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
 		}
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)

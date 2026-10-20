@@ -586,6 +586,65 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 	}
 	var controllerPodName string
 
+	ginkgo.It("Places each group in its own topology domain with placementPolicy ExclusiveTopology", func() {
+		const topologyKey = "kubernetes.io/hostname"
+		// One more replica than there are schedulable nodes, so exactly one
+		// group is left without a domain of its own.
+		nodes := &corev1.NodeList{}
+		gomega.Expect(k8sClient.List(ctx, nodes)).To(gomega.Succeed())
+		schedulableNodes := 0
+		for _, node := range nodes.Items {
+			if !slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool { return taint.Effect == corev1.TaintEffectNoSchedule }) {
+				schedulableNodes++
+			}
+		}
+		gomega.Expect(schedulableNodes).To(gomega.BeNumerically(">", 0))
+		replicas := schedulableNodes + 1
+
+		lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(replicas).Size(3).Obj()
+		lws.Spec.PlacementPolicy = &v1.PlacementPolicy{
+			Type:     v1.PlacementExclusiveTopology,
+			Topology: topologyKey,
+		}
+		testing.MustCreateLws(ctx, k8sClient, lws)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			pods := &corev1.PodList{}
+			g.Expect(k8sClient.List(ctx, pods, client.InNamespace(lws.Namespace), client.MatchingLabels{v1.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+			// Workers are created only for groups whose leader is scheduled.
+			g.Expect(pods.Items).To(gomega.HaveLen(schedulableNodes*3 + 1))
+
+			nodeOfGroup := map[string]string{}
+			pendingLeaders := 0
+			for _, pod := range pods.Items {
+				g.Expect(pod.Annotations[v1.ExclusiveKeyAnnotationKey]).To(gomega.Equal(topologyKey))
+				if pod.Spec.NodeName == "" {
+					g.Expect(podutils.LeaderPod(pod)).To(gomega.BeTrue(), "only a leader can be left without a domain")
+					pendingLeaders++
+					continue
+				}
+				g.Expect(podutils.PodRunningAndReady(pod)).To(gomega.BeTrue())
+				group := pod.Labels[v1.GroupIndexLabelKey]
+				if node, found := nodeOfGroup[group]; found {
+					g.Expect(pod.Spec.NodeName).To(gomega.Equal(node), "pods of one group share a domain")
+				}
+				nodeOfGroup[group] = pod.Spec.NodeName
+				if podutils.LeaderPod(pod) {
+					g.Expect(testing.ValidatePodExclusivePlacementTerms(pod, v1.ExclusiveKeyAnnotationKey, v1.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				} else {
+					g.Expect(pod.Spec.NodeSelector).To(gomega.HaveKeyWithValue(topologyKey, pod.Spec.NodeName))
+				}
+			}
+			g.Expect(pendingLeaders).To(gomega.Equal(1))
+			g.Expect(nodeOfGroup).To(gomega.HaveLen(schedulableNodes))
+			usedNodes := map[string]struct{}{}
+			for _, node := range nodeOfGroup {
+				usedNodes[node] = struct{}{}
+			}
+			g.Expect(usedNodes).To(gomega.HaveLen(schedulableNodes), "no two groups share a domain")
+		}, timeout, interval).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("should ensure the metrics endpoint is serving metrics", func() {
 
 		ginkgo.By("fetching the controller pod name")

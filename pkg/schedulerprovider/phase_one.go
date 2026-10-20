@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 )
 
 // SchedulingMode is the LWS hierarchy level materialized as PodGroups.
@@ -507,7 +508,9 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 		allErrs = append(allErrs, field.Forbidden(path, "a gang containing the leader and workers is incompatible with startupPolicy LeaderReady"))
 	}
 
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" && (gangAtSelectedLevel(lws, mode) || topologyAtSelectedLevel(lws, mode)) {
+	// Only group level exclusivity holds back the worker StatefulSet until the
+	// leader is scheduled, which deadlocks a gang. Subgroup exclusivity does not.
+	if _, exclusive := utils.ExclusiveTopologyKey(lws); exclusive && (gangAtSelectedLevel(lws, mode) || topologyAtSelectedLevel(lws, mode)) {
 		allErrs = append(allErrs, field.Forbidden(path, "gang scheduling or workload topology constraints cannot be combined with exclusive topology in alpha"))
 	}
 

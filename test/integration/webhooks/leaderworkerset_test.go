@@ -664,6 +664,64 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			updateShouldFail: false,
 		}),
+		ginkgo.Entry("creation with placementPolicy should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).ExclusivePlacementPolicy()
+			},
+		}),
+		ginkgo.Entry("creation with placementPolicy ExclusiveTopology and no topology should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology}
+				return lws
+			},
+			lwsCreationShouldFail: true,
+			dsTemplateError:       "spec.roles[0].spec.placementPolicy: Invalid value: topology is required when type is ExclusiveTopology",
+		}),
+		ginkgo.Entry("creation with subgroup placementPolicy None and a topology should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Size(4).SubGroupSize(2)
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementNone, Topology: "rack"}}
+				return lws
+			},
+			lwsCreationShouldFail: true,
+			dsTemplateError:       "spec.roles[0].spec.placementPolicy.subGroup: Invalid value: topology must be empty when type is None",
+		}),
+		ginkgo.Entry("placementPolicy can be updated", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).ExclusivePlacementPolicy()
+			},
+			updateLeaderWorkerSet: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.PlacementPolicy.Topology = "topology.kubernetes.io/zone"
+			},
+		}),
+		ginkgo.Entry("creation with subgroup placementPolicy and no subGroupPolicy should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack"}}
+				return lws
+			},
+			lwsCreationShouldFail: true,
+			dsTemplateError:       "requires leaderWorkerTemplate.subGroupPolicy",
+		}),
+		ginkgo.Entry("creation with group and subgroup placementPolicy should succeed", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Size(4).SubGroupSize(2)
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+					Type: leaderworkerset.PlacementExclusiveTopology, Topology: "topology.kubernetes.io/zone",
+					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"},
+				}
+				return lws
+			},
+		}),
+		ginkgo.Entry("creation with placementPolicy and a different exclusive-topology annotation should fail", &testValidationCase{
+			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(ns.Name).ExclusivePlacementPolicy().
+					Annotation(map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "another-key"})
+			},
+			lwsCreationShouldFail: true,
+			dsTemplateError:       "conflicts with annotation leaderworkerset.sigs.k8s.io/exclusive-topology=another-key",
+		}),
 		ginkgo.Entry("creation with maxGroupRestarts and RecreateGroupOnPodRestart should succeed", &testValidationCase{
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3)

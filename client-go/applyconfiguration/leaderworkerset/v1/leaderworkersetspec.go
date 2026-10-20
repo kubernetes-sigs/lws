@@ -53,6 +53,13 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	StartupPolicy *leaderworkersetv1.StartupPolicyType `json:"startupPolicy,omitempty"`
 	// networkConfig defines the network configuration of the group
 	NetworkConfig *NetworkConfigApplyConfiguration `json:"networkConfig,omitempty"`
+	// placementPolicy defines the topology placement of each group and, in
+	// subGroup, of each subgroup. It replaces the
+	// leaderworkerset.sigs.k8s.io/exclusive-topology and
+	// leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology annotations, and
+	// setting a level in both with different values is rejected. Changing the
+	// effective placement creates a new revision.
+	PlacementPolicy *PlacementPolicyApplyConfiguration `json:"placementPolicy,omitempty"`
 	// scheduling defines Workload-Aware Scheduling for this LeaderWorkerSet.
 	// This field is immutable.
 	Scheduling *LeaderWorkerSetSchedulingApplyConfiguration `json:"scheduling,omitempty"`
@@ -130,6 +137,14 @@ func (b *LeaderWorkerSetSpecApplyConfiguration) WithStartupPolicy(value leaderwo
 // If called multiple times, the NetworkConfig field is set to the value of the last call.
 func (b *LeaderWorkerSetSpecApplyConfiguration) WithNetworkConfig(value *NetworkConfigApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
 	b.NetworkConfig = value
+	return b
+}
+
+// WithPlacementPolicy sets the PlacementPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PlacementPolicy field is set to the value of the last call.
+func (b *LeaderWorkerSetSpecApplyConfiguration) WithPlacementPolicy(value *PlacementPolicyApplyConfiguration) *LeaderWorkerSetSpecApplyConfiguration {
+	b.PlacementPolicy = value
 	return b
 }
 
