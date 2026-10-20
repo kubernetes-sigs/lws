@@ -34,6 +34,15 @@ HELM_CHART_REPO=${HELM_CHART_REPO:-"registry.k8s.io/lws/charts"}
 HELM_RELEASE_NAME=${HELM_RELEASE_NAME:-"lws"}
 LWS_NAMESPACE=${LWS_NAMESPACE:-"lws-system"}
 export CWD=$(pwd)
+# PERFORMANCE_TEST=true runs the scalability test in test/performance instead of
+# the e2e suites, on simulated KWOK nodes. See test/performance/README.md.
+PERFORMANCE_TEST=${PERFORMANCE_TEST:-"false"}
+PERFORMANCE_GENERATOR_CONFIG=${PERFORMANCE_GENERATOR_CONFIG:-"$CWD/test/performance/configs/baseline/generator.yaml"}
+# An empty PERFORMANCE_RANGESPEC skips the limit check.
+PERFORMANCE_RANGESPEC=${PERFORMANCE_RANGESPEC-"$CWD/test/performance/configs/baseline/rangespec.yaml"}
+KWOK_VERSION=${KWOK_VERSION:-"v0.8.0"}
+KWOK_NODES=${KWOK_NODES:-20}
+GO_CMD=${GO_CMD:-"go"}
 
 KUBECONFIG_PATH=""
 OLD_MANIFEST=""
@@ -110,7 +119,7 @@ function startup {
             mkdir -p "$ARTIFACTS"
         fi
 
-        if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || { [ "$SCHEDULER_PROVIDER" == "kubernetes" ] && [ -z "${KUBECONFIG:-}" ]; }; then
+        if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || [ "$PERFORMANCE_TEST" == "true" ] || { [ "$SCHEDULER_PROVIDER" == "kubernetes" ] && [ -z "${KUBECONFIG:-}" ]; }; then
             KUBECONFIG_PATH="$(mktemp)"
             export KUBECONFIG="$KUBECONFIG_PATH"
         fi
@@ -336,7 +345,38 @@ EOF
     fi
 }
 
+# Installs the KWOK controller and the simulated nodes. With the stage-fast
+# stages, pods bound to these nodes become Running and Ready without a kubelet.
+function deploy_kwok {
+    if [ "$PERFORMANCE_TEST" != "true" ]; then
+        return
+    fi
+    local release="https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}"
+    $KUBECTL apply -f "$release/kwok.yaml"
+    $KUBECTL apply -f "$release/stage-fast.yaml"
+    $KUBECTL -n kube-system rollout status deployment/kwok-controller --timeout=5m
+    for i in $(seq 0 $((KWOK_NODES - 1))); do
+        sed "s/INDEX/$i/g" "$CWD/test/performance/kwok/node.yaml.tmpl"
+        echo "---"
+    done | $KUBECTL apply -f -
+    $KUBECTL wait --for=condition=Ready node -l type=kwok --timeout=2m
+}
+
+function run_performance_test {
+    $KUBECTL rollout status deployment/lws-controller-manager -n "$LWS_NAMESPACE" --timeout=5m
+    local args=(--config "$PERFORMANCE_GENERATOR_CONFIG" --output-dir "$ARTIFACTS" \
+        --lws-namespace "$LWS_NAMESPACE" --kubectl "$KUBECTL")
+    if [ -n "$PERFORMANCE_RANGESPEC" ]; then
+        args+=(--rangespec "$PERFORMANCE_RANGESPEC")
+    fi
+    $GO_CMD run "$CWD/test/performance/runner" "${args[@]}"
+}
+
 function run_tests() {
+    if [ "$PERFORMANCE_TEST" == "true" ]; then
+        run_performance_test
+        return
+    fi
     if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
         run_upgrade_phase after
         return
@@ -359,5 +399,6 @@ pull_upgrade_images
 kind_load
 deploy_cert_manager
 deploy_gang_scheduler
+deploy_kwok
 lws_deploy
 run_tests
