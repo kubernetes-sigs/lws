@@ -74,6 +74,12 @@ class VirtualRoles(Scene):
         self.banner = None
         self.counts = None
         self.tiles = {}
+        if os.environ.get("VIRTUAL_STILL") in ("pair-shared", "pair-split"):
+            self.build_fixed_pair()
+            if os.environ["VIRTUAL_STILL"] == "pair-split":
+                self.show_split_pair()
+            self.check_bounds()
+            return
         self.title("Virtual roles: separate pools, shared runtime")
         self.build_parent()
         self.set_groups([0, 1, 2, 3], [4, 5], animate=False)
@@ -140,9 +146,24 @@ class VirtualRoles(Scene):
 
         self.play(*[FadeOut(m) for m in list(self.mobjects)], run_time=.7)
         self.heading = self.banner = None
+        self.build_fixed_pair()
+        self.wait(7)
+        self.show_split_pair()
+        self.wait(9)
+        self.title("B opens when both required subroles have a Ready endpoint")
+        ready = self.pair_status(4.65, -.2, True)
+        gate = text("Subrole gate: open", 4.65, -1.82, size=28, color=GREEN, bold=True)
+        self.play(FadeOut(self.pair_new_status), FadeIn(ready),
+                  FadeOut(self.pair_new_gate), FadeIn(gate), run_time=.5)
+        self.say("New requests may now choose B",
+                 "Requests already pinned to A keep A across both routers.")
+        self.wait(6)
+
+        self.play(*[FadeOut(m) for m in list(self.mobjects)], run_time=.7)
+        self.heading = self.banner = None
         self.build_caveat()
         self.wait(7)
-        self.say("The current gate checks Prefill + Decode",
+        self.say("Here the configuration checks the parent roles only",
                  "B passes because some Decode is Ready — not because Long is Ready.")
         self.wait(6)
         self.title("A long request can still land on revision B")
@@ -153,9 +174,9 @@ class VirtualRoles(Scene):
         self.say("Then the Long-only filter finds no endpoint → HTTP 503",
                  "A could serve the request, but the router does not try another revision.")
         self.wait(8)
-        self.title("More routers alone do not fix revision selection")
-        self.say("Strict pools need request-aware revision gating",
-                 "Choose a revision that can serve the required subrole, not just its parent.")
+        self.title("The remaining gap: different subroles for different requests")
+        self.say("A fixed pair works with today's gate; dynamic choice needs more",
+                 "The parent-role gate does not choose coverage from the request's prompt length.")
         self.wait(8)
         self.check_bounds()
 
@@ -250,8 +271,65 @@ class VirtualRoles(Scene):
         self.wait(hold)
         self.play(FadeOut(caption), FadeOut(dot), run_time=.3)
 
+    def pair_status(self, x, y, ready):
+        return VGroup(box(2.25, .59, x + 2.55, y,
+                          "#EDF7F0" if ready else "#FFF0F0", stroke="#FFFFFF"),
+                      text("Ready" if ready else "Starting", x + 2.55, y,
+                           size=26, bold=True, color=GREEN if ready else RED))
+
+    def build_fixed_pair(self):
+        self.title("A fixed serving pair works with the existing gate")
+        self.pair_router = VGroup(
+            box(10.5, 1.15, 0, 3.98),
+            text("One shared llm-d-router", 0, 4.15, size=32, bold=True),
+            text("Prefill / batch + Decode / standard profiles", 0, 3.7, size=24),
+            Arrow([0, 3.36, 0], [-4.65, 2.41, 0], color=GREEN,
+                  buff=.07, stroke_width=2.5, tip_length=.16))
+        self.add(self.pair_router)
+        for side, x in enumerate((-4.65, 4.65)):
+            self.add(box(8.7, 4.8, x, 0, fill="#FFFFFF"),
+                     text(f"Revision {'AB'[side]}", x, 1.85, size=35, bold=True))
+            for row, name in enumerate(("Prefill / batch", "Decode / standard")):
+                ready = side == 0 or row == 0
+                y = .8 - row
+                status = self.pair_status(x, y, ready)
+                self.add(text(name, x - 1.13, y, size=26, width=4.8), status)
+                if not ready:
+                    self.pair_new_status = status
+            gate = text(f"Subrole gate: {'open' if side == 0 else 'closed'}", x, -1.82,
+                        size=28, color=GREEN if side == 0 else RED, bold=True)
+            self.add(gate)
+            if side == 1:
+                self.pair_new_gate = gate
+        self.add(text("Read the subrole label  ·  requiredRoles: [batch, standard]",
+                      0, -2.94, size=25, width=18),
+                 text("A fixed pair for every request  ·  names unique across the set  ·  illustrated readiness",
+                      0, -5.65, size=21, color=MUTED))
+        self.say("Gate on batch + standard, not just prefill + decode",
+                 "B stays closed until each required subrole has a Ready serving endpoint.")
+
+    def show_split_pair(self):
+        self.title("Or two llm-d-routers: one for each virtual role")
+        split = VGroup()
+        for x, name, detail, width in (
+            (-6.15, "Prefill llm-d-router", "prefill / batch", 6),
+            (0, "llm-d coordinator", "forwards revision A", 5),
+            (6.15, "Decode llm-d-router", "decode / standard", 6),
+        ):
+            split.add(box(width, 1.2, x, 3.98),
+                      text(name, x, 4.15, size=27, bold=True, width=width - .4),
+                      text(detail, x, 3.67, size=23, width=width - .4))
+        for start, end in ((-3.13, -2.52), (2.52, 3.13)):
+            split.add(Arrow([start, 3.98, 0], [end, 3.98, 0], color=GREEN,
+                            buff=0, stroke_width=2.5, tip_length=.13))
+        split.add(text("x-llm-d-disagg-revision: A", 0, 2.95, size=24, code=True))
+        self.play(FadeOut(self.pair_router), FadeIn(split), run_time=.5)
+        self.pair_router = split
+        self.say("Install the same subrole gate in both routers",
+                 "Each watches both pools. The coordinator carries Prefill's revision into Decode.")
+
     def build_caveat(self):
-        self.title("During a rollout: parent readiness is not pool readiness")
+        self.title("Different case: choosing Short or Long for each request")
         self.add(box(10.5, 1, 0, 3.98),
                  text("llm-d revision gate", 0, 4.05, size=33, bold=True),
                  text("Runs before the subrole filter", 0, 3.65, size=23, color=MUTED))
