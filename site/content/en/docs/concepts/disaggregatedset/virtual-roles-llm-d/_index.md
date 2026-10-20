@@ -18,7 +18,7 @@ If children need different images or GPU resources, use separate parent roles.
 
 <figure class="td-max-width-on-larger-screens">
   <video controls playsinline preload="metadata" style="width: 100%; height: auto;" poster="/images/disaggregatedset-virtual-roles-poster.png">
-    <source src="/videos/disaggregatedset-virtual-roles.mp4" type="video/mp4">
+    <source src="/videos/disaggregatedset-virtual-roles.mp4?v=fixed-pair" type="video/mp4">
     <p><a href="/videos/disaggregatedset-virtual-roles.mp4">Watch the virtual roles walkthrough.</a></p>
   </video>
   <figcaption>Shared-template pools, one or two routers, and request-dependent routing. An illustrated walkthrough, not a live cluster recording.</figcaption>
