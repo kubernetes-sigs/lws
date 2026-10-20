@@ -14,6 +14,7 @@
   </button>
   <div class="dropdown-menu dropdown-menu-end docs-version-menu" aria-labelledby="docs-version-menu">
     {{- range .versions -}}
+      {{- if eq .key "main" }}<hr class="dropdown-divider">{{ end -}}
       {{- $url := .url -}}
       {{- $missing := false -}}
       {{- if $pagePath -}}

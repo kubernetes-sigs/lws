@@ -16,12 +16,12 @@ ignored build directory, regenerated from Git by
 - Older releases keep their `/vX.Y/docs/...` URLs. A new stable minor release
   moves `/stable/` to that release, while patch updates retain the same URLs.
 - `/main/docs/...` reads `main` and is clearly marked **Development**, with its
-  source commit. The selector puts this option second, after the latest stable
-  release; older release series follow in descending numeric version order.
+  source commit. The selector lists releases in descending numeric version
+  order, then `main` last, separated from the releases by a divider.
 
 Stable `vMAJOR.MINOR.PATCH` tags discover the release series and label each with
 its highest patch tag. Prereleases and unrelated tags are ignored. The default
-starts at v0.11. For example, the menu shows v1.0.0, then main and v0.11.1,
+starts at v0.11. For example, the menu shows v1.0.0, then v0.11.1 and main,
 not separate entries for v0.11.0 and v0.11.1.
 A release branch without a stable tag is not published; a tagged
 series without its release branch fails the build rather than showing main's

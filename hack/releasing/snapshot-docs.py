@@ -102,8 +102,8 @@ def discover_versions(repo, minimum, main_ref=None):
                              url=f"/{prefix}/docs/", latest=not versions))
     main_commit = (git(repo, "rev-parse", "--verify", f"{main_ref}^{{commit}}").strip()
                    if main_ref else resolve_branch(repo, "main", cached))
-    versions.insert(1, dict(key="main", prefix="main", label="main", branch="main", commit=main_commit,
-                            url="/main/docs/", latest=False))
+    versions.append(dict(key="main", prefix="main", label="main", branch="main", commit=main_commit,
+                         url="/main/docs/", latest=False))
     return dict(latest=versions[0]["key"], versions=versions)
 
 

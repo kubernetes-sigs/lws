@@ -115,12 +115,12 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         data = self.generate()
         self.assertEqual(data["latest"], "v1.10")
         self.assertEqual([v["label"] for v in data["versions"]],
-                         ["v1.10.10", "main", "v1.9.0", "v1.0.0", "v0.11.1"])
+                         ["v1.10.10", "v1.9.0", "v1.0.0", "v0.11.1", "main"])
         self.assertEqual(data["versions"][0]["prefix"], "stable")
         self.assertEqual(data["versions"][0]["url"], "/stable/docs/")
         self.assertIn('url = "/stable/docs/"', (self.output / "hugo.toml").read_text())
         data = self.generate("--min-version", "1.0")
-        self.assertEqual([v["key"] for v in data["versions"]], ["v1.10", "main", "v1.9", "v1.0"])
+        self.assertEqual([v["key"] for v in data["versions"]], ["v1.10", "v1.9", "v1.0", "main"])
 
     def test_release_branch_updates_without_a_new_tag(self):
         before = self.generate()["versions"][0]
