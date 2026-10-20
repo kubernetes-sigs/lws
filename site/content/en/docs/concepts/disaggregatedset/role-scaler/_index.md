@@ -52,6 +52,8 @@ However, because child LeaderWorkerSets include dynamic revision hashes in their
 
 {{% alert title="Note" color="info" %}}
 External role scaling (`scaling.mode: External`) currently requires `spec.slices: 1` (or omitted, which defaults to 1). Admission validation rejects configurations with `slices > 1` when any role uses `scaling.mode: External`.
+
+Because an autoscaler can grow an External role to any size, admission reserves room in its generated names for the largest possible group index. With the default `groupIdentity`, the DisaggregatedSet name and the role name of an External role can be at most 29 characters combined (for example, a 22-character DisaggregatedSet name with the role `prefill`). Roles that were already External when this check was added keep their earlier limit.
 {{% /alert %}}
 
 ---
