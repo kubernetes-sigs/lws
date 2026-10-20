@@ -4,6 +4,40 @@
 footer {
     min-height: auto;
   }
+
+  .docs-version-toggle {
+    border: 0;
+    background: transparent;
+    white-space: normal;
+    text-align: left;
+  }
+
+  .docs-version-menu {
+    max-width: calc(100vw - 2rem);
+    max-height: 70vh;
+    overflow-y: auto;
+
+    .dropdown-item { white-space: normal; }
+  }
+
+  .docs-version-toggle code,
+  .docs-version-menu code { color: inherit; }
+
+  .docs-version-banner {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+    margin: 1rem 0 1.5rem;
+    padding: .75rem 1rem;
+    border-left: .25rem solid #326ce5;
+    background: #f1f5fe;
+    font-size: .9rem;
+
+    &--development {
+      border-left-color: #b47700;
+      background: #fff3d6;
+    }
+  }
   
   // --------------------------------------------------
   // prevent overflow of long names in sidebar

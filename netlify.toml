@@ -1,7 +1,13 @@
 [build]
   base = "site"
   publish = "public"
-  command = "npm install && hugo --gc --minify"
+  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py && hugo --source _generated --destination ../public --cleanDestinationDir --gc --minify"
+
+[context.deploy-preview]
+  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && hugo --source _generated --destination ../public --cleanDestinationDir --gc --minify"
+
+[context.branch-deploy]
+  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && hugo --source _generated --destination ../public --cleanDestinationDir --gc --minify"
 
 [context.deploy-preview.environment]
   HUGO_VERSION = "0.152.2"
