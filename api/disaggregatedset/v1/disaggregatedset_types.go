@@ -297,6 +297,13 @@ type SubRoleStatus struct {
 	// +optional
 	DesiredReplicas *int32 `json:"desiredReplicas,omitempty"`
 
+	// MinAvailableReplicas is the availability floor of this sub-role, totalled
+	// across slices: in each slice, desiredReplicas minus its resolved
+	// maxUnavailable, and never below zero. It is unset while desiredReplicas is
+	// unknown. The MinimumReplicasAvailable condition is judged against it.
+	// +optional
+	MinAvailableReplicas *int32 `json:"minAvailableReplicas,omitempty"`
+
 	// Replicas is the number of replica groups assigned to this sub-role.
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
@@ -304,6 +311,12 @@ type SubRoleStatus struct {
 	// ReadyReplicas counts Ready groups with a coherent whole-group assignment.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// AvailableReplicas counts the Ready groups that can serve requests: those
+	// in a revision of a slice in which every role that revision requires has
+	// at least one Ready group. It never exceeds ReadyReplicas.
+	// +optional
+	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
 
 	// UpdatedReplicas counts groups belonging to the latest revision.
 	// +optional
@@ -325,6 +338,15 @@ type RoleStatus struct {
 	// +optional
 	DesiredReplicas *int32 `json:"desiredReplicas,omitempty"`
 
+	// MinAvailableReplicas is the availability floor of this role, totalled
+	// across slices: in each slice, desiredReplicas minus its resolved
+	// maxUnavailable, and never below zero. A partitioned role reports the sum
+	// of its sub-role floors. It is unset while any of those targets is unknown.
+	// The MinimumReplicasAvailable condition is judged against it. During a
+	// Deferred rollout the controller may protect more Ready replicas than this.
+	// +optional
+	MinAvailableReplicas *int32 `json:"minAvailableReplicas,omitempty"`
+
 	// Replicas is the total number of replicas for this role.
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
@@ -333,6 +355,13 @@ type RoleStatus struct {
 	// Sub-role readiness requires a coherent assignment across the whole group.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// AvailableReplicas counts the Ready replicas that can serve requests: those
+	// in a revision of a slice in which every role that revision requires has
+	// at least one Ready replica. A Ready Prefill cannot serve without a Ready
+	// Decode of the same revision and slice. It never exceeds ReadyReplicas.
+	// +optional
+	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
 
 	// UpdatedReplicas is the number of replicas updated to the latest revision.
 	// +optional
@@ -393,6 +422,13 @@ const (
 	// desired replica count, or has replicas that are not ready or not updated to
 	// the current revision.
 	DisaggregatedSetProgressing DisaggregatedSetConditionType = "Progressing"
+
+	// DisaggregatedSetMinimumReplicasAvailable means every role and sub-role has
+	// at least minAvailableReplicas available replicas. Unlike Available, it
+	// stays True during scale-ups and rollouts that remain within each role's
+	// maxUnavailable budget. It is Unknown while any replica target is unknown.
+	DisaggregatedSetMinimumReplicasAvailable DisaggregatedSetConditionType = "MinimumReplicasAvailable"
+
 	// DisaggregatedSetSubRolesAssigned means every live group of a partitioned
 	// role has a consistent assignment on all of its observed members.
 	DisaggregatedSetSubRolesAssigned DisaggregatedSetConditionType = "SubRolesAssigned"

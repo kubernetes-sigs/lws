@@ -561,6 +561,18 @@ targets is unknown, for example before the scaler exists, so it is never
 mistaken for a requested zero. The Available condition is judged against it.</p>
 </td>
 </tr>
+<tr><td><code>minAvailableReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>MinAvailableReplicas is the availability floor of this role, totalled
+across slices: in each slice, desiredReplicas minus its resolved
+maxUnavailable, and never below zero. A partitioned role reports the sum
+of its sub-role floors. It is unset while any of those targets is unknown.
+The MinimumReplicasAvailable condition is judged against it. During a
+Deferred rollout the controller may protect more Ready replicas than this.</p>
+</td>
+</tr>
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -574,6 +586,16 @@ mistaken for a requested zero. The Available condition is judged against it.</p>
 <td>
    <p>ReadyReplicas is the number of ready replicas for this role.
 Sub-role readiness requires a coherent assignment across the whole group.</p>
+</td>
+</tr>
+<tr><td><code>availableReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>AvailableReplicas counts the Ready replicas that can serve requests: those
+in a revision of a slice in which every role that revision requires has
+at least one Ready replica. A Ready Prefill cannot serve without a Ready
+Decode of the same revision and slice. It never exceeds ReadyReplicas.</p>
 </td>
 </tr>
 <tr><td><code>updatedReplicas</code><br/>
@@ -648,6 +670,16 @@ its DisaggregatedSetRoleScaler when its scaling mode is External. It is unset
 while that target is unknown.</p>
 </td>
 </tr>
+<tr><td><code>minAvailableReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>MinAvailableReplicas is the availability floor of this sub-role, totalled
+across slices: in each slice, desiredReplicas minus its resolved
+maxUnavailable, and never below zero. It is unset while desiredReplicas is
+unknown. The MinimumReplicasAvailable condition is judged against it.</p>
+</td>
+</tr>
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -660,6 +692,15 @@ while that target is unknown.</p>
 </td>
 <td>
    <p>ReadyReplicas counts Ready groups with a coherent whole-group assignment.</p>
+</td>
+</tr>
+<tr><td><code>availableReplicas</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>AvailableReplicas counts the Ready groups that can serve requests: those
+in a revision of a slice in which every role that revision requires has
+at least one Ready group. It never exceeds ReadyReplicas.</p>
 </td>
 </tr>
 <tr><td><code>updatedReplicas</code><br/>
