@@ -64,10 +64,19 @@ for more information on installing LWS with metrics using our Helm chart.
 
 ##### DisaggregatedSet
 
-The DisaggregatedSet CRD and the manager permissions required by its bundled
-controller are always installed with the chart. To also install the
-editor/viewer/admin ClusterRoles and validating webhook, set
-`enableDisaggregatedSet` to `true`.
+The DisaggregatedSet CRDs and controller permissions are always installed.
+Helm charts up to and including **v1.0.0** require
+`--set enableDisaggregatedSet=true` to also install the validating webhook and
+editor/viewer/admin ClusterRoles.
+
+The option was intended to be removed for v1.0.0, but was accidentally kept.
+Starting with **v1.0.1**, it is removed and these resources are always installed.
+No extra flag is needed.
+
+In v1.0.1 and later, old `enableDisaggregatedSet` values are ignored, even with
+`--reuse-values`. If you previously set it to `false`, upgrading enables webhook
+validation for new or updated DisaggregatedSets. You can remove the obsolete
+option from your values files.
 
 ### Upgrading the chart
 
@@ -133,7 +142,6 @@ The following table lists the configurable parameters of the LWS chart and their
 | `enablePrometheus`                         | enable Prometheus                              | `false`                                             |
 | `serviceMonitor.extraLabels`               | Extra labels added to the ServiceMonitor (requires `enablePrometheus=true`) | `{}`                                                |
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
-| `enableDisaggregatedSet`                   | install DisaggregatedSet editor/viewer/admin ClusterRoles and validating webhook (the CRD, bundled controller, and its required RBAC rules are always installed) | `false` |
 | `replicaCount`                             | Number of manager replicas (leader election keeps one active) | `1`                                  |
 | `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
 | `pdb.enabled`                              | Create a PodDisruptionBudget for the manager (only when `replicaCount` > 1) | `true`                 |

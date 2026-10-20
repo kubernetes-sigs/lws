@@ -104,7 +104,6 @@ webhooks:
         resources:
           - pods
     sideEffects: None
-  {{- if .Values.enableDisaggregatedSet }}
   - admissionReviewVersions:
       - v1
     clientConfig:
@@ -125,4 +124,3 @@ webhooks:
         resources:
           - disaggregatedsets
     sideEffects: None
-  {{- end }}
