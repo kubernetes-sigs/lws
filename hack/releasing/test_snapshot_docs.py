@@ -39,6 +39,7 @@ class SnapshotDocsTest(unittest.TestCase):
                         GIT_COMMITTER_EMAIL="fixture@example.invalid")
         self.git("init", "-q", "-b", "main")
         self.write("site/.gitignore", "_generated/\n")
+        self.write("site/postcss.config.js", 'module.exports = {plugins: [require("autoprefixer")]};\n')
         self.write_site("MAIN", "v99.0.0")
         self.commit("Main documentation")
         self.add_release("1.0")
@@ -149,6 +150,8 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
             self.assertEqual(metadata["cascade"]["params"]["version"], source_version)
             self.assertEqual(metadata["cascade"]["params"]["chart_version"], source_version[1:])
         self.assertIn("/v1.0/docs/intro/", (self.output / "static/legacy/index.html").read_text())
+        self.assertEqual((self.output / "postcss.config.js").read_text(),
+                         (self.repo / "site/postcss.config.js").read_text())
 
     def test_offline_cache_isolation_and_main_preview(self):
         for destination, source in (("heads/main", "main"), ("heads/release-1.0", "release-1.0"),

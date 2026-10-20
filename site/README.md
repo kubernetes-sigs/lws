@@ -98,8 +98,8 @@ generated `site/public` output; do not store hand-written files there.
 | Event | Build | Result |
 | --- | --- | --- |
 | Merge into `main` | Existing Netlify Git integration builds `main` | Development docs refresh; release snapshots are regenerated too. |
-| Merge docs/examples into `release-X.Y` | Release-refresh workflow calls the production build hook | A **main-based** build rereads the changed release branch and updates `/vX.Y/docs/`, without a new tag. |
-| Publish a stable GitHub release | Same workflow calls the hook | Highest stable patch labels and the latest-default selection refresh. |
+| Merge docs/examples into `release-X.Y` | No automatic production trigger added here | The next **main-based** build rereads the changed release branch and updates `/vX.Y/docs/`, without a new tag. |
+| Publish a stable tag | No automatic production trigger added here | The next **main-based** build refreshes patch labels and the latest-default selection. |
 | Open/update a PR | Netlify deploy preview builds the PR checkout | Select Development to read the PR's docs; production is unchanged. |
 | Run the generator locally | No deployment | Preview the same versioned site locally. |
 
@@ -108,42 +108,19 @@ production. Always run the current generator and templates from `main`, then
 read each version's content from its release branch. A release docs change
 needs a **production rebuild**, not merely an isolated Netlify branch preview.
 
-### One-time maintainer setup
+### Release-branch rebuilds
 
-The website is published by Netlify, independently of Prow's test and merge
-jobs. The build command lives in [`netlify.toml`](../netlify.toml); upstream PRs
-report a separate `deploy/netlify` check. The current
-[LWS Prow jobs](https://github.com/kubernetes/test-infra/blob/master/config/jobs/kubernetes-sigs/lws/lws-presubmit.yaml)
-run tests and verification, not website publication.
+The website is published by Netlify using [`netlify.toml`](../netlify.toml).
+Automatic production rebuilds after release-branch changes or new stable tags
+are deferred until the Netlify administrators confirm the appropriate setup;
+see the [original site setup request](https://github.com/kubernetes/org/issues/5459).
+This change adds no deployment workflow or secret requirements. Until those
+triggers are configured, release-only changes appear on the next `main`
+deployment or after an administrator manually rebuilds `main` in Netlify.
 
-The release-refresh workflow complements that setup: it asks Netlify to rebuild
-the **production main site** after another branch changes. It neither replaces
-Prow nor deploys a release-branch preview over production. No Prow change is
-required for this approach. Merging the code alone does not configure the hook;
-repository/Netlify maintainers must complete these steps:
-
-1. Create a production Netlify build hook targeting `main` and save its URL as
-   the GitHub Actions secret `NETLIFY_DOCS_BUILD_HOOK`. Do not commit the URL.
-2. Merge the tooling into `main`, then backport **only**
-   `.github/workflows/docs-release-refresh.yaml` to every maintained release
-   branch, starting with `release-0.10`, `release-0.11`, and `release-1.0`.
-   GitHub loads a push workflow from the pushed branch, so a workflow that
-   exists only on `main` cannot observe those branch pushes.
-3. Run **Refresh released documentation** manually once and confirm the new
-   production deployment in Netlify. Then merge a small release-doc change and
-   verify its `/vX.Y/docs/` page updates without creating a tag.
-
-The workflow checks out `main`, has read-only repository permissions, and sends
-only the build-hook request. It never pushes commits or uploads artifacts.
-Missing configuration fails explicitly. It ignores deleted branches and
-draft/prerelease releases. If maintainers prefer Prow, an equivalent postsubmit
-belongs in a separate PR to `kubernetes/test-infra`, under
-`config/jobs/kubernetes-sigs/lws/`, with its build-hook secret provisioned by
-the test-infra owners. Use one trigger mechanism, not both.
-
-`make site-test` covers release-branch updates without tags and mocks the
-outgoing HTTP request to verify the correct build branch and event filtering.
-These are local tests, not a claim that a live Netlify hook has been configured.
+`make site-test` verifies locally that regenerating after a release-branch
+update includes the changed documentation without requiring a new tag. It does
+not test or configure live deployment triggers.
 
 Tags determine what is **stable**, not whether an image/chart upload has
 finished. Publish the release and Helm chart before triggering the production

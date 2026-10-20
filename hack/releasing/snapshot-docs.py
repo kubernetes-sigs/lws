@@ -257,7 +257,7 @@ def generate(repo, manifest, output, offline=False):
         staging = Path(temp) / "generated"
         staging.mkdir()
         # Current presentation, not the old branch's theme or executable code.
-        for name in ("hugo.toml", "go.mod", "go.sum", "package.json", "package-lock.json",
+        for name in ("hugo.toml", "go.mod", "go.sum", "package.json", "package-lock.json", "postcss.config.js",
                      "layouts", "assets", "archetypes", "i18n", "content", "static", "data"):
             source = site / name
             if source.is_symlink() or (source.is_dir() and any(p.is_symlink() for p in source.rglob("*"))):
