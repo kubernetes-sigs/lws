@@ -1,17 +1,20 @@
 suite: controller manager deployment
 templates:
   - templates/manager/deployment.yaml
+  - templates/manager/configmap.yaml
 release:
   name: lws
   namespace: lws-system
 tests:
   - it: matches the default manifest
+    template: templates/manager/deployment.yaml
     asserts:
       - matchSnapshot: {}
 
   # replicas
 
   - it: sets the replica count
+    template: templates/manager/deployment.yaml
     set:
       replicaCount: 3
     asserts:
@@ -22,12 +25,14 @@ tests:
   # serviceAccountName
 
   - it: runs as the controller manager service account
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: lws-controller-manager
 
   - it: derives the service account name from fullnameOverride
+    template: templates/manager/deployment.yaml
     set:
       fullnameOverride: custom
     asserts:
@@ -37,32 +42,68 @@ tests:
 
   # podAnnotations
 
-  - it: sets the default-container annotation by default
+  - it: sets the default-container annotation and manager config checksum
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.metadata.annotations
           value:
             kubectl.kubernetes.io/default-container: manager
+            checksum/manager-config: &defaultConfigChecksum 1c772344349db82132205b08a774838c7d1b2dcbb9996c52940cf96994c76271
 
-  - it: renders pod annotations together with the default-container annotation
+  - it: preserves user annotations without overriding the config checksum
+    template: templates/manager/deployment.yaml
     set:
       podAnnotations:
         example.com/team: inference
+        checksum/manager-config: user-provided
     asserts:
       - equal:
           path: spec.template.metadata.annotations
           value:
             kubectl.kubernetes.io/default-container: manager
             example.com/team: inference
+            checksum/manager-config: *defaultConfigChecksum
+
+  - it: accepts null pod annotations
+    template: templates/manager/deployment.yaml
+    set:
+      podAnnotations: null
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/manager-config"]
+          value: *defaultConfigChecksum
+
+  - it: changes the checksum when manager-only configuration changes
+    template: templates/manager/deployment.yaml
+    set:
+      featureGates:
+        WorkloadAwareScheduling: true
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/manager-config"]
+          value: a55f3a692d68db96576790385ab0680b3c9f811061e52dc2804d36eb23c53684
+
+  - it: keeps the checksum when only chart metadata changes
+    template: templates/manager/deployment.yaml
+    chart:
+      version: 99.0.0
+      appVersion: v99.0.0
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/manager-config"]
+          value: *defaultConfigChecksum
 
   # imagePullSecrets
 
   - it: renders no imagePullSecrets by default
+    template: templates/manager/deployment.yaml
     asserts:
       - notExists:
           path: spec.template.spec.imagePullSecrets
 
   - it: renders imagePullSecrets
+    template: templates/manager/deployment.yaml
     set:
       imagePullSecrets:
         - name: registry-creds
@@ -77,11 +118,13 @@ tests:
   # priorityClassName
 
   - it: renders no priorityClassName by default
+    template: templates/manager/deployment.yaml
     asserts:
       - notExists:
           path: spec.template.spec.priorityClassName
 
   - it: renders priorityClassName
+    template: templates/manager/deployment.yaml
     set:
       priorityClassName: system-cluster-critical
     asserts:
@@ -92,6 +135,7 @@ tests:
   # podSecurityContext
 
   - it: runs the pod as non-root by default
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.securityContext
@@ -99,6 +143,7 @@ tests:
             runAsNonRoot: true
 
   - it: replaces the pod securityContext
+    template: templates/manager/deployment.yaml
     set:
       podSecurityContext:
         runAsNonRoot: true
@@ -119,6 +164,7 @@ tests:
   # securityContext (manager container)
 
   - it: hardens the manager container by default
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].securityContext
@@ -130,6 +176,7 @@ tests:
                 - ALL
 
   - it: replaces the manager container securityContext
+    template: templates/manager/deployment.yaml
     set:
       securityContext:
         allowPrivilegeEscalation: false
@@ -152,6 +199,7 @@ tests:
   # image
 
   - it: uses the configured image repository, tag and pull policy
+    template: templates/manager/deployment.yaml
     set:
       image:
         manager:
@@ -167,6 +215,7 @@ tests:
           value: IfNotPresent
 
   - it: falls back to the chart appVersion when the image tag is empty
+    template: templates/manager/deployment.yaml
     set:
       image:
         manager:
@@ -179,6 +228,7 @@ tests:
   # ports
 
   - it: exposes the webhook server on the configured service port
+    template: templates/manager/deployment.yaml
     set:
       service:
         port: 10443
@@ -191,6 +241,7 @@ tests:
             protocol: TCP
 
   - it: does not expose the metrics port without Prometheus
+    template: templates/manager/deployment.yaml
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].ports
@@ -199,6 +250,7 @@ tests:
           any: true
 
   - it: exposes the metrics port with Prometheus
+    template: templates/manager/deployment.yaml
     set:
       enablePrometheus: true
     asserts:
@@ -212,6 +264,7 @@ tests:
   # resources
 
   - it: requests one CPU and 1Gi of memory by default
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].resources
@@ -221,6 +274,7 @@ tests:
               memory: 1Gi
 
   - it: replaces the default resources
+    template: templates/manager/deployment.yaml
     set:
       resources:
         requests:
@@ -241,6 +295,7 @@ tests:
   # volumes
 
   - it: mounts the manager config and the webhook serving certificate
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].volumeMounts
@@ -253,6 +308,7 @@ tests:
               readOnly: true
 
   - it: backs the mounts with the chart ConfigMap and the webhook Secret
+    template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.volumes
@@ -266,6 +322,7 @@ tests:
                 secretName: lws-webhook-server-cert
 
   - it: does not mount the metrics certificate without cert-manager
+    template: templates/manager/deployment.yaml
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].volumeMounts
@@ -279,6 +336,7 @@ tests:
           any: true
 
   - it: mounts the metrics certificate with cert-manager
+    template: templates/manager/deployment.yaml
     set:
       enableCertManager: true
     asserts:
@@ -306,11 +364,13 @@ tests:
   # nodeSelector
 
   - it: renders no nodeSelector by default
+    template: templates/manager/deployment.yaml
     asserts:
       - notExists:
           path: spec.template.spec.nodeSelector
 
   - it: renders nodeSelector
+    template: templates/manager/deployment.yaml
     set:
       nodeSelector:
         kubernetes.io/os: linux
@@ -325,11 +385,13 @@ tests:
   # affinity
 
   - it: renders no affinity by default
+    template: templates/manager/deployment.yaml
     asserts:
       - notExists:
           path: spec.template.spec.affinity
 
   - it: renders affinity
+    template: templates/manager/deployment.yaml
     set:
       affinity:
         nodeAffinity:
@@ -356,11 +418,13 @@ tests:
   # tolerations
 
   - it: renders no tolerations by default
+    template: templates/manager/deployment.yaml
     asserts:
       - notExists:
           path: spec.template.spec.tolerations
 
   - it: renders tolerations
+    template: templates/manager/deployment.yaml
     set:
       tolerations:
         - key: node-role.kubernetes.io/control-plane

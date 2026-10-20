@@ -1,3 +1,4 @@
+{{- $managerConfig := include (print $.Template.BasePath "/manager/configmap.yaml") . | fromYaml }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,7 +19,9 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
-        {{- with .Values.podAnnotations }}
+        # Restart on config changes, not ConfigMap metadata changes.
+        checksum/manager-config: {{ index $managerConfig.data "controller_manager_config.yaml" | sha256sum | quote }}
+        {{- with omit (.Values.podAnnotations | default dict) "checksum/manager-config" }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
