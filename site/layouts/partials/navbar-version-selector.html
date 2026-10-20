@@ -6,7 +6,7 @@
     {{- if eq .key $currentKey }}{{ $current = . }}{{ end -}}
   {{- end -}}
   {{- $pagePath := "" -}}
-  {{- with $page.Param "docs_version" -}}
+  {{- with $page.Param "docs_source_prefix" -}}
     {{- $pagePath = strings.TrimPrefix (printf "/%s" .) $page.Path -}}
   {{- end -}}
   <button class="nav-link dropdown-toggle docs-version-toggle" type="button" id="docs-version-menu" data-bs-toggle="dropdown" aria-expanded="false">
@@ -17,14 +17,16 @@
       {{- $url := .url -}}
       {{- $missing := false -}}
       {{- if $pagePath -}}
-        {{- with $page.Site.GetPage (printf "/%s%s" .key $pagePath) -}}
+        {{- with $page.Site.GetPage (printf "/%s%s" .prefix $pagePath) -}}
           {{- $url = .RelPermalink -}}
         {{- else -}}
           {{- $missing = true -}}
         {{- end -}}
       {{- end -}}
       <a class="dropdown-item{{ if eq .key $currentKey }} active{{ end }}" href="{{ $url }}"{{ if eq .key $currentKey }} aria-current="page"{{ end }}>
-        {{ if eq .key "main" }}<i class="fa-solid fa-code-branch" aria-hidden="true"></i> main · Development <code>{{ substr .commit 0 8 }}</code>{{ else }}{{ .label }}{{ if .latest }} · Latest stable{{ end }}{{ end }}
+        <span class="docs-version-option">
+          {{ if eq .key "main" }}<span><i class="fa-solid fa-code-branch" aria-hidden="true"></i> main · Development</span> <code>{{ substr .commit 0 8 }}</code>{{ else }}<span>{{ .label }}{{ if .latest }} · Latest stable{{ end }}</span>{{ end }}
+        </span>
         {{ if $missing }}<small class="d-block">This page is unavailable; opens the documentation overview.</small>{{ end }}
       </a>
     {{- end -}}

@@ -25,6 +25,7 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("snapshot-docs.py")
 ASSETS = ("images/diagram.svg", "videos/demo.mp4", "examples/demo.yaml")
+BRANDING = ("images/lws-ds-logos.svg", "images/ds-concept.svg", "images/ds-logo.svg")
 
 
 class SnapshotDocsTest(unittest.TestCase):
@@ -98,7 +99,9 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         return json.loads((self.output / "data/docs_versions.json").read_text()) if success else None
 
     def page(self, version):
-        return (self.output / "content/en" / version / "docs/intro/_index.md").read_text()
+        manifest = json.loads((self.output / "data/docs_versions.json").read_text())
+        prefix = next(v["prefix"] for v in manifest["versions"] if v["key"] == version)
+        return (self.output / "content/en" / prefix / "docs/intro/_index.md").read_text()
 
     def output_bytes(self):
         return {str(p.relative_to(self.output)): p.read_bytes()
@@ -113,7 +116,9 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         self.assertEqual(data["latest"], "v1.10")
         self.assertEqual([v["label"] for v in data["versions"]],
                          ["v1.10.10", "main", "v1.9.0", "v1.0.0", "v0.11.1", "v0.10.0"])
-        self.assertIn('url = "/v1.10/docs/"', (self.output / "hugo.toml").read_text())
+        self.assertEqual(data["versions"][0]["prefix"], "stable")
+        self.assertEqual(data["versions"][0]["url"], "/stable/docs/")
+        self.assertIn('url = "/stable/docs/"', (self.output / "hugo.toml").read_text())
         data = self.generate("--min-version", "1.0")
         self.assertEqual([v["key"] for v in data["versions"]], ["v1.10", "main", "v1.9", "v1.0"])
 
@@ -132,24 +137,60 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         self.assertNotEqual(after["commit"], before["commit"])
         self.assertIn("MERGED DOCUMENTATION FIX", self.page("v1.0"))
         self.assertEqual(self.page("main"), main_page)
+        self.add_release("1.1")
+        data = self.generate()
+        self.assertEqual(data["latest"], "v1.1")
+        self.assertEqual(data["versions"][0]["prefix"], "stable")
+        self.assertIn("BRANCH 1.1", self.page("v1.1"))
+        self.assertIn("MERGED DOCUMENTATION FIX", self.page("v1.0"))
+        self.assertTrue((self.output / "content/en/v1.0/docs/intro/_index.md").is_file())
+        historical = next(v for v in data["versions"] if v["key"] == "v1.0")
+        self.assertEqual(historical["url"], "/v1.0/docs/")
+        redirects = (self.output / "static/_redirects").read_text()
+        self.assertIn("/v1.1/* /stable/:splat 301!", redirects)
+        self.assertNotIn("/v1.0/*", redirects)
 
     def test_versioned_links_assets_and_content_parameters(self):
         self.git("tag", "v1.0.3")  # Menu label must not overwrite branch install versions.
+        self.git("switch", "-q", "release-1.0")
+        for asset in BRANDING:
+            self.write("site/static/" + asset, "ARCHIVED BRANDING")
+        self.commit("Original release branding")
+        self.git("switch", "-q", "main")
+        for asset in BRANDING:
+            self.write("site/static/" + asset, "CURRENT BRANDING")
         for version in self.generate()["versions"]:
-            key, commit = version["key"], version["commit"]
+            key, prefix, commit = version["key"], version["prefix"], version["commit"]
             page = self.page(key)
             marker, source_version = ("MAIN", "v99.0.0") if key == "main" else ("BRANCH 1.0", "v1.0.0")
             for asset in ASSETS:
-                self.assertIn(f"{key}/{asset}", page)
-                self.assertEqual((self.output / "static" / key / asset).read_text(), marker)
-            for link in (f"/{key}/docs/guide/?view=full#details", f"/{key}/docs/guide/",
-                         f"/{key}/legacy/", "https://example.org/docs/",
+                self.assertIn(f"{prefix}/{asset}", page)
+                self.assertEqual((self.output / "static" / prefix / asset).read_text(), marker)
+            for asset in BRANDING:
+                self.assertEqual((self.output / "static" / prefix / asset).read_text(), "CURRENT BRANDING")
+            for link in (f"/{prefix}/docs/guide/?view=full#details", f"/{prefix}/docs/guide/",
+                         f"/{prefix}/legacy/", "https://example.org/docs/",
                          f"https://raw.githubusercontent.com/kubernetes-sigs/lws/{commit}/docs/examples/demo.yaml"):
                 self.assertIn(link, page)
-            metadata = json.loads((self.output / "content/en" / key / "_index.md").read_text())
+            metadata = json.loads((self.output / "content/en" / prefix / "_index.md").read_text())
+            self.assertEqual(metadata["cascade"]["params"]["docs_version"], key)
+            self.assertEqual(metadata["cascade"]["params"]["docs_source_prefix"], prefix)
             self.assertEqual(metadata["cascade"]["params"]["version"], source_version)
             self.assertEqual(metadata["cascade"]["params"]["chart_version"], source_version[1:])
-        self.assertIn("/v1.0/docs/intro/", (self.output / "static/legacy/index.html").read_text())
+        for route in ("docs/intro", "v1.0/docs/intro", "legacy", "v1.0/legacy"):
+            fallback = (self.output / "static" / route / "index.html").read_text()
+            self.assertIn("/stable/docs/intro/", fallback)
+            self.assertIn("+location.search+location.hash", fallback)
+        redirects = (self.output / "static/_redirects").read_text()
+        for source, target in (("/docs/intro/", "/stable/docs/intro/"),
+                               ("/v1.0/docs/intro/", "/stable/docs/intro/"),
+                               ("/legacy/", "/stable/docs/intro/"),
+                               ("/v1.0/legacy/", "/stable/docs/intro/"),
+                               ("/docs/*", "/stable/docs/:splat"),
+                               ("/v1.0/*", "/stable/:splat")):
+            self.assertIn(f"{source} {target} 301!", redirects)
+        self.assertNotIn("/stable/*", redirects)
+        self.assertNotIn("/main/*", redirects)
         self.assertEqual((self.output / "postcss.config.js").read_text(),
                          (self.repo / "site/postcss.config.js").read_text())
 

@@ -11,8 +11,9 @@ The Kubernetes Template Project is released on an as-needed basis. The process i
 ## Documentation
 
 After the release and Helm chart are available, trigger a website rebuild.
-The build discovers stable tags and refreshes each `/vX.Y/docs/` snapshot from
-`release-X.Y`; the latest tagged release becomes the default. Backport relevant
+The build discovers stable tags and refreshes snapshots from `release-X.Y`.
+The latest tagged release is served at `/stable/docs/`; older releases keep
+`/vX.Y/docs/`. Backport relevant
 documentation fixes to the release branch before rebuilding. Keep unreleased
 feature documentation on `main`. See [the local generation and preview guide](site/README.md).
 

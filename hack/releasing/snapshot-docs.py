@@ -96,12 +96,13 @@ def discover_versions(repo, minimum, main_ref=None):
     for major, minor, patch in sorted(series.values(), reverse=True):
         key = f"v{major}.{minor}"
         branch = f"release-{major}.{minor}"
-        versions.append(dict(key=key, label=f"{key}.{patch}", branch=branch,
+        prefix = key if versions else "stable"
+        versions.append(dict(key=key, prefix=prefix, label=f"{key}.{patch}", branch=branch,
                              commit=resolve_branch(repo, branch, cached),
-                             url=f"/{key}/docs/", latest=not versions))
+                             url=f"/{prefix}/docs/", latest=not versions))
     main_commit = (git(repo, "rev-parse", "--verify", f"{main_ref}^{{commit}}").strip()
                    if main_ref else resolve_branch(repo, "main", cached))
-    versions.insert(1, dict(key="main", label="main", branch="main", commit=main_commit,
+    versions.insert(1, dict(key="main", prefix="main", label="main", branch="main", commit=main_commit,
                             url="/main/docs/", latest=False))
     return dict(latest=versions[0]["key"], versions=versions)
 
@@ -181,7 +182,7 @@ def original_aliases(front):
 
 
 def rewrite_page(text, version, asset_roots):
-    key = version["key"]
+    key = version["prefix"]
     front, body = split_front_matter(text)
     # Menus belong to the shared site shell, not each release's copy.
     front = re.sub(r"^menu:[^\n]*(?:\n[ \t]+[^\n]*)*\n?", "", front, flags=re.MULTILINE)
@@ -231,9 +232,14 @@ def page_route(path, docs):
     return re.sub(r"\s+", "-", route).lower()
 
 
-def write_redirect(root, route, target, label="Latest stable documentation"):
-    # Redirects are ordinary static HTML: work on Netlify AND any local server.
+def write_redirect(root, route, target, label="Latest stable documentation", rules=None):
+    # Netlify serves a real HTTP 301; HTML remains a fallback for plain servers.
     # JS preserves fragments/queries; meta refresh + link also work without JS.
+    if rules is not None:
+        source = "/" + route.strip("/")
+        rules[source] = target
+        if source != "/":
+            rules[source + "/"] = target
     destination = root / route.strip("/") / "index.html"
     destination.parent.mkdir(parents=True, exist_ok=True)
     title = ("Distributed Inference APIs | LeaderWorkerSet & DisaggregatedSet"
@@ -268,9 +274,10 @@ def generate(repo, manifest, output, offline=False):
                 shutil.copy2(source, staging / name)
         for docs in (staging / "content").glob("*/docs"):
             shutil.rmtree(docs)
-        routes, latest_routes, latest_aliases = set(), set(), {}
+        routes, latest_routes, latest_aliases, redirects = set(), set(), {}, {}
         for version in manifest["versions"]:
             key = version["key"]
+            prefix = version["prefix"]
             source = Path(temp) / key
             extract_sources(repo, version["commit"], source, offline)
             docs_trees = sorted((source / "site/content").glob("*/docs"))
@@ -279,10 +286,19 @@ def generate(repo, manifest, output, offline=False):
             static = source / "site/static"
             roots = {p.name for p in static.iterdir()} if static.is_dir() else set()
             if static.is_dir():
-                shutil.copytree(static, staging / "static" / key)
+                shutil.copytree(static, staging / "static" / prefix)
+            # Keep branding consistent with the current site shell, including
+            # historical pages that reference their own versioned image paths.
+            for name in ("lws-ds-logos.svg", "ds-concept.svg", "ds-logo.svg"):
+                branding = staging / "static/images" / name
+                if branding.is_file():
+                    destination = staging / "static" / prefix / "images" / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(branding, destination)
+                    roots.add("images")
             for docs in docs_trees:
                 locale = docs.parent.name
-                destination = staging / "content" / locale / key / "docs"
+                destination = staging / "content" / locale / prefix / "docs"
                 shutil.copytree(docs, destination)
                 for page in sorted(destination.rglob("*")):
                     if page.suffix not in (".md", ".html") or not page.is_file():
@@ -297,16 +313,18 @@ def generate(repo, manifest, output, offline=False):
                         routes.add(route)
                         if version["latest"]:
                             latest_routes.add(route)
+                            write_redirect(staging / "static", f"{key}/{route}",
+                                           f"/{prefix}/{route}", rules=redirects)
                             front, _ = split_front_matter(original)
                             for alias in original_aliases(front):
-                                latest_aliases[alias] = f"/{key}/{route}"
+                                latest_aliases[alias] = f"/{prefix}/{route}"
                 # Separate parent cascade avoids overwriting existing page params
                 # or cascades in branch content. Docsy needs type: docs here.
                 params = dict(docs_version=key, docs_branch=version["branch"],
-                              docs_commit=version["commit"], docs_source_prefix=key,
+                              docs_commit=version["commit"], docs_source_prefix=prefix,
                               githubbranch=version["branch"], github_branch=version["branch"],
                               path_base_for_github_subdir=dict(
-                                  **{"from": f"^content/{locale}/{re.escape(key)}/", "to": f"content/{locale}/"}))
+                                  **{"from": f"^content/{locale}/{re.escape(prefix)}/", "to": f"content/{locale}/"}))
                 params.update(release_params(source))
                 metadata = dict(title=version["label"], type="docs", params=params,
                                 cascade=dict(type="docs", params=params),
@@ -314,19 +332,30 @@ def generate(repo, manifest, output, offline=False):
                 (destination.parent / "_index.md").write_text(json.dumps(metadata, indent=2) + "\n")
                 # Branch metadata can still expose main via site-level shortcodes;
                 # .Page.Param, used by the local params shortcode, sees this cascade.
-            write_redirect(staging / "static", key, version["url"],
-                           label="Development documentation" if key == "main" else f"{version['label']} documentation")
+            write_redirect(staging / "static", prefix, version["url"],
+                           label="Development documentation" if key == "main" else f"{version['label']} documentation",
+                           rules=redirects)
+            if version["latest"]:
+                write_redirect(staging / "static", key, version["url"], rules=redirects)
             print(f"{version['label']}: {version['branch']} @ {version['commit'][:12]}")
         # Copying the site shell preserves its non-docs pages. The root homepage
         # and /docs bookmarks now route to the latest stable release, never main.
         latest = manifest["latest"]
-        latest_home = f"/{latest}/docs/overview/" if "docs/overview/" in latest_routes else f"/{latest}/docs/"
-        for route in routes:
-            target = f"/{latest}/{route}" if route in latest_routes else f"/{latest}/docs/"
-            write_redirect(staging / "static", route, target)
+        latest_home = "/stable/docs/overview/" if "docs/overview/" in latest_routes else "/stable/docs/"
+        for route in sorted(routes):
+            target = f"/stable/{route}" if route in latest_routes else "/stable/docs/"
+            write_redirect(staging / "static", route, target, rules=redirects)
         for alias, target in latest_aliases.items():
-            write_redirect(staging / "static", alias, target)
-        write_redirect(staging / "static", "", latest_home)
+            write_redirect(staging / "static", alias, target, rules=redirects)
+            write_redirect(staging / "static", latest + alias, target, rules=redirects)
+        write_redirect(staging / "static", "", latest_home, rules=redirects)
+        # Exact missing-page/alias rules take precedence over namespace fallbacks.
+        redirects["/docs/*"] = "/stable/docs/:splat"
+        redirects[f"/{latest}/*"] = "/stable/:splat"
+        redirect_file = staging / "static/_redirects"
+        existing = redirect_file.read_text() if redirect_file.exists() else ""
+        redirect_file.write_text("".join(f"{source} {target} 301!\n" for source, target in redirects.items())
+                                 + existing)
         # Avoid two owners for /index.html (a Hugo homepage and a static redirect).
         for home in (staging / "content/en/_index.html", staging / "content/en/_index.md"):
             if home.exists():
