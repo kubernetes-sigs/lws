@@ -423,13 +423,13 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 			))
 		}
 
-		// External roles ignore spec.replicas, so their budgets are resolved at
-		// denominator 100, where p% resolves to p: only an always-zero pair fails.
+		// External roles ignore spec.replicas, so their target is unknown.
 		replicas := ptr.Deref(validationReplicasForRole(role), 0)
 		if replicas > 0 && role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {
-			replicas = 100
+			allErrs = append(allErrs, webhooks.ValidateUnknownTargetRollingUpdateBudget(ruc, rucPath)...)
+		} else {
+			allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 		}
-		allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 	}
 
 	return allErrs
@@ -442,11 +442,8 @@ func validateSubRoleRolloutStrategy(role *disaggv1.DisaggregatedRoleSpec, child 
 		return nil
 	}
 	config := disaggregatedsetutils.SubRoleRolloutConfig(role, child)
-	replicas := ptr.To(ptr.Deref(child.Replicas, 1))
 	if child.Scaling != nil && child.Scaling.Mode == disaggv1.RoleScalingExternal {
-		// The scaler's target is unknown. At denominator 100, p% resolves to p:
-		// reject only a universally-zero pair, not rounding at a guessed target.
-		replicas = ptr.To[int32](100)
+		return webhooks.ValidateUnknownTargetRollingUpdateBudget(&config, path)
 	}
-	return webhooks.ValidateRollingUpdateBudget(&config, *replicas, path)
+	return webhooks.ValidateRollingUpdateBudget(&config, ptr.Deref(child.Replicas, 1), path)
 }

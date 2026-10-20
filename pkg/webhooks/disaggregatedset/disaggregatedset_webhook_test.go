@@ -1302,7 +1302,7 @@ func TestValidateExternalScalingRules(t *testing.T) {
 		require.ErrorContains(t, err, "spec.roles[0].spec.rolloutStrategy.rollingUpdateConfiguration.maxUnavailable")
 	})
 
-	t.Run("validates External budgets at a denominator of 100", func(t *testing.T) {
+	t.Run("validates External budgets without a replica count", func(t *testing.T) {
 		zero, zeroPercent, quarter := intstr.FromInt32(0), intstr.FromString("0%"), intstr.FromString("25%")
 		for _, tc := range []struct {
 			name        string

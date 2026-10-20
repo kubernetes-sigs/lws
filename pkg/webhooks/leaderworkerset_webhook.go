@@ -367,6 +367,28 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1
 
 // ValidateRollingUpdateBudget validates rollout budgets for a resolved replica count.
 func ValidateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, replicas int32, path *field.Path) field.ErrorList {
+	if replicas == 0 {
+		return validateRollingUpdateBudget(rollout, path, nil)
+	}
+	return validateRollingUpdateBudget(rollout, path, func(value *intstr.IntOrString, roundUp bool) (int, error) {
+		return intstr.GetScaledValueFromIntOrPercent(value, int(replicas), roundUp)
+	})
+}
+
+// ValidateUnknownTargetRollingUpdateBudget validates rollout budgets whose replica
+// target is unknown: maxSurge and maxUnavailable are rejected only when both are zero.
+func ValidateUnknownTargetRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, path *field.Path) field.ErrorList {
+	return validateRollingUpdateBudget(rollout, path, func(value *intstr.IntOrString, _ bool) (int, error) {
+		if percent, isPercent := getPercentValue(*value); isPercent {
+			return percent, nil
+		}
+		return value.IntValue(), nil
+	})
+}
+
+// validateRollingUpdateBudget validates each budget's format and, when resolve is
+// set, rejects maxSurge and maxUnavailable that both resolve to zero.
+func validateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, path *field.Path, resolve func(value *intstr.IntOrString, roundUp bool) (int, error)) field.ErrorList {
 	if rollout == nil {
 		return nil
 	}
@@ -377,14 +399,14 @@ func ValidateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, replica
 	allErrs = append(allErrs, IsNotMoreThan100Percent(rollout.MaxUnavailable, maxUnavailablePath)...)
 	allErrs = append(allErrs, ValidatePositiveIntOrPercent(rollout.MaxSurge, maxSurgePath)...)
 	allErrs = append(allErrs, IsNotMoreThan100Percent(rollout.MaxSurge, maxSurgePath)...)
-	if len(allErrs) > 0 || replicas == 0 {
+	if len(allErrs) > 0 || resolve == nil {
 		return allErrs
 	}
-	maxUnavailableValue, err := intstr.GetScaledValueFromIntOrPercent(&rollout.MaxUnavailable, int(replicas), false)
+	maxUnavailableValue, err := resolve(&rollout.MaxUnavailable, false)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxUnavailablePath, rollout.MaxUnavailable, "invalid value"))
 	}
-	maxSurgeValue, err := intstr.GetScaledValueFromIntOrPercent(&rollout.MaxSurge, int(replicas), true)
+	maxSurgeValue, err := resolve(&rollout.MaxSurge, true)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(maxSurgePath, rollout.MaxSurge, "invalid value"))
 	}
