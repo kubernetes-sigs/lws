@@ -48,7 +48,7 @@ spec:
           name: manager
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.manager.repository }}:{{ .Values.image.manager.tag | default .Chart.AppVersion }}"
+          image: {{ include "lws.image" . | quote }}
           imagePullPolicy: {{ .Values.image.manager.pullPolicy }}
           ports:
             - name: webhook-server

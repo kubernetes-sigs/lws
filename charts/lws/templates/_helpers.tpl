@@ -70,3 +70,15 @@ Name of the controller manager service account
 {{- define "lws.serviceAccountName" -}}
 {{- default (printf "%s-controller-manager" (include "lws.fullname" .)) .Values.serviceAccount.name }}
 {{- end }}
+
+{{/*
+Controller manager image reference. A digest, when set, takes precedence over the tag.
+*/}}
+{{- define "lws.image" -}}
+{{- $image := .Values.image.manager }}
+{{- if $image.digest }}
+{{- printf "%v@%s" $image.repository $image.digest }}
+{{- else }}
+{{- printf "%v:%v" $image.repository (default .Chart.AppVersion $image.tag) }}
+{{- end }}
+{{- end }}

@@ -39,6 +39,8 @@ image:
     repository: registry.k8s.io/lws/lws
     # tag, if defined will use the given image tag, else Chart.AppVersion will be used
     tag: main
+    # digest, if defined (e.g. sha256:...), pins the image by digest and the tag is ignored
+    digest: ""
     pullPolicy: Always
 podAnnotations: {}
 podSecurityContext:
