@@ -77,8 +77,8 @@ Controller manager image reference. A digest, when set, takes precedence over th
 {{- define "lws.image" -}}
 {{- $image := .Values.image.manager }}
 {{- if $image.digest }}
-{{- printf "%s@%s" $image.repository $image.digest }}
+{{- printf "%v@%s" $image.repository $image.digest }}
 {{- else }}
-{{- printf "%s:%v" $image.repository (default .Chart.AppVersion $image.tag) }}
+{{- printf "%v:%v" $image.repository (default .Chart.AppVersion $image.tag) }}
 {{- end }}
 {{- end }}

@@ -238,6 +238,18 @@ tests:
           path: spec.template.spec.containers[0].image
           value: registry.k8s.io/lws/lws:123
 
+  - it: renders a numeric image repository
+    template: templates/manager/deployment.yaml
+    set:
+      image:
+        manager:
+          repository: 123
+          tag: latest
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: 123:latest
+
   - it: pins the image by digest
     template: templates/manager/deployment.yaml
     set:
