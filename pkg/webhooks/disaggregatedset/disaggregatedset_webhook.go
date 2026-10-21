@@ -55,14 +55,14 @@ var _ admission.Validator[*disaggv1.DisaggregatedSet] = &DisaggregatedSetWebhook
 // ValidateCreate implements admission.Validator for create operations.
 func (w *DisaggregatedSetWebhook) ValidateCreate(ctx context.Context, disagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
 	warnings, allErrs := w.validate(disagg, nil)
-	allErrs = append(allErrs, w.validatePlacement(disagg)...)
+	allErrs = append(allErrs, w.validatePlacement(disagg, nil)...)
 	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator for update operations.
 func (w *DisaggregatedSetWebhook) ValidateUpdate(ctx context.Context, oldDisagg, newDisagg *disaggv1.DisaggregatedSet) (admission.Warnings, error) {
 	warnings, allErrs := w.validate(newDisagg, oldDisagg)
-	allErrs = append(allErrs, w.validatePlacement(newDisagg)...)
+	allErrs = append(allErrs, w.validatePlacement(newDisagg, oldDisagg)...)
 	return warnings, allErrs.ToAggregate()
 }
 
@@ -337,7 +337,7 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 // needs a topology key, and conflicts with the LWS group-level exclusive-topology
 // annotation on a role: both co-locate/exclude at overlapping levels, so the slice
 // would never schedule.
-func (w *DisaggregatedSetWebhook) validatePlacement(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
 
 	policy := obj.Spec.PlacementPolicy
@@ -349,6 +349,10 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj *disaggv1.DisaggregatedS
 	if policy.Topology == "" {
 		allErrs = append(allErrs, field.Required(policyPath.Child("topology"),
 			"topology is required when type is not None"))
+	} else if oldObj == nil || oldObj.Spec.PlacementPolicy == nil || policy.Topology != oldObj.Spec.PlacementPolicy.Topology {
+		for _, msg := range utilvalidation.IsQualifiedName(policy.Topology) {
+			allErrs = append(allErrs, field.Invalid(policyPath.Child("topology"), policy.Topology, msg))
+		}
 	}
 
 	rolesPath := field.NewPath("spec", "roles")
