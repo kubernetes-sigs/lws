@@ -1,0 +1,25 @@
+title: DisaggregatedSet Integration with CompositePodGroup
+kep-number: 893
+authors:
+  - "yindia"
+status: provisional
+creation-date: 2026-10-23
+reviewers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+  - pacoxu
+approvers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+
+see-also:
+  - "/keps/666-gang-scheduling-in-lws"
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+  - "/keps/848-disaggregatedset-placement-policy"
+  - "/keps/960-DisaggregatedSet-subroles"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
