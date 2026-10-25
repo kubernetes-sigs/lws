@@ -164,12 +164,13 @@ func (m *controllerMetrics) scrape(ctx context.Context) (sample, error) {
 		if err != nil {
 			return s, err
 		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			return s, fmt.Errorf("reading %s: %s", url, response.Status)
+		}
 		parser := expfmt.NewTextParser(model.UTF8Validation)
 		families, err := parser.TextToMetricFamilies(response.Body)
 		response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return s, fmt.Errorf("reading %s: %s", url, response.Status)
-		}
 		if err != nil {
 			return s, fmt.Errorf("reading %s: %w", url, err)
 		}

@@ -226,6 +226,9 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 			return PhaseSummary{}, err
 		}
 	}
+	// The timeout covers submitting the changes as well as waiting for them.
+	phaseCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout.Duration)
+	defer cancel()
 	started := map[string]time.Time{}
 	var groups, pods int64
 	begin := time.Now()
@@ -240,17 +243,19 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 			if exists && current == target {
 				continue
 			}
-			started[lws.Name] = time.Now()
 			var err error
 			if exists {
 				patch := fmt.Appendf(nil, `{"spec":{"replicas":%d}}`, target)
-				err = r.client.Patch(ctx, lws, client.RawPatch(types.MergePatchType, patch))
+				err = r.client.Patch(phaseCtx, lws, client.RawPatch(types.MergePatchType, patch))
 			} else {
-				err = r.client.Create(ctx, lws)
+				err = r.client.Create(phaseCtx, lws)
 			}
 			if err != nil {
 				return PhaseSummary{}, fmt.Errorf("phase %s: %w", phase.Name, err)
 			}
+			// Start the clock once the change is stored, so the latency does not
+			// include the runner's own client-side throttling.
+			started[lws.Name] = time.Now()
 			r.replicas[lws.Name] = target
 			delta := int64(max(target-current, current-target))
 			groups += delta
@@ -259,7 +264,7 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 	}
 
 	var latencies []time.Duration
-	err := wait.PollUntilContextTimeout(ctx, pollInterval, r.cfg.Timeout.Duration, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextCancel(phaseCtx, pollInterval, true, func(ctx context.Context) (bool, error) {
 		list := &leaderworkerset.LeaderWorkerSetList{}
 		if err := r.cache.List(ctx, list, client.InNamespace(r.cfg.Namespace)); err != nil {
 			return false, err
