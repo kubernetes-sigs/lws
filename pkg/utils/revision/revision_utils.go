@@ -174,7 +174,7 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	if err != nil {
 		return nil, err
 	}
-	recordsPlacement := placementInData || revision.Annotations[placementRecordedAnnotationKey] == "true"
+	recordsPlacement := revisionRecordsPlacement(revision, placementInData)
 	original := lws
 	if placementInData && lws.Spec.PlacementPolicy == nil {
 		// A strategic merge patch drops a "$patch: replace" map whose key is
@@ -234,11 +234,9 @@ const placementRecordedAnnotationKey = "leaderworkerset.sigs.k8s.io/placement-re
 
 // revisionRecordsPlacement reports whether a revision records the effective
 // placement, which revisions created before spec.placementPolicy did not.
-func revisionRecordsPlacement(revision *appsv1.ControllerRevision) (bool, error) {
-	if revision.Annotations[placementRecordedAnnotationKey] == "true" {
-		return true, nil
-	}
-	return revisionDataHasPlacement(revision)
+// placementInData is what revisionDataHasPlacement returns for the revision.
+func revisionRecordsPlacement(revision *appsv1.ControllerRevision, placementInData bool) bool {
+	return placementInData || revision.Annotations[placementRecordedAnnotationKey] == "true"
 }
 
 // revisionDataHasPlacement reports whether a revision's data carries a
