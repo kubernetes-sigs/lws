@@ -293,6 +293,18 @@ RollingUpdate strategy whose configuration takes its own defaults.</p>
    <p>networkConfig defines the network configuration of the group</p>
 </td>
 </tr>
+<tr><td><code>placementPolicy</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementPolicy"><code>PlacementPolicy</code></a>
+</td>
+<td>
+   <p>placementPolicy defines the topology placement of each group and, in
+subGroup, of each subgroup. It replaces the
+leaderworkerset.sigs.k8s.io/exclusive-topology and
+leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology annotations, and
+setting a level in both with different values is rejected. Changing the
+effective placement creates a new revision.</p>
+</td>
+</tr>
 <tr><td><code>scheduling</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetScheduling"><code>LeaderWorkerSetScheduling</code></a>
 </td>
@@ -597,6 +609,66 @@ the headless service, defaults to shared</p>
 </tbody>
 </table>
 
+## `PlacementPolicy`     {#leaderworkerset-x-k8s-io-v1-PlacementPolicy}
+    
+
+**Appears in:**
+
+- [LeaderWorkerSetSpec](#leaderworkerset-x-k8s-io-v1-LeaderWorkerSetSpec)
+
+
+<p>PlacementPolicy defines the topology placement of the pods in each group,
+and optionally in each subgroup.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>type</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementType"><code>PlacementType</code></a>
+</td>
+<td>
+   <p>type selects the group level placement guarantee. Defaults to None.</p>
+</td>
+</tr>
+<tr><td><code>topology</code><br/>
+<code>string</code>
+</td>
+<td>
+   <p>topology is the node label key that defines the topology domain of a
+group, for example a rack, a block or a zone. Required when type is
+ExclusiveTopology.</p>
+</td>
+</tr>
+<tr><td><code>subGroup</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy"><code>SubGroupPlacementPolicy</code></a>
+</td>
+<td>
+   <p>subGroup defines the topology placement of each subgroup within a group.
+It requires leaderWorkerTemplate.subGroupPolicy.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `PlacementType`     {#leaderworkerset-x-k8s-io-v1-PlacementType}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [PlacementPolicy](#leaderworkerset-x-k8s-io-v1-PlacementPolicy)
+
+- [SubGroupPlacementPolicy](#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy)
+
+
+<p>PlacementType defines the topology placement guarantee.</p>
+
+
+
+
 ## `PodTerminationPolicyType`     {#leaderworkerset-x-k8s-io-v1-PodTerminationPolicyType}
     
 (Alias of `string`)
@@ -784,6 +856,41 @@ maxSurge 0 and partition 0.</p>
 
 
 
+
+## `SubGroupPlacementPolicy`     {#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy}
+    
+
+**Appears in:**
+
+- [PlacementPolicy](#leaderworkerset-x-k8s-io-v1-PlacementPolicy)
+
+
+<p>SubGroupPlacementPolicy defines the topology placement of the pods in each
+subgroup.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>type</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementType"><code>PlacementType</code></a>
+</td>
+<td>
+   <p>type selects the subgroup level placement guarantee. Defaults to None.</p>
+</td>
+</tr>
+<tr><td><code>topology</code><br/>
+<code>string</code>
+</td>
+<td>
+   <p>topology is the node label key that defines the topology domain of a
+subgroup. Required when type is ExclusiveTopology.</p>
+</td>
+</tr>
+</tbody>
+</table>
 
 ## `SubGroupPolicy`     {#leaderworkerset-x-k8s-io-v1-SubGroupPolicy}
     

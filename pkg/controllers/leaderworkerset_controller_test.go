@@ -2536,3 +2536,59 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 		}
 	})
 }
+
+func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
+	annotations := map[string]string{
+		leaderworkerset.ExclusiveKeyAnnotationKey:         "zone",
+		leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack",
+	}
+	tests := []struct {
+		name            string
+		annotations     map[string]string
+		policy          *leaderworkerset.PlacementPolicy
+		wantGroupKey    string
+		wantSubGroupKey string
+	}{
+		{
+			name: "placementPolicy",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			wantGroupKey:    "block",
+			wantSubGroupKey: "host",
+		},
+		{
+			name:        "placementPolicy takes precedence over the annotations",
+			annotations: annotations,
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			wantGroupKey:    "block",
+			wantSubGroupKey: "host",
+		},
+		{
+			name:        "a None group level falls back to the annotation",
+			annotations: annotations,
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack"}},
+			wantGroupKey:    "zone",
+			wantSubGroupKey: "rack",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).Annotation(tc.annotations).Obj()
+			lws.Spec.PlacementPolicy = tc.policy
+			podTemplate, err := buildLeaderPodTemplateApplyConfiguration(lws, "revision-1")
+			if err != nil {
+				t.Fatalf("failed with error: %s", err.Error())
+			}
+			if got := podTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; got != tc.wantGroupKey {
+				t.Errorf("exclusive-topology annotation = %q, want %q", got, tc.wantGroupKey)
+			}
+			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; got != tc.wantSubGroupKey {
+				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
+			}
+		})
+	}
+}
