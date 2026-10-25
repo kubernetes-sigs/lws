@@ -1,0 +1,155 @@
+# Pod stages that replace the pod-ready stage of KWOK's stage-fast.yaml.
+# stage-fast sets every readiness gate condition to True itself, so the
+# group-ready gate of Hash identity would never wait on the LWS controller.
+# These stages leave readiness gate conditions to their owners and, like the
+# kubelet, report a pod Ready only while all of its readiness gates are True.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: lws-pod-running
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: .metadata.deletionTimestamp
+      operator: DoesNotExist
+    - key: .status.phase
+      operator: In
+      values:
+      - Pending
+    - key: .status.conditions.[] | select( .type == "Ready" ) | .status
+      operator: NotIn
+      values:
+      - "True"
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+
+      conditions:
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: Initialized
+      - lastTransitionTime: {{ $now | Quote }}
+        status: "True"
+        type: ContainersReady
+      - lastTransitionTime: {{ $now | Quote }}
+        status: {{ if .spec.readinessGates }}"False"{{ else }}"True"{{ end }}
+        type: Ready
+
+      containerStatuses:
+      {{ range .spec.containers }}
+      - image: {{ .image | Quote }}
+        name: {{ .name | Quote }}
+        ready: true
+        restartCount: 0
+        state:
+          running:
+            startedAt: {{ $now | Quote }}
+      {{ end }}
+
+      initContainerStatuses:
+      {{ range .spec.initContainers }}
+      - image: {{ .image | Quote }}
+        name: {{ .name | Quote }}
+        ready: true
+        restartCount: 0
+        {{ if eq .restartPolicy "Always" }}
+        started: true
+        state:
+          running:
+            startedAt: {{ $now | Quote }}
+        {{ else }}
+        state:
+          terminated:
+            exitCode: 0
+            finishedAt: {{ $now | Quote }}
+            reason: Completed
+            startedAt: {{ $now | Quote }}
+        {{ end }}
+      {{ end }}
+      {{ $hostIPs := NodeIPsWith .spec.nodeName }}
+      {{ with $hostIPs }}
+      hostIP: {{ index . 0 | Quote }}
+      hostIPs:
+      {{ range . }}
+      - ip: {{ . | Quote }}
+      {{ end }}
+      {{ end }}
+      {{ $podIPs := PodIPsWith .spec.nodeName ( or .spec.hostNetwork false ) ( or .metadata.uid "" ) ( or .metadata.name "" ) ( or .metadata.namespace "" ) }}
+      {{ with $podIPs }}
+      podIP: {{ index . 0 | Quote }}
+      podIPs:
+      {{ range . }}
+      - ip: {{ . | Quote }}
+      {{ end }}
+      {{ end }}
+      phase: Running
+      startTime: {{ $now | Quote }}
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: lws-pod-gates-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: .metadata.deletionTimestamp
+      operator: DoesNotExist
+    - key: .status.phase
+      operator: In
+      values:
+      - Running
+    - key: .spec.readinessGates
+      operator: Exists
+    - key: .status.conditions.[] | select( .type == "Ready" ) | .status
+      operator: NotIn
+      values:
+      - "True"
+    - key: .status.conditions as $c | [ .spec.readinessGates[] | .conditionType as $t | any( $c[]?; .type == $t and .status == "True" ) ] | all
+      operator: In
+      values:
+      - "true"
+  next:
+    statusTemplate: |
+      conditions:
+      - lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: Ready
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: lws-pod-gates-unready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: .metadata.deletionTimestamp
+      operator: DoesNotExist
+    - key: .status.phase
+      operator: In
+      values:
+      - Running
+    - key: .spec.readinessGates
+      operator: Exists
+    - key: .status.conditions.[] | select( .type == "Ready" ) | .status
+      operator: In
+      values:
+      - "True"
+    - key: .status.conditions as $c | [ .spec.readinessGates[] | .conditionType as $t | any( $c[]?; .type == $t and .status == "True" ) ] | all
+      operator: In
+      values:
+      - "false"
+  next:
+    statusTemplate: |
+      conditions:
+      - lastTransitionTime: {{ Now | Quote }}
+        status: "False"
+        type: Ready
