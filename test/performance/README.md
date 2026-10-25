@@ -42,6 +42,8 @@ After each phase the runner checks that every LeaderWorkerSet has exactly
   from the moment the API server stored its write, so the runner's own
   client-side throttling is not counted. The runner polls an informer cache
   every 100ms, which is the resolution, and adds no load to the API server.
+  Polling starts with the first write, so a LeaderWorkerSet that is done
+  before the last write is not timed until then.
 - `controller`: CPU seconds, peak resident memory and API requests by method of
   the controller pods during the phase, from `process_cpu_seconds_total`,
   `process_resident_memory_bytes` and `rest_client_requests_total`. The runner

@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -229,7 +230,33 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 	// The timeout covers submitting the changes as well as waiting for them.
 	phaseCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout.Duration)
 	defer cancel()
+	// Completions are observed while the changes are still being submitted, so
+	// a LeaderWorkerSet that is done early is not timed until the last write.
+	// mu guards started, submitted, latencies and r.replicas.
+	var mu sync.Mutex
 	started := map[string]time.Time{}
+	submitted := false
+	var latencies []time.Duration
+	observed := make(chan error, 1)
+	go func() {
+		observed <- wait.PollUntilContextCancel(phaseCtx, pollInterval, true, func(ctx context.Context) (bool, error) {
+			list := &leaderworkerset.LeaderWorkerSetList{}
+			if err := r.cache.List(ctx, list, client.InNamespace(r.cfg.Namespace)); err != nil {
+				return false, err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for i := range list.Items {
+				lws := &list.Items[i]
+				if start, waiting := started[lws.Name]; waiting && reachedTarget(lws, r.replicas[lws.Name]) {
+					latencies = append(latencies, time.Since(start))
+					delete(started, lws.Name)
+				}
+			}
+			return submitted && len(started) == 0, nil
+		})
+	}()
+
 	var groups, pods int64
 	begin := time.Now()
 	for _, class := range r.cfg.Classes {
@@ -251,33 +278,26 @@ func (r *runner) phase(ctx context.Context, phase ScalePhase) (PhaseSummary, err
 				err = r.client.Create(phaseCtx, lws)
 			}
 			if err != nil {
+				cancel()
+				<-observed
 				return PhaseSummary{}, fmt.Errorf("phase %s: %w", phase.Name, err)
 			}
 			// Start the clock once the change is stored, so the latency does not
 			// include the runner's own client-side throttling.
+			mu.Lock()
 			started[lws.Name] = time.Now()
 			r.replicas[lws.Name] = target
+			mu.Unlock()
 			delta := int64(max(target-current, current-target))
 			groups += delta
 			pods += delta * int64(class.Size)
 		}
 	}
 
-	var latencies []time.Duration
-	err := wait.PollUntilContextCancel(phaseCtx, pollInterval, true, func(ctx context.Context) (bool, error) {
-		list := &leaderworkerset.LeaderWorkerSetList{}
-		if err := r.cache.List(ctx, list, client.InNamespace(r.cfg.Namespace)); err != nil {
-			return false, err
-		}
-		for i := range list.Items {
-			lws := &list.Items[i]
-			if start, waiting := started[lws.Name]; waiting && reachedTarget(lws, r.replicas[lws.Name]) {
-				latencies = append(latencies, time.Since(start))
-				delete(started, lws.Name)
-			}
-		}
-		return len(started) == 0, nil
-	})
+	mu.Lock()
+	submitted = true
+	mu.Unlock()
+	err := <-observed
 	if err != nil {
 		return PhaseSummary{}, fmt.Errorf("phase %s: %w (%d LeaderWorkerSets did not reach their target)", phase.Name, err, len(started))
 	}
