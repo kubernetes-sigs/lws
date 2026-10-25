@@ -106,14 +106,15 @@ func TestNewRevisionRecordsEffectivePlacement(t *testing.T) {
 	if !bytes.Equal(none.Data.Raw, explicitNone.Data.Raw) {
 		t.Fatalf("an absent policy and type None must record the same revision:\nabsent=%s\nNone=%s", none.Data.Raw, explicitNone.Data.Raw)
 	}
-	if recorded, err := revisionRecordsPlacement(none); err != nil || !recorded {
-		t.Fatalf("a revision without placement must still record it, got recorded=%t err=%v", recorded, err)
-	}
 	// A LeaderWorkerSet without placement must keep the revision data, and so the
 	// hash, it had before placement was recorded, or upgrading the controller
 	// would roll every group.
-	if inData, err := revisionDataHasPlacement(none); err != nil || inData {
+	inData, err := revisionDataHasPlacement(none)
+	if err != nil || inData {
 		t.Fatalf("a revision without placement must leave placementPolicy out of its data, got inData=%t err=%v", inData, err)
+	}
+	if !revisionRecordsPlacement(none, inData) {
+		t.Fatalf("a revision without placement must still record it")
 	}
 	if beforeUpgrade := withoutRecordedPlacement(t, none); !EqualRevision(none, beforeUpgrade) || hashRevision(none) != hashRevision(beforeUpgrade) {
 		t.Fatalf("a revision without placement must hash as it did before placement was recorded")
