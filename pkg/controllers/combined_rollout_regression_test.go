@@ -74,7 +74,7 @@ func newCombinedAPIFixture(t *testing.T, c client.Client, scheme *runtime.Scheme
 
 func (f *combinedAPIFixture) reconciler() *LeaderWorkerSetReconciler {
 	r := NewLeaderWorkerSetReconciler(f.c, f.scheme, fakeEventRecorder{})
-	r.APIReader = f.c
+	r.apiReader = f.c
 	return r
 }
 
@@ -663,7 +663,7 @@ func testCombinedInvalidStateWarnings(t *testing.T, c client.Client, scheme *run
 			for attempt := 1; attempt <= 3; attempt++ {
 				recorder := &combinedWarningRecorder{}
 				r := NewLeaderWorkerSetReconciler(c, scheme, recorder)
-				r.APIReader = c
+				r.apiReader = c
 				_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
 				checkError(err)
 				unchanged()
@@ -684,7 +684,7 @@ func testCombinedInvalidStateWarnings(t *testing.T, c client.Client, scheme *run
 			}
 			// The invalid-state branch must also fail closed with no recorder.
 			r := NewLeaderWorkerSetReconciler(c, scheme, nil)
-			r.APIReader = c
+			r.apiReader = c
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key})
 			checkError(err)
 			unchanged()
@@ -698,7 +698,7 @@ func testCombinedInvalidStateWarnings(t *testing.T, c client.Client, scheme *run
 			}
 			recorder := &combinedWarningRecorder{}
 			r = NewLeaderWorkerSetReconciler(c, scheme, recorder)
-			r.APIReader = c
+			r.apiReader = c
 			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: f.key}); err != nil {
 				t.Fatal(err)
 			}
@@ -744,7 +744,7 @@ func testCombinedInvalidStateWarningFences(t *testing.T, c client.Client, scheme
 			oldLWS, oldSTS := f.lws(), f.sts()
 			recorder := &combinedWarningRecorder{}
 			r := NewLeaderWorkerSetReconciler(c, scheme, recorder)
-			r.APIReader = c
+			r.apiReader = c
 			var readErr error
 			switch name {
 			case "sts-rv":
@@ -776,7 +776,7 @@ func testCombinedInvalidStateWarningFences(t *testing.T, c client.Client, scheme
 				readErr = apierrors.NewTimeoutError("test transient read failure", 1)
 			}
 			if readErr != nil {
-				r.APIReader = combinedWarningErrorReader{Reader: c, err: readErr}
+				r.apiReader = combinedWarningErrorReader{Reader: c, err: readErr}
 			}
 			unchanged := combinedWarningUnchanged(t, f)
 			handled, _, err := r.reconcileCombinedRollout(ctx, oldLWS, oldSTS, oldSTS.Labels[leaderworkerset.RevisionKey], false)

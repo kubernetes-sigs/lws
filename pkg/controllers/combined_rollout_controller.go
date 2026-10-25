@@ -44,8 +44,8 @@ import (
 )
 
 func (r *LeaderWorkerSetReconciler) combinedReader() client.Reader {
-	if r.APIReader != nil {
-		return r.APIReader
+	if r.apiReader != nil {
+		return r.apiReader
 	}
 	// Direct-client tests and embedders without a manager may supply Client.
 	// The production manager always installs its uncached APIReader.

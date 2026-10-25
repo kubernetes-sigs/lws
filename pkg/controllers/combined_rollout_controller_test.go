@@ -54,7 +54,7 @@ func testCombinedReconcile(t *testing.T, c client.Client, scheme *runtime.Scheme
 				t.Fatal(err)
 			}
 			r := NewLeaderWorkerSetReconciler(c, scheme, fakeEventRecorder{})
-			r.APIReader = c
+			r.apiReader = c
 			key := client.ObjectKeyFromObject(lws)
 			reconcile := func() {
 				t.Helper()
@@ -138,7 +138,7 @@ func testCombinedReconcile(t *testing.T, c client.Client, scheme *runtime.Scheme
 			count := revisionCount()
 			for i := 0; i < 5; i++ {
 				r = NewLeaderWorkerSetReconciler(c, scheme, fakeEventRecorder{})
-				r.APIReader = c
+				r.apiReader = c
 				reconcile()
 			}
 			if revisionCount() != count || count != 2 {
@@ -204,7 +204,7 @@ func testCombinedReconcile(t *testing.T, c client.Client, scheme *runtime.Scheme
 				t.Fatal("stale LWS generation deleted a leader")
 			}
 			r = NewLeaderWorkerSetReconciler(c, scheme, fakeEventRecorder{})
-			r.APIReader = c
+			r.apiReader = c
 			reconcile()
 			if err := c.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
 				t.Fatal(err)
