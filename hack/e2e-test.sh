@@ -355,6 +355,10 @@ function deploy_kwok {
     local release="https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}"
     $KUBECTL apply -f "$release/kwok.yaml"
     $KUBECTL apply -f "$release/stage-fast.yaml"
+    # stage-fast's pod-ready stage sets readiness gate conditions itself, which
+    # would skip the group-ready gate. pod-stages.yaml replaces it.
+    $KUBECTL delete stage pod-ready
+    $KUBECTL apply -f "$CWD/test/performance/kwok/pod-stages.yaml"
     $KUBECTL -n kube-system rollout status deployment/kwok-controller --timeout=5m
     for i in $(seq 0 $((KWOK_NODES - 1))); do
         sed "s/INDEX/$i/g" "$CWD/test/performance/kwok/node.yaml.tmpl"
