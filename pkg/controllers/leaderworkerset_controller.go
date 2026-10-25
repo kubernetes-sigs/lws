@@ -63,14 +63,11 @@ import (
 // LeaderWorkerSetReconciler reconciles a LeaderWorkerSet object
 type LeaderWorkerSetReconciler struct {
 	client.Client
-	// APIReader fences combined-rollout decisions against uncached identities.
-	// SetupWithManager supplies it without changing existing constructors.
-	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
 
-	apiReader             client.Reader // ReplicaSet lookups must not start a cluster-wide informer.
+	apiReader             client.Reader // Uncached rollout fences and ReplicaSet lookups without an informer.
 	revisionEqualityCache *lru.Cache
 }
 
@@ -486,7 +483,6 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Conte
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.apiReader = mgr.GetAPIReader()
-	r.APIReader = mgr.GetAPIReader()
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
