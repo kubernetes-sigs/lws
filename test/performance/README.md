@@ -39,7 +39,8 @@ After each phase the runner checks that every LeaderWorkerSet has exactly
 - `wallTimeMs` and `groupsPerSecond`: from the first write until the last
   LeaderWorkerSet was done.
 - `p50Ms`, `p90Ms`, `p99Ms` and `maxMs`: latency over the LeaderWorkerSets, each
-  from the moment the runner sent its write. The runner polls an informer cache
+  from the moment the API server stored its write, so the runner's own
+  client-side throttling is not counted. The runner polls an informer cache
   every 100ms, which is the resolution, and adds no load to the API server.
 - `controller`: CPU seconds, peak resident memory and API requests by method of
   the controller pods during the phase, from `process_cpu_seconds_total`,
@@ -89,7 +90,7 @@ go run ./test/performance/runner --config test/performance/configs/smoke/generat
 
 ```yaml
 namespace: lws-performance   # created by the runner and deleted at the end
-timeout: 15m                 # per phase
+timeout: 15m                 # per phase, writes included
 nodeSelector: {type: kwok}   # set on every pod, with the tolerations below
 tolerations:
 - {key: kwok.x-k8s.io/node, operator: Exists, effect: NoSchedule}
