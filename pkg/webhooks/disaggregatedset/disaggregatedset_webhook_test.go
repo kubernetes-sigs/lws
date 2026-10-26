@@ -400,6 +400,24 @@ func TestValidateCreate(t *testing.T) {
 			errorMsg:    "topology",
 		},
 		{
+			name: "invalid placement policy with malformed topology key",
+			obj: &disaggv1.DisaggregatedSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+				Spec: disaggv1.DisaggregatedSetSpec{
+					PlacementPolicy: &disaggv1.PlacementPolicy{
+						Type:     disaggv1.PlacementExclusiveSlice,
+						Topology: "invalid topology key",
+					},
+					Roles: []disaggv1.DisaggregatedRoleSpec{
+						{Name: "prefill", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+						{Name: "decode", LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{Spec: leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))}}},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "spec.placementPolicy.topology",
+		},
+		{
 			name: "invalid placement policy combined with LWS exclusive-topology annotation",
 			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
@@ -1233,6 +1251,89 @@ func TestValidateUpdate(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	t.Run("placement policy topology update", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			oldPolicy *disaggv1.PlacementPolicy
+			newPolicy *disaggv1.PlacementPolicy
+			wantError string
+		}{
+			{
+				name: "unchanged invalid topology key is accepted",
+				oldPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "invalid topology key",
+				},
+				newPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "invalid topology key",
+				},
+			},
+			{
+				name: "changed invalid topology key is rejected",
+				oldPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "invalid topology key",
+				},
+				newPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "another invalid key",
+				},
+				wantError: "spec.placementPolicy.topology",
+			},
+			{
+				name: "newly added invalid topology key is rejected",
+				newPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "invalid topology key",
+				},
+				wantError: "spec.placementPolicy.topology",
+			},
+			{
+				name: "updating to valid topology key is accepted",
+				oldPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "invalid topology key",
+				},
+				newPolicy: &disaggv1.PlacementPolicy{
+					Type:     disaggv1.PlacementExclusiveSlice,
+					Topology: "kubernetes.io/hostname",
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				oldObj := validObj.DeepCopy()
+				oldObj.Spec.PlacementPolicy = tc.oldPolicy
+				newObj := validObj.DeepCopy()
+				newObj.Spec.PlacementPolicy = tc.newPolicy
+				original, before := oldObj.DeepCopy(), newObj.DeepCopy()
+				_, err := webhook.ValidateUpdate(ctx, oldObj, newObj)
+				require.Equal(t, original, oldObj)
+				require.Equal(t, before, newObj)
+				if tc.wantError != "" {
+					require.ErrorContains(t, err, tc.wantError)
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	})
+
+	t.Run("finalizer removal with unchanged invalid topology key", func(t *testing.T) {
+		oldObj := validObj.DeepCopy()
+		oldObj.Finalizers = []string{"example.com/cleanup"}
+		now := metav1.Now()
+		oldObj.DeletionTimestamp = &now
+		oldObj.Spec.PlacementPolicy = &disaggv1.PlacementPolicy{
+			Type:     disaggv1.PlacementExclusiveSlice,
+			Topology: "invalid topology key",
+		}
+		newObj := oldObj.DeepCopy()
+		newObj.Finalizers = nil
+		_, err := webhook.ValidateUpdate(ctx, oldObj, newObj)
+		require.NoError(t, err)
 	})
 }
 
