@@ -7,3 +7,16 @@ The Kubernetes Template Project is released on an as-needed basis. The process i
 1. An OWNER runs `git tag -s $VERSION` and inserts the changelog and pushes the tag with `git push $VERSION`
 1. The release issue is closed
 1. An announcement email is sent to `dev@kubernetes.io` with the subject `[ANNOUNCE] kubernetes-template-project $VERSION is released`
+
+## Documentation
+
+After the release and Helm chart are available, trigger a website rebuild.
+The build discovers stable tags and refreshes snapshots from `release-X.Y`.
+The latest tagged release is served at `/stable/docs/`; older releases keep
+`/vX.Y/docs/`. Backport relevant
+documentation fixes to the release branch before rebuilding. Keep unreleased
+feature documentation on `main`. See [the local generation and preview guide](site/README.md).
+
+Automatic rebuilds for release-branch changes and new tags still need to be
+arranged with the Netlify administrators. Until then, these changes appear on
+the next `main` deployment or after an administrator manually rebuilds `main`.
