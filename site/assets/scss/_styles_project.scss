@@ -97,6 +97,8 @@ footer {
     }
 
     @include media-breakpoint-up(md) {
+      padding-right: .25rem;
+
       > .td-sidebar-nav__section {
         // Remove the extra pe-md-3 inset; the navigation retains its own gutter.
         padding-right: 0 !important;
@@ -123,8 +125,8 @@ footer {
 
   @include media-breakpoint-up(md) {
     .td-main > .row > .td-sidebar {
-      flex: 0 0 clamp(20rem, 24vw, 21rem);
-      width: clamp(20rem, 24vw, 21rem);
+      flex: 0 0 19rem;
+      width: 19rem;
     }
 
     .td-main > .row > main {
@@ -216,11 +218,30 @@ footer {
     }
 
     .docs-section-toggle {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       color: white;
+      background: transparent;
+      border: 0;
+      border-radius: .375rem;
       width: 2.75rem;
       height: 2.75rem;
       padding: .5rem;
       font-size: 1.25rem;
+
+      &:hover,
+      &[aria-expanded="true"] {
+        background-color: rgba(255, 255, 255, .12);
+      }
+
+      &:active { background-color: rgba(255, 255, 255, .2); }
+
+      &:focus-visible {
+        outline: 2px solid white;
+        outline-offset: 2px;
+      }
     }
 
     @include media-breakpoint-down(md) {
