@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -64,12 +63,7 @@ func lwsSchedNewReconciler(t *testing.T, funcs interceptor.Funcs, lws *leaderwor
 		WithObjects(lws).
 		WithInterceptorFuncs(funcs).
 		Build()
-	return &LeaderWorkerSetReconciler{
-		Client:                k8sClient,
-		Scheme:                scheme,
-		Record:                recorder,
-		revisionEqualityCache: lru.New(maxRevisionEqualityCacheEntries),
-	}, k8sClient, recorder
+	return NewLeaderWorkerSetReconciler(k8sClient, scheme, recorder), k8sClient, recorder
 }
 
 // lwsSchedGetCondition reads the WorkloadSchedulingCreated condition straight from
