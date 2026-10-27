@@ -193,9 +193,12 @@ footer {
 
       @include media-breakpoint-down(md) {
         font-size: .875rem;
+        gap: .25rem;
         flex-wrap: wrap;
         justify-content: flex-end;
         width: 100%;
+
+        .nav-link { padding-inline: .375rem; }
 
         .dropdown {
           min-width: inherit;
