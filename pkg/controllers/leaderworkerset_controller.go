@@ -1152,7 +1152,7 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws 
 func (r *LeaderWorkerSetReconciler) reuseOrCreateRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, proposed *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	var revisions appsv1.ControllerRevisionList
 	// A cached list can lag our last create across repeated reconciles.
-	if err := r.combinedReader().List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+	if err := r.apiReader.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
 		return nil, err
 	}
 	for i := range revisions.Items {

@@ -43,15 +43,6 @@ import (
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
 
-func (r *LeaderWorkerSetReconciler) combinedReader() client.Reader {
-	if r.apiReader != nil {
-		return r.apiReader
-	}
-	// Direct-client tests and embedders without a manager may supply Client.
-	// The production manager always installs its uncached APIReader.
-	return r.Client
-}
-
 // Health, identity and termination changes can affect group credit. Ignore
 // heartbeat timestamps and unrelated status updates, but retain both sides of
 // ownership/label changes so stale group membership also triggers observation.
@@ -288,10 +279,10 @@ func (r *LeaderWorkerSetReconciler) combinedInvalidState(lws *leaderworkerset.Le
 func (r *LeaderWorkerSetReconciler) combinedFence(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet) error {
 	var liveLWS leaderworkerset.LeaderWorkerSet
 	var liveSTS appsv1.StatefulSet
-	if err := r.combinedReader().Get(ctx, client.ObjectKeyFromObject(lws), &liveLWS); err != nil {
+	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(lws), &liveLWS); err != nil {
 		return err
 	}
-	if err := r.combinedReader().Get(ctx, client.ObjectKeyFromObject(sts), &liveSTS); err != nil {
+	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(sts), &liveSTS); err != nil {
 		return err
 	}
 	if liveLWS.UID != lws.UID || liveLWS.Generation != lws.Generation || liveLWS.ResourceVersion != lws.ResourceVersion || liveLWS.DeletionTimestamp != nil ||
@@ -419,10 +410,10 @@ func (r *LeaderWorkerSetReconciler) observeCombinedGroups(ctx context.Context, l
 	var pods corev1.PodList
 	var sets appsv1.StatefulSetList
 	selector := client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}
-	if err := r.combinedReader().List(ctx, &pods, client.InNamespace(lws.Namespace), selector); err != nil {
+	if err := r.apiReader.List(ctx, &pods, client.InNamespace(lws.Namespace), selector); err != nil {
 		return nil, err
 	}
-	if err := r.combinedReader().List(ctx, &sets, client.InNamespace(lws.Namespace), selector); err != nil {
+	if err := r.apiReader.List(ctx, &sets, client.InNamespace(lws.Namespace), selector); err != nil {
 		return nil, err
 	}
 	// Include condemned ordinals for cleanup checks, but the planner never
