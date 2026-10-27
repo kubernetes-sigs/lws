@@ -12,7 +12,7 @@
   <button class="nav-link dropdown-toggle docs-version-toggle" type="button" id="docs-version-menu" data-bs-toggle="dropdown" aria-expanded="false">
     Version: {{ if eq $current.key "main" }}<i class="fa-solid fa-code-branch" aria-hidden="true"></i> main · Development <code>{{ substr $current.commit 0 8 }}</code>{{ else }}{{ $current.label }}{{ if $current.latest }} · Latest stable{{ end }}{{ end }}
   </button>
-  <div class="dropdown-menu dropdown-menu-md-end docs-version-menu" aria-labelledby="docs-version-menu">
+  <div class="dropdown-menu dropdown-menu-end docs-version-menu" aria-labelledby="docs-version-menu">
     {{- range .versions -}}
       {{- if eq .key "main" }}<hr class="dropdown-divider">{{ end -}}
       {{- $url := .url -}}
@@ -36,7 +36,7 @@
   <button class="nav-link dropdown-toggle docs-version-toggle" type="button" id="docs-version-menu" data-bs-toggle="dropdown" aria-expanded="false">
     {{ .Site.Params.version_menu }}
   </button>
-  <div class="dropdown-menu dropdown-menu-md-end" aria-labelledby="docs-version-menu">
+  <div class="dropdown-menu dropdown-menu-end" aria-labelledby="docs-version-menu">
     {{ range .Site.Params.versions }}<a class="dropdown-item" href="{{ .url }}">{{ .version }}</a>{{ end }}
   </div>
 {{- end -}}

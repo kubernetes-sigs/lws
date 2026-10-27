@@ -153,8 +153,12 @@ footer {
           min-width: inherit;
         }
 
-        // Anchor the wider version menu at the screen's left margin.
-        .docs-version-nav { flex-basis: 100%; }
+        // Keep both the selector and its wider menu at the screen's right margin.
+        .docs-version-nav {
+          flex-basis: 100%;
+          display: flex;
+          justify-content: flex-end;
+        }
       }
     }
 
