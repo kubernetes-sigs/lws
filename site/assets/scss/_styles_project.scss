@@ -21,7 +21,8 @@ footer {
 
     @include media-breakpoint-up(lg) {
       > .td-content,
-      > .td-breadcrumbs {
+      > .td-breadcrumbs,
+      > .docs-version-banner {
         width: 90%;
         margin-inline: auto;
       }
