@@ -29,7 +29,7 @@
 			</li>
 			{{ end }}
 			{{ if or .Site.Data.docs_versions .Site.Params.versions }}
-			<li class="nav-item dropdown mt-1 mt-lg-0 mr-2">
+			<li class="nav-item dropdown docs-version-nav mt-1 mt-lg-0 mr-2">
 				{{ partial "navbar-version-selector.html" . }}
 			</li>
 			{{ end }}

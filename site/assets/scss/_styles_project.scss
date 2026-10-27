@@ -152,6 +152,9 @@ footer {
         .dropdown {
           min-width: inherit;
         }
+
+        // Anchor the wider version menu at the screen's left margin.
+        .docs-version-nav { flex-basis: 100%; }
       }
     }
 
