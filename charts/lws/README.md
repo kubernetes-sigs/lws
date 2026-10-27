@@ -69,7 +69,8 @@ Helm charts before **v1.1** require
 `--set enableDisaggregatedSet=true` to also install the validating webhook and
 editor/viewer/admin ClusterRoles.
 
-This option was confusing: DisaggregatedSet itself did not need to be enabled.
+Despite its name, `enableDisaggregatedSet` only controlled the validating webhook
+and user-facing ClusterRoles. The DisaggregatedSet controller and CRDs were already installed.
 Starting with **v1.1**, the option is removed and these resources are always
 installed, matching the standard manifests. No extra flag is needed.
 
