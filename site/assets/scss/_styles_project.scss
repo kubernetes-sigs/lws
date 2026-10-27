@@ -193,18 +193,16 @@ footer {
       @include media-breakpoint-down(md) {
         font-size: .875rem;
         flex-wrap: wrap;
-        justify-content: flex-start;
+        justify-content: flex-end;
         width: 100%;
 
         .dropdown {
           min-width: inherit;
         }
 
-        // Keep both the selector and its wider menu at the screen's right margin.
-        .docs-version-nav {
-          flex-basis: 100%;
-          display: flex;
-          justify-content: flex-end;
+        // Let links share a row when they fit; keep the section toggle on the left.
+        .nav-item:has(> .docs-section-toggle) {
+          margin-inline-end: auto;
         }
       }
     }
