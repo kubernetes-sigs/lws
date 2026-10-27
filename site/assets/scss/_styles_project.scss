@@ -14,6 +14,11 @@ footer {
   }
 
   body:has(.td-navbar--docs) .td-main > .row > main {
+    @include media-breakpoint-down(md) {
+      // Match the desktop clearance below the header.
+      padding-top: .5rem;
+    }
+
     @include media-breakpoint-up(md) {
       // Override Docsy's asymmetric ps-md-5 gutter.
       padding-inline: 1.5rem !important;
@@ -272,6 +277,8 @@ footer {
     }
 
     @include media-breakpoint-down(md) {
+      padding-bottom: 0;
+
       // The header now owns the mobile toggle. Preserve any real search input.
       .td-sidebar__toggle { display: none; }
       .td-sidebar-nav {
