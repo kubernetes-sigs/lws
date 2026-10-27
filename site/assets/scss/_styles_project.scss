@@ -5,9 +5,21 @@ footer {
     min-height: auto;
   }
 
-  .td-max-width-on-larger-screens {
+  body:has(.td-navbar--docs) .td-main > .row > main {
+    @include media-breakpoint-up(md) {
+      // Override Docsy's asymmetric ps-md-5 gutter.
+      padding-inline: 1.5rem !important;
+    }
+
     @include media-breakpoint-up(lg) {
-      max-width: 90%;
+      > .td-content,
+      > .td-breadcrumbs {
+        width: 90%;
+        margin-inline: auto;
+      }
+
+      // Size the article once, keeping text and media on the same edges.
+      .td-max-width-on-larger-screens { max-width: 100%; }
     }
   }
 
