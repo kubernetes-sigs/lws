@@ -286,19 +286,29 @@ For kubectl and Kustomize installs, the standard v0.9.0+ manifests include the D
 CRD, controller permissions, and validating webhook. No separate DisaggregatedSet installation
 step is required.
 
-For Helm installs, the DisaggregatedSet CRD and controller permissions are installed by default.
-The optional validating webhook and user-facing editor/viewer/admin ClusterRoles can be enabled
-by passing `--set enableDisaggregatedSet=true` to the Helm install command:
+For Helm charts before **v1.1**, pass `--set enableDisaggregatedSet=true` to
+install the validating webhook and user-facing editor/viewer/admin ClusterRoles.
+The DisaggregatedSet CRDs and controller permissions are already installed by default.
+
+This option was confusing: DisaggregatedSet itself did not need to be enabled.
+Starting with **v1.1**, the option is removed and these resources are always
+installed, matching the standard manifests. No extra flag is needed.
+
+Once v1.1.0 is released, install it without the extra flag:
 
 ```shell
-CHART_VERSION=1.0.0
+CHART_VERSION=1.1.0
 helm install lws oci://registry.k8s.io/lws/charts/lws \
   --version=$CHART_VERSION \
   --namespace lws-system \
   --create-namespace \
-  --set enableDisaggregatedSet=true \
   --wait --timeout 300s
 ```
+
+In v1.1 and later, old `enableDisaggregatedSet` values are ignored, even with
+`--reuse-values`. If you previously set it to `false`, upgrading enables webhook
+validation for new or updated DisaggregatedSets. You can remove the obsolete
+option from your values files.
 
 ### Verify Installation
 
@@ -315,7 +325,7 @@ kubectl wait deploy/lws-controller-manager -n lws-system \
 kubectl get crd disaggregatedsets.disaggregatedset.x-k8s.io
 ```
 
-3. (Helm with webhooks enabled) Confirm the validating webhook configuration:
+3. Confirm the validating webhook configuration:
 
 ```shell
 kubectl get validatingwebhookconfiguration lws-validating-webhook-configuration \
@@ -349,19 +359,9 @@ kubectl get leaderworkersets -A \
 `disaggregatedsets` and the controller cannot create the `DisaggregatedSetRoleScaler` a role with
 `scaling.mode: External` depends on, so External scaling never takes effect.
 
-Use the [Upgrade by Helm](#upgrade-by-helm) steps, which apply every CRD in the chart, with the
-DisaggregatedSet flag added:
-
-```shell
-CHART_VERSION=1.0.0
-helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
-kubectl apply --server-side --force-conflicts -f lws/crds
-helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
-  --version=$CHART_VERSION \
-  --namespace lws-system \
-  --set enableDisaggregatedSet=true \
-  --wait --timeout 300s
-```
+Use the [Upgrade by Helm](#upgrade-by-helm) steps, which apply every CRD in the chart.
+Once v1.1.0 is released, set `CHART_VERSION=1.1.0`; no DisaggregatedSet flag is needed.
+For older chart versions or retained values, see the compatibility note above.
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 [start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal

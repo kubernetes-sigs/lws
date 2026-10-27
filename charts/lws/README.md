@@ -65,15 +65,15 @@ for more information on installing LWS with metrics using our Helm chart.
 ##### DisaggregatedSet
 
 The DisaggregatedSet CRDs and controller permissions are always installed.
-Helm charts up to and including **v1.0.0** require
+Helm charts before **v1.1** require
 `--set enableDisaggregatedSet=true` to also install the validating webhook and
 editor/viewer/admin ClusterRoles.
 
-The option was intended to be removed for v1.0.0, but was accidentally kept.
-Starting with **v1.0.1**, it is removed and these resources are always installed.
-No extra flag is needed.
+This option was confusing: DisaggregatedSet itself did not need to be enabled.
+Starting with **v1.1**, the option is removed and these resources are always
+installed, matching the standard manifests. No extra flag is needed.
 
-In v1.0.1 and later, old `enableDisaggregatedSet` values are ignored, even with
+In v1.1 and later, old `enableDisaggregatedSet` values are ignored, even with
 `--reuse-values`. If you previously set it to `false`, upgrading enables webhook
 validation for new or updated DisaggregatedSets. You can remove the obsolete
 option from your values files.
