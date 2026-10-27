@@ -54,20 +54,11 @@ footer {
     .dropdown-item { white-space: normal; }
   }
 
-  .docs-version-option {
-    display: flex;
-    align-items: center;
-    gap: .75rem;
-
-    code {
-      margin-left: auto;
-      flex-shrink: 0;
-      white-space: nowrap;
-    }
-  }
-
   .docs-version-toggle code,
-  .docs-version-menu code { color: inherit; }
+  .docs-version-menu code {
+    color: inherit;
+    white-space: nowrap;
+  }
 
   .docs-version-banner {
     display: flex;
@@ -127,8 +118,8 @@ footer {
 
   @include media-breakpoint-up(md) {
     .td-main > .row > .td-sidebar {
-      flex: 0 0 clamp(20rem, 24vw, 24rem);
-      width: clamp(20rem, 24vw, 24rem);
+      flex: 0 0 clamp(20rem, 24vw, 21rem);
+      width: clamp(20rem, 24vw, 21rem);
     }
 
     .td-main > .row > main {

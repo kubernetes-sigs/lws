@@ -10,7 +10,7 @@
     {{- $pagePath = strings.TrimPrefix (printf "/%s" .) $page.Path -}}
   {{- end -}}
   <button class="nav-link dropdown-toggle docs-version-toggle" type="button" id="docs-version-menu" data-bs-toggle="dropdown" aria-expanded="false">
-    Version: {{ if eq $current.key "main" }}<i class="fa-solid fa-code-branch" aria-hidden="true"></i> main · Development <code>{{ substr $current.commit 0 8 }}</code>{{ else }}{{ $current.label }}{{ if $current.latest }} · Latest stable{{ end }}{{ end }}
+    Version: {{ if eq $current.key "main" }}main <code>({{ substr $current.commit 0 8 }})</code> <i class="fa-solid fa-code-branch" aria-hidden="true"></i>{{ else }}{{ $current.label }}{{ if $current.latest }} · stable{{ end }}{{ end }}
   </button>
   <div class="dropdown-menu dropdown-menu-end docs-version-menu" aria-labelledby="docs-version-menu">
     {{- range .versions -}}
@@ -25,8 +25,8 @@
         {{- end -}}
       {{- end -}}
       <a class="dropdown-item{{ if eq .key $currentKey }} active{{ end }}" href="{{ $url }}"{{ if eq .key $currentKey }} aria-current="page"{{ end }}>
-        <span class="docs-version-option">
-          {{ if eq .key "main" }}<span><i class="fa-solid fa-code-branch" aria-hidden="true"></i> main · Development</span> <code>{{ substr .commit 0 8 }}</code>{{ else }}<span>{{ .label }}{{ if .latest }} · Latest stable{{ end }}</span>{{ end }}
+        <span class="d-block">
+          {{ if eq .key "main" }}main <code>({{ substr .commit 0 8 }})</code> <i class="fa-solid fa-code-branch" aria-hidden="true"></i>{{ else }}{{ .label }}{{ if .latest }} · stable{{ end }}{{ end }}
         </span>
         {{ if $missing }}<small class="d-block">This page is unavailable; opens the documentation overview.</small>{{ end }}
       </a>
