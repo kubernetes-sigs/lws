@@ -66,6 +66,8 @@ type PodReconciler struct {
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
+
+	apiReader client.Reader // Reads the leader live before charging the restart budget.
 }
 
 // podReconcileRequest keeps the identity and snapshot of a deleted Pod in the
@@ -94,7 +96,8 @@ func podReconcileRequestForPod(pod *corev1.Pod, deleted bool) podReconcileReques
 }
 
 func NewPodReconciler(client client.Client, schema *runtime.Scheme, record events.EventRecorder, sp schedulerprovider.SchedulerProvider) *PodReconciler {
-	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp}
+	// SetupWithManager supplies the uncached reader in production.
+	return &PodReconciler{Client: client, Scheme: schema, Record: record, SchedulerProvider: sp, apiReader: client}
 }
 
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
@@ -598,6 +601,19 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return true, ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
 	leaderWorkerSet = freshLWS
+	// A group failure often restarts several of its pods at once. Once one of
+	// them charged the budget and deleted the leader, the cache can still show
+	// that leader alive while it already shows the new count, and the next pod
+	// would charge the budget again. Read the leader live before charging it.
+	liveLeader, err := r.liveLeader(ctx, &leader)
+	if err != nil {
+		return false, ctrl.Result{}, err
+	}
+	if liveLeader == nil {
+		// The group was already recreated.
+		return true, ctrl.Result{}, nil
+	}
+	leader = *liveLeader
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, ctrl.Result{}, nil
@@ -693,6 +709,24 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
 	return true, ctrl.Result{}, nil
+}
+
+// liveLeader reads leader from the API server, bypassing the cache. It returns
+// nil if that leader no longer exists, including when a same-name replacement
+// has taken its place.
+func (r *PodReconciler) liveLeader(ctx context.Context, leader *corev1.Pod) (*corev1.Pod, error) {
+	reader := r.apiReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var live corev1.Pod
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(leader), &live); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	if live.UID != leader.UID {
+		return nil, nil
+	}
+	return &live, nil
 }
 
 // maxBackoffExponent prevents bit-shift overflow when computing base * (1 << count).
@@ -1671,6 +1705,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.apiReader = mgr.GetAPIReader()
 	return builder.TypedControllerManagedBy[podReconcileRequest](mgr).
 		Named("pod").
 		Watches(&corev1.Pod{}, podEventHandler()).

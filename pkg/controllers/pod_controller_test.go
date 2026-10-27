@@ -1049,6 +1049,130 @@ func TestHandleRestartPolicyRefreshesBudgetState(t *testing.T) {
 	}
 }
 
+// TestHandleRestartPolicyChargesBudgetOncePerGroupFailure covers a group
+// failure that restarts several workers at once. The first worker charged the
+// budget and deleted the leader, but the cache still shows that leader alive
+// while it already shows the new count. Later workers must not charge the
+// budget again.
+func TestHandleRestartPolicyChargesBudgetOncePerGroupFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		limit         int32
+		liveLeader    func(*corev1.Pod) *corev1.Pod
+		wantCount     int32
+		wantDeleted   bool
+		wantExhausted bool
+	}{
+		{
+			name:  "leader already deleting",
+			limit: 3,
+			liveLeader: func(p *corev1.Pod) *corev1.Pod {
+				now := metav1.Now()
+				p.DeletionTimestamp = &now
+				p.Finalizers = []string{metav1.FinalizerDeleteDependents}
+				return p
+			},
+			wantCount:   1,
+			wantDeleted: true,
+		},
+		{
+			name:  "leader already deleting with a budget of one",
+			limit: 1,
+			liveLeader: func(p *corev1.Pod) *corev1.Pod {
+				now := metav1.Now()
+				p.DeletionTimestamp = &now
+				p.Finalizers = []string{metav1.FinalizerDeleteDependents}
+				return p
+			},
+			wantCount:   1,
+			wantDeleted: true,
+		},
+		{
+			name:        "leader already gone",
+			limit:       3,
+			liveLeader:  func(*corev1.Pod) *corev1.Pod { return nil },
+			wantCount:   1,
+			wantDeleted: true,
+		},
+		{
+			name:  "leader replaced by a same-name pod",
+			limit: 3,
+			liveLeader: func(p *corev1.Pod) *corev1.Pod {
+				p.UID = "replacement-leader"
+				return p
+			},
+			wantCount:   1,
+			wantDeleted: true,
+		},
+		{
+			name:        "leader still alive is a new failure",
+			limit:       3,
+			liveLeader:  func(p *corev1.Pod) *corev1.Pod { return p },
+			wantCount:   2,
+			wantDeleted: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, leaderworkerset.AddToScheme} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(3).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(tc.limit).Obj()
+			// The first worker already charged the budget.
+			lws.Annotations = map[string]string{leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`}
+			leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 3)
+			leader.UID = "failed-leader"
+			leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+			leader.Status.Phase = corev1.PodRunning
+			worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 3)
+			worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+			worker.Status.Phase = corev1.PodRunning
+			worker.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			if err := ctrl.SetControllerReference(leader, worker, scheme); err != nil {
+				t.Fatal(err)
+			}
+
+			// The cache still shows the leader as it was before the deletion.
+			cache := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws.DeepCopy(), leader.DeepCopy(), worker.DeepCopy()).Build()
+			liveObjects := []client.Object{lws.DeepCopy(), worker.DeepCopy()}
+			if live := tc.liveLeader(leader.DeepCopy()); live != nil {
+				liveObjects = append(liveObjects, live)
+			}
+			live := fake.NewClientBuilder().WithScheme(scheme).WithObjects(liveObjects...).Build()
+
+			r := &PodReconciler{Client: cache, apiReader: live, Record: fakeEventRecorder{}}
+			deleted, _, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
+			if err != nil {
+				t.Fatalf("handleRestartPolicy() error = %v", err)
+			}
+			if deleted != tc.wantDeleted {
+				t.Errorf("leaderDeleted = %t, want %t", deleted, tc.wantDeleted)
+			}
+			var got leaderworkerset.LeaderWorkerSet
+			if err := cache.Get(context.Background(), client.ObjectKeyFromObject(lws), &got); err != nil {
+				t.Fatal(err)
+			}
+			counts, err := parseGroupRestartCounts(got.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if counts["revision-a/0"] != tc.wantCount {
+				t.Errorf("restart count = %d, want %d", counts["revision-a/0"], tc.wantCount)
+			}
+			var cachedLeader corev1.Pod
+			if err := cache.Get(context.Background(), client.ObjectKeyFromObject(leader), &cachedLeader); client.IgnoreNotFound(err) != nil {
+				t.Fatal(err)
+			}
+			if cachedLeader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
+				t.Error("the group was marked exhausted")
+			}
+		})
+	}
+}
+
 func TestReconcilePodIgnoresRecoveredLeaderDeletion(t *testing.T) {
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, leaderworkerset.AddToScheme} {
