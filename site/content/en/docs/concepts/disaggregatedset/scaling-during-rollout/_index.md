@@ -13,7 +13,7 @@ The example below reduces demand from **37 to 20 Prefill groups** and **19 to 10
 <figure class="td-max-width-on-larger-screens">
 <!-- Keep a compact area for native playback controls below the picture. -->
 <div style="position: relative; padding-top: calc(64.285714% + 2rem);">
-<video controls autoplay muted playsinline preload="metadata" poster="/images/disaggregatedset-scale-down-comparison-poster.png" width="1400" height="900" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready.">
+<video controls autoplay loop muted playsinline preload="metadata" poster="/images/disaggregatedset-scale-down-comparison-poster.png" width="1400" height="900" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready.">
   <source src="/videos/disaggregatedset-scale-down-comparison.mp4" type="video/mp4">
   <a href="/videos/disaggregatedset-scale-down-comparison.mp4">Download the scale-down comparison.</a>
 </video>

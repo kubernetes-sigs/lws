@@ -240,9 +240,13 @@ footer {
       padding: .5rem;
       font-size: 1.25rem;
 
-      &:hover,
       &[aria-expanded="true"] {
         background-color: rgba(255, 255, 255, .12);
+      }
+
+      // Touch browsers can retain :hover after a tap; it is not an open state.
+      @media (hover: hover) and (pointer: fine) {
+        &:hover { background-color: rgba(255, 255, 255, .12); }
       }
 
       &:active { background-color: rgba(255, 255, 255, .2); }
