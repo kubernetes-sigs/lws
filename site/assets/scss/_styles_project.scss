@@ -88,8 +88,12 @@ footer {
     .td-sidebar-link {
       line-height: 1.25;
       text-wrap: balance;
-      // Keep separate items spaced apart, while bringing wrapped lines closer.
+      // Keep mobile links easy to tap, with more compact desktop rows.
       padding-bottom: .625rem;
+
+      @include media-breakpoint-up(md) {
+        padding-bottom: .375rem;
+      }
     }
 
     @include media-breakpoint-up(md) {
@@ -106,7 +110,7 @@ footer {
     .without-child,
     .ul-1 > li,
     .dropdown {
-      padding-left: .75rem;
+      padding-left: .625rem;
     }
 
     .ul-1 .with-child > label::before {
@@ -252,6 +256,8 @@ footer {
       .td-sidebar-nav {
         margin-left: 0;
         margin-right: 0;
+        // Put clearance inside the list so the collapse animation stays smooth.
+        > .td-sidebar-nav__section { padding-top: .5rem; }
       }
       .td-sidebar__search:has(> .td-sidebar__toggle:only-child) {
         display: none !important;

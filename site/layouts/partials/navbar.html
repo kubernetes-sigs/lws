@@ -16,6 +16,7 @@
 			{{ end }}
 			{{ $p := . }}
 			{{ range .Site.Menus.main }}
+			{{ if and (eq $p.Type "docs") (eq .Name "Documentation") }}{{ continue }}{{ end }}
 			<li class="nav-item mr-2 mr-lg-4 mt-1 mt-lg-0">
 				{{ $active := or ($p.IsMenuCurrent "main" .) ($p.HasMenuCurrent "main" .) }}
 				{{ with .Page }}
