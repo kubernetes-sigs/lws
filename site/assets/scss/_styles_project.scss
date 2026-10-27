@@ -5,6 +5,14 @@ footer {
     min-height: auto;
   }
 
+  $docs-max-width: 1920px;
+
+  // Keep the article and both sidebars together on ultrawide screens.
+  body:has(.td-navbar--docs) > .td-outer {
+    max-width: $docs-max-width;
+    margin-inline: auto;
+  }
+
   body:has(.td-navbar--docs) .td-main > .row > main {
     @include media-breakpoint-up(md) {
       // Override Docsy's asymmetric ps-md-5 gutter.
@@ -21,6 +29,12 @@ footer {
       // Size the article once, keeping text and media on the same edges.
       .td-max-width-on-larger-screens { max-width: 100%; }
     }
+  }
+
+  // Center the overview's combined mark in every documentation version.
+  .td-content img[src$="/lws-ds-logos.svg"] {
+    display: block;
+    margin-inline: auto;
   }
 
   .docs-version-toggle {
@@ -78,6 +92,22 @@ footer {
     overflow-wrap: break-word;
   }
 
+  .td-sidebar-nav {
+    .td-sidebar-link {
+      line-height: 1.25;
+      text-wrap: balance;
+      // Keep separate items spaced apart, while bringing wrapped lines closer.
+      padding-bottom: .625rem;
+    }
+
+    @include media-breakpoint-up(md) {
+      > .td-sidebar-nav__section {
+        // Remove the extra pe-md-3 inset; the navigation retains its own gutter.
+        padding-right: 0 !important;
+      }
+    }
+  }
+
   // Leave more room for names without flattening the navigation hierarchy.
   nav.foldable-nav {
     .with-child,
@@ -89,6 +119,7 @@ footer {
 
     .ul-1 .with-child > label::before {
       left: 0;
+      line-height: 1.25;
       padding-left: .05em;
       padding-right: .05em;
     }
@@ -133,6 +164,13 @@ footer {
     min-height: 5rem;
     gap: .75rem;
     padding: 0 1rem;
+
+    @media (min-width: $docs-max-width) {
+      &.td-navbar--docs {
+        // Align the navigation with the centered page; keep the blue background full-width.
+        padding-inline: unquote("max(1rem, calc((100% - #{$docs-max-width}) / 2 + 1rem))");
+      }
+    }
   
     .navbar-brand {
       margin: 0;
