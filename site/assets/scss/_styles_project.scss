@@ -121,10 +121,14 @@ footer {
     }
 
     .ul-1 .with-child > label::before {
-      left: 0;
-      line-height: 1.25;
-      padding-left: .05em;
-      padding-right: .05em;
+      // A square icon box keeps the gap stable when the caret rotates.
+      left: -.5rem;
+      top: .125rem;
+      width: 1rem;
+      height: 1rem;
+      line-height: 1rem;
+      padding: 0;
+      text-align: center;
     }
   }
 
