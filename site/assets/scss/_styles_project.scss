@@ -5,6 +5,12 @@ footer {
     min-height: auto;
   }
 
+  .td-max-width-on-larger-screens {
+    @include media-breakpoint-up(lg) {
+      max-width: 90%;
+    }
+  }
+
   .docs-version-toggle {
     border: 0;
     background: transparent;
