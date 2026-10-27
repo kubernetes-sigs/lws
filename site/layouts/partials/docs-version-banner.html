@@ -16,7 +16,8 @@
       {{ else }}
         <strong>Versioned documentation · {{ $current.label }}</strong>
       {{ end }}
-      <a href="{{ $latest.url }}">View latest stable ({{ $latest.label }})</a>
+      {{ $target := partial "docs-version-target.html" (dict "page" $page "version" $latest) }}
+      <a href="{{ $target.url }}">View latest stable ({{ $latest.label }}){{ if $target.missing }}<small class="d-block">Page unavailable → Overview</small>{{ end }}</a>
     </aside>
     {{ end }}
   {{- end -}}
