@@ -51,6 +51,8 @@ type LeaderWorkerSetManager struct {
 	reader           client.Reader
 	pending          *pendingWrites
 	clock            clock.Clock
+	scaleMu          sync.Mutex
+	scaleWindows     map[types.UID]subRoleScaleWindow
 	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
 }
 

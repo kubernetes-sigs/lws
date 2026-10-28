@@ -97,13 +97,14 @@ func TestSubRoleScaleDelayEligibility(t *testing.T) {
 					want = len(children)
 				}
 				require.EqualValues(t, want, getLWSReplicas(got))
-				require.Equal(t, tc.wait, got.Annotations[subRoleScaleNotBeforeAnnotation] != "")
+				_, waiting := f.manager.scaleWindows[got.UID]
+				require.Equal(t, tc.wait, waiting)
 			})
 		}
 	}
 }
 
-func TestSubRoleScaleDelaySurvivesRestartAndRetry(t *testing.T) {
+func TestSubRoleScaleDelayRestartAndResizeRetry(t *testing.T) {
 	for _, tc := range []struct {
 		identity leaderworkersetv1.GroupIdentityType
 		target   int
@@ -121,28 +122,37 @@ func TestSubRoleScaleDelaySurvivesRestartAndRetry(t *testing.T) {
 			tick := func() {
 				t.Helper()
 				_, err := f.manager.syncSubRoles(t.Context(), f.ds, f.observe().LWS, update)
-				require.ErrorIs(t, err, errReplicaGroupsPending)
+				require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 			}
+			before := f.observe().LWS
 			tick()
-			deadline := clock.Now().Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
-			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleNotBeforeAnnotation])
+			require.Equal(t, before, f.observe().LWS, "starting a window must not write the LWS")
+			require.Equal(t, clock.Now().Add(2*time.Second), f.manager.scaleWindows[f.lws.UID].deadline)
 			clock.Step(time.Second)
 			f.manager = NewLeaderWorkerSetManager(f.manager.client)
 			f.manager.clock = clock
-			f.sync() // Observation/label repair must not erase the active window.
+			f.sync()
+			require.Empty(t, f.manager.scaleWindows, "observations alone do not start a window")
 			tick()
-			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleNotBeforeAnnotation])
-			require.EqualValues(t, 2, getLWSReplicas(f.lws))
+			deadline := clock.Now().Add(2 * time.Second)
+			require.Equal(t, deadline, f.manager.scaleWindows[f.lws.UID].deadline, "restart begins one new window")
 			clock.Step(time.Second)
-			base := f.manager.client
+			tick()
+			require.Equal(t, before, f.observe().LWS, "the pre-restart deadline must no longer authorize resizing")
+			clock.Step(time.Second)
 			attempts := 0
-			f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+			f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{
 				Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, opts ...client.PatchOption) error {
-					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok && getLWSReplicas(lws) != 2 {
-						require.EqualValues(t, tc.target, getLWSReplicas(lws))
-						require.Empty(t, lws.Annotations[subRoleScaleNotBeforeAnnotation], "resize and deadline removal must share one write")
-						attempts++
-						return apierrors.NewConflict(leaderworkersetv1.Resource("leaderworkersets"), lws.Name, errors.New("concurrent write"))
+					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						require.NotContains(t, lws.Annotations, "disaggregatedset.x-k8s.io/subrole-scale-not-before")
+						require.NotContains(t, lws.Annotations, "disaggregatedset.x-k8s.io/subrole-scale-up-not-before")
+						if getLWSReplicas(lws) != 2 {
+							require.EqualValues(t, tc.target, getLWSReplicas(lws))
+							attempts++
+							if attempts == 1 {
+								return apierrors.NewConflict(leaderworkersetv1.Resource("leaderworkersets"), lws.Name, errors.New("concurrent write"))
+							}
+						}
 					}
 					return c.Patch(ctx, object, patch, opts...) // Let assignment and label preparation finish.
 				},
@@ -155,52 +165,107 @@ func TestSubRoleScaleDelaySurvivesRestartAndRetry(t *testing.T) {
 				f.native()
 			}
 			require.Equal(t, 1, attempts)
-			require.Equal(t, deadline, f.observe().LWS.Annotations[subRoleScaleNotBeforeAnnotation], "failed resize must not restart the wait")
-			f.manager.client = base
+			require.Equal(t, deadline, f.manager.scaleWindows[f.lws.UID].deadline, "failed resize retains its expired window")
+			if tc.target == 1 {
+				require.NotEmpty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
+				f.manager = NewLeaderWorkerSetManager(f.manager.client)
+				f.manager.clock = clock // Already-accepted reductions finish without another window, even after restart.
+			}
 			tick()
 			require.EqualValues(t, tc.target, getLWSReplicas(f.observe().LWS))
-			require.Empty(t, f.lws.Annotations[subRoleScaleNotBeforeAnnotation])
+			for range 4 {
+				f.native()
+				tick()
+			}
+			require.Empty(t, f.manager.scaleWindows, "observing the accepted target clears the completed window")
 		})
 	}
 }
 
-func TestSubRoleScaleDelayCancellationAndRepair(t *testing.T) {
-	now := time.Now()
-	deadline := now.Add(time.Second).UTC().Format(time.RFC3339Nano)
+func TestSubRoleScaleDelayCancellationAndReversal(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
+		replicas int32
 		target   int
 		delay    time.Duration
-		deadline string
 		waiting  bool
 	}{
-		{"same total cancels", 2, 2 * time.Second, deadline, false},
-		{"reduction keeps the deadline", 1, 2 * time.Second, deadline, true},
-		{"disabled or rollout bypasses", 3, 0, deadline, false},
-		{"malformed deadline is repaired", 3, 2 * time.Second, "invalid", true},
+		{"same total cancels", 2, 2, 2 * time.Second, false},
+		{"zero-to-positive bypasses", 0, 3, 2 * time.Second, false},
+		{"disabled or rollout bypasses", 2, 3, 0, false},
+		{"reversal keeps the deadline", 2, 1, 2 * time.Second, true},
+		{"scaling to zero still waits", 2, 0, 2 * time.Second, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := clocktesting.NewFakeClock(now)
+			clock := clocktesting.NewFakeClock(time.Now())
 			manager := &LeaderWorkerSetManager{clock: clock}
-			state := &subRoleState{
-				lws:            &leaderworkersetv1.LeaderWorkerSet{Spec: leaderworkersetv1.LeaderWorkerSetSpec{Replicas: ptr.To[int32](2)}},
-				scaleNotBefore: tc.deadline,
-			}
-			require.Equal(t, tc.waiting, manager.delaySubRoleScale(state, tc.target, tc.delay))
+			lws := buildOwnedManagerTestLWS("pool", 2, testManagerDS("ds"))
+			lws.UID = "pool"
+			require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			deadline := manager.scaleWindows[lws.UID].deadline
+			clock.Step(time.Second)
+			lws.Spec.Replicas = ptr.To(tc.replicas)
+			require.Equal(t, tc.waiting, manager.delaySubRoleScale(lws, tc.target, tc.delay))
 			if !tc.waiting {
-				require.Empty(t, state.scaleNotBefore)
+				require.Empty(t, manager.scaleWindows)
+				deadline = clock.Now().Add(2 * time.Second)
 			}
-			wantDeadline := state.scaleNotBefore
-			if wantDeadline == "" {
-				wantDeadline = now.Add(2 * time.Second).UTC().Format(time.RFC3339Nano)
-			}
-			// Reversing direction preserves the window; growth after cancellation starts a new one.
-			require.True(t, manager.delaySubRoleScale(state, 3, 2*time.Second))
-			require.Equal(t, wantDeadline, state.scaleNotBefore)
-			clock.Step(2 * time.Second)
-			require.False(t, manager.delaySubRoleScale(state, 3, 2*time.Second))
+			lws.Spec.Replicas = ptr.To[int32](2)
+			require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			require.Equal(t, deadline, manager.scaleWindows[lws.UID].deadline, "only cancellation starts a fresh window")
+			clock.SetTime(deadline)
+			require.False(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
 		})
 	}
+}
+
+func TestSubRoleScaleWindowLifecycle(t *testing.T) {
+	clock := clocktesting.NewFakeClock(time.Now())
+	manager := &LeaderWorkerSetManager{clock: clock}
+	parent, otherParent := testManagerDS("ds"), testManagerDS("other")
+	old := buildOwnedManagerTestLWS("pool", 2, parent)
+	old.UID = "old"
+	require.True(t, manager.delaySubRoleScale(old, 3, 2*time.Second))
+	originalDeadline := manager.scaleWindows[old.UID].deadline
+	clock.Step(time.Second)
+	replacement := old.DeepCopy()
+	replacement.UID = "replacement"
+	require.True(t, manager.delaySubRoleScale(replacement, 3, 2*time.Second))
+	require.Equal(t, originalDeadline, manager.scaleWindows[old.UID].deadline)
+	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline, "same name cannot inherit another UID's window")
+	clock.Step(2 * time.Second)
+	replacement.Spec.Replicas = ptr.To[int32](3)
+	require.True(t, manager.delaySubRoleScale(replacement, 4, 2*time.Second))
+	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline, "observing a previous resize starts the next window")
+
+	deleting := old.DeepCopy()
+	deleting.UID = "deleting"
+	other := buildOwnedManagerTestLWS("pool", 2, otherParent)
+	other.UID = "other"
+	for _, lws := range []*leaderworkersetv1.LeaderWorkerSet{deleting, other} {
+		require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+	}
+	deleting.DeletionTimestamp = ptr.To(metav1.Now())
+	manager.pruneSubRoleScaleWindows(client.ObjectKeyFromObject(parent), []*leaderworkersetv1.LeaderWorkerSet{replacement, deleting})
+	require.Len(t, manager.scaleWindows, 2)
+	require.Contains(t, manager.scaleWindows, replacement.UID)
+	require.Contains(t, manager.scaleWindows, other.UID)
+	manager.pruneSubRoleScaleWindows(client.ObjectKeyFromObject(parent), nil)
+	require.Len(t, manager.scaleWindows, 1)
+	require.Contains(t, manager.scaleWindows, other.UID, "forgetting one parent must not affect another")
+	manager.pruneSubRoleScaleWindows(client.ObjectKeyFromObject(otherParent), nil)
+	require.Empty(t, manager.scaleWindows)
+
+	var concurrent sync.WaitGroup
+	for range 32 {
+		concurrent.Go(func() {
+			manager.delaySubRoleScale(replacement, 4, 2*time.Second)
+			manager.pruneSubRoleScaleWindows(client.ObjectKeyFromObject(parent), []*leaderworkersetv1.LeaderWorkerSet{replacement})
+		})
+	}
+	concurrent.Wait()
+	require.Len(t, manager.scaleWindows, 1)
+	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline)
 }
 
 func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {

@@ -425,8 +425,10 @@ and the controller reassigns two existing groups instead.
 
 The field accepts 0 to 60 seconds; omitted defaults to 2, and zero disables the delay. Each
 physical LWS starts a fixed deadline when its desired total first differs from its
-current replica target. The deadline is persisted on the LWS: later writes and
-controller restarts do not extend it, and reconciliation uses the latest targets.
+current replica target. The controller keeps the deadline in memory, keyed by the
+LWS UID; no deadline annotation is used. Later writes do not extend it, and
+reconciliation uses the latest targets. A controller restart starts a new window
+for an outstanding change, potentially adding up to one configured delay per restart.
 Returning to the current total cancels the wait and allows redistribution without
 physical scaling. Genuine increases and reductions, including scaling to zero,
 wait for the deadline. Scaling from zero, ordinary roles, and template rollouts
@@ -554,6 +556,7 @@ existing tests to make this code solid enough prior to implementation.
 - 2026-10-16: Added a configurable, fixed scale-up window for existing sub-role pools, defaulting to two seconds; zero disables it. Nearby target updates can reuse groups without temporary physical growth.
 - 2026-10-28: Limited the scale-up window to roles with multiple sub-roles and at least one External scaler, avoiding unnecessary latency for single-sub-role and all-Static pools.
 - 2026-10-28: Extended the fixed, persisted window to scale-down as well as scale-up and renamed the field to `subRoleScaleDelaySeconds`. Opposite-order scaler writes can now reuse groups too; only an unchanged total cancels the wait.
+- 2026-10-28: Replaced the deadline annotation with an in-memory deadline per LWS UID. Later updates still keep the original deadline; controller restarts can add one configured delay to an outstanding change.
 
 ## Drawbacks
 

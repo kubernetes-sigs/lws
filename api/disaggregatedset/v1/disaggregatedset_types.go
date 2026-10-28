@@ -152,8 +152,9 @@ type DisaggregatedSetScalingPolicy struct {
 	// net growth or shrink in roles with multiple sub-roles and at least one External scaler.
 	// Ordinary roles, zero-to-positive scaling, and template rollouts do not wait.
 	// Reductions, including scaling to zero, wait too. The first change to the total
-	// starts a fixed, persisted window; later updates and controller restarts do not
-	// extend it. At expiry, the latest targets apply. The wait is cancelled if their
+	// starts a fixed window in controller memory; later updates do not extend it.
+	// A controller restart starts a new window for an outstanding change.
+	// At expiry, the latest targets apply. The wait is cancelled if their
 	// sum returns to the current LWS replica target, allowing redistribution without
 	// scaling. This adds scale-up and scale-down latency and does not combine updates
 	// arriving after the window.

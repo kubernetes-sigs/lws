@@ -84,6 +84,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.staleStatusVersions.Remove(req.NamespacedName)
+			r.LWSManager.pruneSubRoleScaleWindows(req.NamespacedName, nil)
 			if r.LWSManager.pending != nil {
 				r.LWSManager.pending.forget(req.NamespacedName)
 			}
@@ -104,6 +105,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	r.LWSManager.pruneSubRoleScaleWindows(req.NamespacedName, allLWS)
 
 	// Step 1: Compute the target revision with the hash generation selected for
 	// this DisaggregatedSet. Existing, unversioned objects retain the legacy hash

@@ -3296,8 +3296,8 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 						if delay > 0 && !tc.bootstrap && request.physical != int(request.interactive+request.batch) {
 							require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
-							require.Equal(t, started.Add(delay).Format(time.RFC3339Nano),
-								f.observe().LWS.Annotations[subRoleScaleNotBeforeAnnotation], "keep the original deadline, even while updating the baseline")
+							require.Equal(t, started.Add(delay),
+								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline, even while updating the baseline")
 						}
 						f.native()
 					}
@@ -3310,7 +3310,7 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 				}
 				after := f.observe()
 				require.Empty(t, after.LWS.Annotations[subRolePlanAnnotation])
-				require.Empty(t, after.LWS.Annotations[subRoleScaleNotBeforeAnnotation])
+				require.Empty(t, f.manager.scaleWindows)
 				if countSubRoles(expectedCounts) == len(before) {
 					require.Len(t, after.Groups, len(before))
 					actual := map[string]int{}
