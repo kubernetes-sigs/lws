@@ -340,7 +340,7 @@ LWS scale and group-label assignment
 
 For each `(slice, revision, parent role)`, the Ordinal assignment algorithm:
 
-1. Saves pending reductions/transfers and per-child Ready floors without changing issued counts; pure growth does not need an assignment plan. Each floor is the child's observed Ready count minus its accepted reduction, clamped at zero.
+1. Saves pending reductions/transfers and per-child Ready floors without changing issued counts; pure growth publishes directly. Each floor is the child's observed Ready count minus its accepted reduction, clamped at zero.
 2. Repairs partial/newborn labels, then checks that the actual retained Ordinal prefix can supply those floors. Unrelated retained groups need not become Ready.
 3. Keeps valid assignments and fills deficits one group at a time, reobserving workers-first,
    UID/resource-version guarded writes; donors retain their saved coherent Ready floor, including between individual worker-label writes.
@@ -405,9 +405,9 @@ enabling sub-roles preserves total capacity. For a fresh role, each External sca
 seeded at one replica for vanilla-HPA bootstrap; scale-to-zero-aware autoscalers may
 subsequently write zero.
 
-Independent scaler writes can arrive separately even when their final targets only
-move capacity between sub-roles. By default, the controller waits two seconds for
-these writes before growing or shrinking an existing physical LWS. The delay is configurable:
+For roles with multiple sub-roles and at least one External scaler, a short window combines nearby requests. A `4+8 → 6+6` change can reuse two groups in either write order if both requests arrive within it.
+
+The default is 2 seconds; values range from 0 to 60, with 0 disabling it:
 
 ```yaml
 spec:
@@ -415,27 +415,7 @@ spec:
     subRoleScaleDelaySeconds: 2
 ```
 
-Only roles with multiple sub-roles and at least one External scaler use this delay. A single sub-role has no sibling to exchange capacity with; all-Static targets can change together in one DisaggregatedSet update.
-
-For example, an LWS has `interactive=4, batch=8` (12 groups). The scalers then
-request `interactive=6, batch=6`. Growing first could create two groups before the
-second request removes two; shrinking first could delete two only to recreate
-them. If both requests arrive within the window, the physical target stays at 12
-and the controller reassigns two existing groups instead.
-
-The field accepts 0 to 60 seconds; omitted defaults to 2, and zero disables the delay. Each
-physical LWS starts a fixed deadline when its desired total first differs from its
-current replica target. The controller keeps the deadline in memory, keyed by the
-LWS UID; no deadline annotation is used. Later writes do not extend it, and
-reconciliation uses the latest targets. A controller restart starts a new window
-for an outstanding change, potentially adding up to one configured delay per restart.
-Returning to the current total cancels the wait and allows redistribution without
-physical scaling. Genuine increases and reductions, including scaling to zero,
-wait for the deadline. Scaling from zero, ordinary roles, and template rollouts
-bypass it. This intentionally adds scale-up and scale-down latency; writes outside
-the window can still cause separate physical scaling. Existing assignment safety
-checks and accepted plans remain unchanged. It does not coordinate the autoscalers
-or change the rollout planner.
+Later writes update targets without extending the deadline; returning to the current LWS replica target cancels the wait. Growth and shrink, including scale-to-zero, wait. Zero-to-positive and template rollouts bypass it. Deadlines stay in memory, so controller restarts restart outstanding waits. The writes are not atomic: requests outside the window can still cause unnecessary group creation/deletion.
 
 ### Routing and Service Compatibility
 
@@ -553,10 +533,7 @@ existing tests to make this code solid enough prior to implementation.
 ## Implementation History
 
 - 2026-08-04: Initial provisional KEP draft.
-- 2026-10-16: Added a configurable, fixed scale-up window for existing sub-role pools, defaulting to two seconds; zero disables it. Nearby target updates can reuse groups without temporary physical growth.
-- 2026-10-28: Limited the scale-up window to roles with multiple sub-roles and at least one External scaler, avoiding unnecessary latency for single-sub-role and all-Static pools.
-- 2026-10-28: Extended the fixed, persisted window to scale-down as well as scale-up and renamed the field to `subRoleScaleDelaySeconds`. Opposite-order scaler writes can now reuse groups too; only an unchanged total cancels the wait.
-- 2026-10-28: Replaced the deadline annotation with an in-memory deadline per LWS UID. Later updates still keep the original deadline; controller restarts can add one configured delay to an outstanding change.
+- 2026-10-28: Added a configurable, two-second coalescing window for scale updates in pools with multiple sub-roles and an External scaler.
 
 ## Drawbacks
 

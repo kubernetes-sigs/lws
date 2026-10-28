@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -3276,8 +3277,9 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 				var expectedCounts map[string]int
 				for _, request := range tc.requests {
 					clock.SetTime(started.Add(request.at))
+					observed := f.observe()
 					// Metadata/assignment writes may retain the old size until a permitted resize completes.
-					current := int(getLWSReplicas(f.observe().LWS))
+					current := int(getLWSReplicas(observed.LWS))
 					floor, ceiling = min(current, request.physical), max(current, request.physical)
 					expectedCounts = map[string]int{"interactive": int(request.interactive), "batch": int(request.batch)}
 					scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
@@ -3287,25 +3289,46 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						scaler.Spec.Replicas = int32(replicas)
 						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
 					}
-					for range 12 {
+					waiting := delay > 0 && !tc.bootstrap && request.physical != int(request.interactive+request.batch)
+					for attempt := range 12 {
+						previous := observed
 						// Read both actual scaler objects again, just as top-level reconciliation does.
 						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
 						require.NoError(t, err)
 						desired := resolveDesiredReplicasByRole(f.ds, scalers)
-						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, &f.ds.Spec.Roles[0], "model", desired)
+						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, observed.LWS, &f.ds.Spec.Roles[0], "model", desired)
 						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
-						if delay > 0 && !tc.bootstrap && request.physical != int(request.interactive+request.batch) {
-							require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
+						f.native()
+						observed = f.observe()
+						if waiting {
+							require.ErrorIs(t, err, errReplicaGroupsPending)
+							require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
 							require.Equal(t, started.Add(delay),
 								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline, even while updating the baseline")
 						}
-						f.native()
+						// With a frozen clock and synchronous clients, an unchanged full
+						// tick adds no work. Still run at least twice to check repeat calls.
+						if attempt > 0 && reflect.DeepEqual(previous, observed) {
+							if !waiting {
+								require.NoError(t, err, "an accepted request must finish, not stall")
+							}
+							break
+						}
 					}
-					require.EqualValues(t, request.physical, getLWSReplicas(f.observe().LWS), "at %s", request.at)
+					require.EqualValues(t, request.physical, getLWSReplicas(observed.LWS), "at %s", request.at)
 					if request.physical == int(request.interactive+request.batch) {
-						counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
+						counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
 						require.NoError(t, err)
 						require.Equal(t, expectedCounts, counts, "accepted counts must match the latest request")
+						require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation])
+						actual := map[string]int{"interactive": 0, "batch": 0}
+						for _, group := range observed.Groups {
+							child, coherent := groupSubRole(group)
+							require.True(t, coherent)
+							require.NotContains(t, group.Leader.Annotations, subRoleOriginalDeletionCostAnnotation)
+							actual[child]++
+						}
+						require.Equal(t, expectedCounts, actual, "finish labels and Hash cleanup before the next request")
 					}
 				}
 				after := f.observe()
@@ -3313,18 +3336,13 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 				require.Empty(t, f.manager.scaleWindows)
 				if countSubRoles(expectedCounts) == len(before) {
 					require.Len(t, after.Groups, len(before))
-					actual := map[string]int{}
 					for i, group := range after.Groups {
 						require.Len(t, group.Pods, len(before[i].Pods))
 						for j, pod := range group.Pods {
 							require.Equal(t, before[i].Pods[j].UID, pod.UID, "reuse every original leader and worker")
 						}
-						child, coherent := groupSubRole(group)
-						require.True(t, coherent)
 						require.True(t, group.Ready)
-						actual[child]++
 					}
-					require.Equal(t, expectedCounts, actual)
 				}
 			})
 		}
@@ -4817,9 +4835,10 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 					require.ErrorIs(t, f.scale(target), errReplicaGroupsPending)
 					plan, err := readSubRolePlan(f.observe().LWS)
 					require.NoError(t, err)
-					checkFloor := func() {
+					checkFloor := func() *replicagroups.Snapshot {
+						observed := f.observe()
 						ready := map[string]int{}
-						for _, group := range f.observe().Groups {
+						for _, group := range observed.Groups {
 							if child, coherent := groupSubRole(group); coherent && group.Ready {
 								ready[child]++
 							}
@@ -4827,6 +4846,7 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 						for child, floor := range plan.ReadyFloor {
 							require.GreaterOrEqual(t, ready[child], floor, "every Pod patch must preserve %s, even between worker writes", child)
 						}
+						return observed
 					}
 					base := f.manager.client
 					f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
@@ -4842,16 +4862,23 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 							prefixReady++
 						}
 					}
+					observed := checkFloor()
 					for range 8 {
+						previous := observed
 						f.sync()
 						f.native()
-						checkFloor()
+						observed = checkFloor()
+						// All writes are synchronous; an unchanged full snapshot is
+						// either settled or safely blocked until readiness changes.
+						if reflect.DeepEqual(previous, observed) {
+							break
+						}
 					}
 					if prefixReady >= countSubRoles(plan.ReadyFloor) {
-						require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
-						require.Len(t, f.observe().Groups, countSubRoles(target))
+						require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation])
+						require.Len(t, observed.Groups, countSubRoles(target))
 					} else {
-						require.EqualValues(t, 4, getLWSReplicas(f.observe().LWS), "an unsafe suffix deletion must still wait")
+						require.EqualValues(t, 4, getLWSReplicas(observed.LWS), "an unsafe suffix deletion must still wait")
 					}
 				})
 			}

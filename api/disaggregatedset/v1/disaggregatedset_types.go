@@ -146,18 +146,10 @@ type DisaggregatedSetScalingPolicy struct {
 	// +kubebuilder:default=Deferred
 	ScaleDownDuringRollout RolloutScaleDownPolicy `json:"scaleDownDuringRollout,omitempty"`
 
-	// SubRoleScaleDelaySeconds delays scaling of an existing sub-role LWS so
-	// nearby target updates can be applied together. Valid values are 0 to 60;
-	// defaults to 2, and zero disables the delay. It applies only to steady-state
-	// net growth or shrink in roles with multiple sub-roles and at least one External scaler.
-	// Ordinary roles, zero-to-positive scaling, and template rollouts do not wait.
-	// Reductions, including scaling to zero, wait too. The first change to the total
-	// starts a fixed window in controller memory; later updates do not extend it.
-	// A controller restart starts a new window for an outstanding change.
-	// At expiry, the latest targets apply. The wait is cancelled if their
-	// sum returns to the current LWS replica target, allowing redistribution without
-	// scaling. This adds scale-up and scale-down latency and does not combine updates
-	// arriving after the window.
+	// SubRoleScaleDelaySeconds batches scale updates within a fixed window for LWS
+	// pools with multiple sub-roles and at least one External scaler. Defaults to 2
+	// seconds (range 0 to 60); zero disables it. Scaling from zero and rollouts bypass
+	// the delay. Controller restarts reset the window.
 	// +optional
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=0
@@ -259,9 +251,8 @@ type DisaggregatedSetSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	Slices *int32 `json:"slices,omitempty"`
 
-	// ScalingPolicy controls replica target changes. Omit it for Deferred
-	// scale-down during rollouts and a 2-second delay for steady-state scaling
-	// of eligible sub-role pools.
+	// ScalingPolicy controls scale-down during rolling updates. Omit it to
+	// preserve the default Deferred behavior.
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
