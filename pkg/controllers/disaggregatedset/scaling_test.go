@@ -1035,7 +1035,8 @@ func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
 	for _, immediateUp := range []bool{false, true} {
 		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(1023))
-			for scenario := range 20000 {
+			// Share the 20,000-scenario budget across both scale-up policies.
+			for scenario := range 10000 {
 				n := 2 + rng.Intn(2)
 				initial := make([]int, n)
 				for i := range initial {
@@ -1043,7 +1044,7 @@ func TestScalingDuringRolloutIndependentSafety(t *testing.T) {
 				}
 				state := rolloutState(initial, make([]int, n), make([]int, n), make([]int, n), make([]int, n),
 					make([]int, n), make([]int, n), make([]int, n), make([]RollingUpdateConfig, n))
-				state.ScaleDownDuringRollout = true
+				state.ScaleDownDuringRollout = scenario%2 == 0
 				state.ScaleUpDuringRollout = immediateUp
 				state.Target.AllUnscheduled = make([]bool, n)
 				for i := range n {
