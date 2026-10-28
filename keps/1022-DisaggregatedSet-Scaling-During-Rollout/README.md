@@ -380,10 +380,10 @@ Keep validation tests separate from planner expectations where practical, so the
 
 #### End-to-end tests
 
-Use a disposable cluster, direct replica changes, and deterministically delayed readiness:
+Use a disposable cluster, direct replica changes, and deterministically delayed readiness. The automated scale-up comparison covers Ordinal and Hash with all four scale-up/scale-down policy combinations:
 
 1. Compare `Deferred` and `Immediate` while decreasing a target below already-created target Spec.
-2. Compare `scaleUpDuringRollout: Deferred` and `Immediate` while some target groups are not Ready. Verify that `Immediate` fills the gap between desired and observed old Spec, preserving old Ready capacity and normal surge limits. Repeat the observation and change only readiness to verify that neither creates another top-up batch.
+2. With both budgets at 25%, increase desired from 8 to 16 while six old groups remain and four target groups are loading. Compare `scaleUpDuringRollout: Deferred` (target grows to 8) and `Immediate` (target grows to 10, filling `16 - 6`). Verify that old Ready capacity is preserved and normal surge limits hold. Make one old Pod per role unready without changing requested counts, and verify that neither policy creates another top-up batch.
 3. Release readiness and verify old-first progress followed by exact convergence.
 4. Check the configured budgets, required-role completeness, and retained readiness throughout the run, not only its final counts.
 
@@ -435,3 +435,4 @@ This behavior graduates with DisaggregatedSet and `DisaggregatedSetRoleScaler`. 
 - 2026-10-13: Apply target availability and scheduled-startup protection to renamed-role surplus recovery under both policies. Retain safe cancellation of wholly unscheduled surplus and genuine excess above desired; document that protected startup work can delay capacity recovery.
 - 2026-10-13: Prefer safe old-revision progress over permitted target reductions under both policies, including renamed-role surplus recovery.
 - 2026-10-19: Add independent `scaleUpDuringRollout: Deferred | Immediate`. Immediate fills the requested replica count using desired minus observed Spec across old revisions, bypassing pending-work and new-side fractional pacing only up to that count and preserving normal rollout growth above it. Preserve defaults, scale-down behavior, availability, and renamed-role protection; do not introduce Ready-deficit credits or persistent scaling state.
+- 2026-10-28: Add automated E2E coverage for Immediate scale-up alongside the scale-down policies, and update the user guide to explain both independent settings and compare their behavior during a rollout.

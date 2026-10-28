@@ -86,30 +86,31 @@ automatically lowers a positive availability floor to zero.
 
 ## Scaling during a rollout
 
-For an animated comparison of Deferred and Immediate scale-down, see [Scaling During a Rollout](scaling-during-rollout/).
+For a scale-up example and an animated scale-down comparison, see [Scaling During a Rollout](scaling-during-rollout/).
 
 This applies to static `roles[].spec.replicas` and External [RoleScaler](role-scaler) targets. Changing replicas or the scaling policy does not create a new revision.
 
-| `scalingPolicy.scaleDownDuringRollout` | Scale-up during a rollout | Scale-down during a rollout |
+| Setting under `scalingPolicy` | `Deferred` (default) | `Immediate` |
 | --- | --- | --- |
-| `Deferred` (default) | Adds target-revision replicas toward the requested count, within rollout budgets. | Defers shrinking already-created target replicas until old revisions drain. Old replicas can still be retired during the rollout. |
-| `Immediate` | Adds target-revision replicas toward the requested count, within rollout budgets. | Tries to remove excess old replicas first. If they must remain to serve traffic, it can shrink excess target replicas instead. |
+| `scaleUpDuringRollout` | Grows the target through normal rollout batches. | Also fills the desired count minus replicas still requested in all old revisions, without waiting for the current batch to become Ready. |
+| `scaleDownDuringRollout` | Defers shrinking already-created target replicas until old revisions drain. Old replicas can still retire. | Tries to remove excess old replicas first. If they must remain to serve traffic, it can shrink excess target replicas instead. |
 
-To allow scale-down before old revisions finish draining:
+To enable both Immediate behaviors:
 
 ```yaml
 spec:
   scalingPolicy:
+    scaleUpDuringRollout: Immediate
     scaleDownDuringRollout: Immediate
 ```
 
-Omitting the policy preserves `Deferred` behavior. `Immediate` means the controller considers reductions now, not that Pods disappear instantly: availability and startup safeguards can delay them.
+The fields are independent; omitting either preserves its `Deferred` behavior. Immediate scale-up fills requested capacity, not a readiness shortfall: loading groups already count, and losing readiness alone does not create another batch. It does not increase `maxSurge`, permit extra old reductions, or bypass renamed-role replacement safeguards. Immediate scale-down considers reductions now, but availability and startup safeguards can delay them.
 
-For roles still required by the target, both old and target reductions protect `effective desired - maxUnavailable` Ready groups, with a minimum of zero. The effective count normally follows the latest request; under `Deferred`, an External role with overlapping old replicas keeps at least the already-created target count. Requesting more capacity raises this floor. If fewer groups are currently Ready, the controller preserves those groups while growing the target; a smaller old revision is not permission to reduce availability further.
+For roles still required by the target, both old and target reductions protect `effective desired - maxUnavailable` Ready groups, with a minimum of zero. The effective count normally follows the latest request; under `scaleDownDuringRollout: Deferred`, an External role with overlapping old replicas keeps at least the already-created target count. Requesting more capacity raises this floor. If fewer groups are currently Ready, the controller preserves those groups while growing the target; a smaller old revision is not permission to reduce availability further.
 
-If ordinary scale-up becomes blocked by coordination, either policy can use one temporary extra group per eligible role. That role's existing target groups must all be Ready and its total Spec must be at its surge ceiling. The extra cannot stack while the role remains over its ceiling or waits for readiness. This does not enable `Deferred` to shrink the target in response to a lower replica request.
+If ordinary scale-up becomes blocked by coordination, the existing recovery rules can use one temporary extra group per eligible role. That role's existing target groups must all be Ready and its total Spec must be at its surge ceiling. The extra cannot stack while the role remains over its ceiling or waits for readiness. This does not enable `scaleDownDuringRollout: Deferred` to shrink the target in response to a lower replica request.
 
-When an `Immediate` target revision has more replicas than its latest desired count, both Ordinal and Hash follow the same rule for each role:
+With `scaleDownDuringRollout: Immediate`, when the target revision has more replicas than its latest desired count, both Ordinal and Hash follow the same rule for each role:
 
 - If any target Pod is assigned to a node, even if it is still loading, keep at least the final desired count. The same protection applies when scheduling information is incomplete.
 - If every target group is confirmed unscheduled, the count may go below desired toward `desired + maxSurge - old replicas`. Availability checks and the first group of each required role still limit that reduction. This does not shrink a target already at or below desired.
@@ -118,6 +119,6 @@ For example, per role: old Spec/Ready 4, target Spec 5 with none Ready, desired 
 
 This protects the replica count, not particular Pods. It can keep some unscheduled groups alongside scheduled ones; removing excess above desired can still delete scheduled work, and placement may change before deletion.
 
-Renamed-role rollouts can start a bounded next batch using Ready replacements without waiting for another old group to leave; if a target role later loses all Ready groups, recovery under either policy may reclaim extra groups, even Ready ones, while preserving the last Ready group per role and protected old capacity. `Immediate` finishes when old replicas are gone and target Spec and Ready equal the latest desired count, including zero.
+Renamed-role rollouts can start a bounded next batch using Ready replacements without waiting for another old group to leave; if a target role later loses all Ready groups, recovery under either scale-down policy may reclaim extra groups, even Ready ones, while preserving the last Ready group per role and protected old capacity. With `scaleDownDuringRollout: Immediate`, completion requires old replicas to be gone and target Spec and Ready to equal the latest desired count, including zero.
 
 See [KEP-1022](https://github.com/kubernetes-sigs/lws/tree/main/keps/1022-DisaggregatedSet-Scaling-During-Rollout) for the exact budgets, renamed-role availability, and recovery rules.

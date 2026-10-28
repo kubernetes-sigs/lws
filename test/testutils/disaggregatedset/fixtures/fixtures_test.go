@@ -61,13 +61,26 @@ func TestYAMLWithoutRollout(t *testing.T) {
 
 func TestYAMLWithScalingPolicyAndHeldHashReadiness(t *testing.T) {
 	config := PrefillDecode("moving-target", Role{Replicas: 8, HoldReadiness: true, GroupIdentity: "Hash"}, Role{Replicas: 8})
-	config.RolloutScaleDownPolicy = "Immediate"
-	yaml := config.YAML()
-	require.Contains(t, yaml, "  scalingPolicy:\n    scaleDownDuringRollout: Immediate")
-	require.Contains(t, yaml, "      groupIdentity: Hash")
-	require.Contains(t, yaml, `command: ["test", "-f", "/tmp/ready"]`)
-	config.RolloutScaleDownPolicy = ""
-	require.NotContains(t, config.YAML(), "scalingPolicy:")
+	for _, up := range []string{"", "Deferred", "Immediate"} {
+		for _, down := range []string{"", "Deferred", "Immediate"} {
+			config.RolloutScaleUpPolicy, config.RolloutScaleDownPolicy = up, down
+			yaml := config.YAML()
+			require.Contains(t, yaml, "      groupIdentity: Hash")
+			require.Contains(t, yaml, `command: ["test", "-f", "/tmp/ready"]`)
+			if up == "" && down == "" {
+				require.NotContains(t, yaml, "scalingPolicy:")
+				continue
+			}
+			require.Equal(t, 1, strings.Count(yaml, "  scalingPolicy:\n"))
+			for field, policy := range map[string]string{"scaleUpDuringRollout": up, "scaleDownDuringRollout": down} {
+				if policy == "" {
+					require.NotContains(t, yaml, field+":")
+				} else {
+					require.Contains(t, yaml, "    "+field+": "+policy+"\n")
+				}
+			}
+		}
+	}
 }
 
 func TestYAMLWithRoleAndWorkerTemplateMetadata(t *testing.T) {
