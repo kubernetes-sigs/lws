@@ -1081,7 +1081,7 @@ func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 	for _, immediateUp := range []bool{false, true} {
 		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(81259))
-			for range 1000 {
+			for scenario := range 500 {
 				initial := []int{rng.Intn(6), rng.Intn(6)}
 				state := rolloutState(initial, initial, initial, []int{1, 1}, []int{1, 1}, []int{0, 0}, []int{0, 0}, initial,
 					configs([]int{rng.Intn(3), rng.Intn(3)}, []int{rng.Intn(3), rng.Intn(3)}))
@@ -1092,6 +1092,7 @@ func TestScalingDuringRolloutDelayedConvergence(t *testing.T) {
 				}
 				state.Target.AllUnscheduled = make([]bool, 2)
 				state.ScaleUpDuringRollout = immediateUp
+				state.ScaleDownDuringRollout = scenario%2 == 0
 				assertMovingRolloutConverges(t, executor, &state, 120, func(tick int) {
 					if tick < 4 {
 						state.Target.DesiredReplicas = []int{rng.Intn(8), rng.Intn(8)}
@@ -1135,7 +1136,8 @@ func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor,
 	target := makeRevision("target", state.Target.DesiredReplicas, state.Target.SpecReplicas, state.Target.RawReadyReplicas, state.Target.ReadyReplicas)
 	// Only planner inputs are simulated; candidate ordering, saved baselines,
 	// and choosing another old revision when the first stalls are production code.
-	history := []string{fmt.Sprintf("initial=%v parked=%+v config=%v", state.ActiveOld.InitialReplicas, state.ParkedOld, state.Config)}
+	history := []string{fmt.Sprintf("initial=%v parked=%+v config=%v immediateUp=%v immediateDown=%v",
+		state.ActiveOld.InitialReplicas, state.ParkedOld, state.Config, state.ScaleUpDuringRollout, state.ScaleDownDuringRollout)}
 	for tick := range ticks {
 		if tick%3 == 2 {
 			for _, revision := range append(slices.Clone(old), target) {
@@ -1167,7 +1169,7 @@ func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor,
 			readiness[lws.Name] = observed
 		}
 		inputs := rolloutInputs{allRoleNames: roleNames, targetReplicas: state.Target.DesiredReplicas,
-			config: state.Config, readiness: readiness, scaleUpDuringRollout: state.ScaleUpDuringRollout, scaleDownDuringRollout: true}
+			config: state.Config, readiness: readiness, scaleUpDuringRollout: state.ScaleUpDuringRollout, scaleDownDuringRollout: state.ScaleDownDuringRollout}
 		selected := disaggregatedsetutils.RevisionRoles{}
 		var observed RolloutState
 		var step *UpdateStep
@@ -1178,6 +1180,8 @@ func assertMovingRolloutConverges(t *testing.T, executor *RollingUpdateExecutor,
 		} else {
 			observed = rolloutStateForRevision(roleNames, old, selected, target, inputs.targetReplicas, inputs.config, readiness)
 			observed.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
+			// With old groups gone, model steady-state scaling, which also
+			// removes target surplus deferred until the rollout completed.
 			observed.ScaleDownDuringRollout = true
 			step = ComputeNextStep(observed)
 		}
@@ -1273,11 +1277,12 @@ func TestScalingDuringRolloutRepeatedEditsConverge(t *testing.T) {
 		t.Run(fmt.Sprintf("immediateUp=%v", immediateUp), func(t *testing.T) {
 			for _, seed := range []int64{4041023, 9071105, 11371023} {
 				rng := rand.New(rand.NewSource(seed))
-				for range 1000 {
+				for scenario := range 500 {
 					initial := []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
 					state := rolloutState(initial, initial, initial, nil, nil, []int{0, 0}, []int{0, 0}, initial,
 						configs([]int{0, 1}, []int{1, 1}))
 					state.ScaleUpDuringRollout = immediateUp
+					state.ScaleDownDuringRollout = scenario%2 == 0
 					assertMovingRolloutConverges(t, executor, &state, 100, func(tick int) {
 						if tick < 5 {
 							state.Target.DesiredReplicas = []int{1 + rng.Intn(10), 1 + rng.Intn(10)}
