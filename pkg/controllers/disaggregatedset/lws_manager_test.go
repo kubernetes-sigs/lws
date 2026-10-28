@@ -58,6 +58,51 @@ import (
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
+func TestSubRoleGrowthDelayEligibility(t *testing.T) {
+	external := &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name    string
+			scaling []*disaggregatedsetv1.RoleScaling
+			wait    bool
+		}{
+			{"single External", []*disaggregatedsetv1.RoleScaling{external}, false},
+			{"all Static", []*disaggregatedsetv1.RoleScaling{nil, {Mode: disaggregatedsetv1.RoleScalingStatic}, {}}, false},
+			{"mixed Static and External", []*disaggregatedsetv1.RoleScaling{nil, external}, true},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				role := &disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model"}
+				children := make([]string, len(tc.scaling))
+				desired := map[string]int{"model": len(children) + 1}
+				for i, scaling := range tc.scaling {
+					children[i] = fmt.Sprintf("child-%d", i)
+					count := 1
+					if i == 0 {
+						count++
+					}
+					role.SubRoles = append(role.SubRoles, disaggregatedsetv1.DisaggregatedSubRoleSpec{Name: children[i], Scaling: scaling})
+					desired[childRoleKey(role.Name, children[i])] = count
+				}
+				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				f.manager.clock = clocktesting.NewFakeClock(time.Now()) // No time passes between reconciliations.
+				r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+				for range 10 {
+					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, desired)
+					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+					f.native()
+				}
+				got := f.observe().LWS
+				want := desired[role.Name]
+				if tc.wait {
+					want = len(children)
+				}
+				require.EqualValues(t, want, getLWSReplicas(got))
+				require.Equal(t, tc.wait, got.Annotations[subRoleScaleUpNotBeforeAnnotation] != "")
+			})
+		}
+	}
+}
+
 func TestSubRoleGrowthDelaySurvivesRestartAndRetry(t *testing.T) {
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
@@ -283,7 +328,6 @@ func TestSubRoleRolloutBudgetUpdates(t *testing.T) {
 					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, map[string]int{"model": tc.after, "model/a": tc.after})
 					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 					f.native()
-					clock.Step(time.Second)
 				}
 				got := f.observe().LWS
 				require.EqualValues(t, tc.after, *got.Spec.Replicas)

@@ -415,6 +415,8 @@ spec:
     subRoleScaleUpDelaySeconds: 2
 ```
 
+Only roles with multiple sub-roles and at least one External scaler use this delay. A single sub-role has no sibling to exchange capacity with; all-Static targets can change together in one DisaggregatedSet update.
+
 For example, an LWS has `short=4, long=4`. The `short` scaler first requests 6,
 temporarily raising the total to 10. If `long` requests 2 within the window, the
 total returns to 8: the controller cancels the growth delay and redistributes the
@@ -545,6 +547,7 @@ existing tests to make this code solid enough prior to implementation.
 
 - 2026-08-04: Initial provisional KEP draft.
 - 2026-10-16: Added a configurable, fixed scale-up window for existing sub-role pools, defaulting to two seconds; zero disables it. Nearby target updates can reuse groups without temporary physical growth.
+- 2026-10-28: Limited the scale-up window to roles with multiple sub-roles and at least one External scaler, avoiding unnecessary latency for single-sub-role and all-Static pools.
 
 ## Drawbacks
 

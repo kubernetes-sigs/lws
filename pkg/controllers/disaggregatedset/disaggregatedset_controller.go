@@ -477,6 +477,15 @@ func desiredSubRoles(role *disaggregatedsetv1.DisaggregatedRoleSpec, desired map
 	return counts
 }
 
+func anyExternalScaler(subRoles []disaggregatedsetv1.DisaggregatedSubRoleSpec) bool {
+	for _, subRole := range subRoles {
+		if subRole.Scaling != nil && subRole.Scaling.Mode == disaggregatedsetv1.RoleScalingExternal {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, current *disaggregatedsetutils.RevisionRoles, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
 	roleConfigs := disaggregatedsetutils.GetRoleConfigs(disaggregatedSet)
 	result := ctrl.Result{}
@@ -518,9 +527,12 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 		return nil
 	}
 	counts := desiredSubRoles(config, desiredReplicasByRole)
-	growthDelay := 2 * time.Second
-	if policy := disaggregatedSet.Spec.ScalingPolicy; policy != nil && policy.SubRoleScaleUpDelaySeconds != nil {
-		growthDelay = time.Duration(*policy.SubRoleScaleUpDelaySeconds) * time.Second
+	var growthDelay time.Duration
+	if len(config.SubRoles) > 1 && anyExternalScaler(config.SubRoles) {
+		growthDelay = 2 * time.Second
+		if policy := disaggregatedSet.Spec.ScalingPolicy; policy != nil && policy.SubRoleScaleUpDelaySeconds != nil {
+			growthDelay = time.Duration(*policy.SubRoleScaleUpDelaySeconds) * time.Second
+		}
 	}
 	// Outside rollout, membership, issued target and effective baseline all follow desired.
 	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts, rolloutStrategy: &config.Spec.RolloutStrategy, growthDelay: growthDelay})
