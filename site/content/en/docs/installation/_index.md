@@ -38,12 +38,11 @@ machine type for your nodes.**
 
 ## Install a released version
 
-The commands below target **{{< params "version" >}}**.
-
 {{% if-main %}}
 {{% alert title="Development documentation" color="warning" %}}
 You are viewing the **development documentation (`main`)** for the next planned
-release. The release files and Helm chart used below may not be available yet.
+release **{{< params "version" >}}**. The release files and Helm chart used below
+may not be available yet.
 
 For a released installation, use the
 [latest stable documentation](https://lws.sigs.k8s.io/stable/docs/installation/).
