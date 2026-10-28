@@ -68,7 +68,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Name of the controller manager service account
 */}}
 {{- define "lws.serviceAccountName" -}}
-{{- default (printf "%s-controller-manager" (include "lws.fullname" .)) .Values.serviceAccount.name }}
+{{- $serviceAccount := .Values.serviceAccount | default dict -}}
+{{- default (printf "%s-controller-manager" (include "lws.fullname" .)) $serviceAccount.name }}
 {{- end }}
 
 {{/*
