@@ -10,6 +10,14 @@ The Kubernetes Template Project is released on an as-needed basis. The process i
 
 ## Documentation
 
+When preparing a release branch, set `RELEASE_BRANCH=release-X.Y` and
+`RELEASE_VERSION=vX.Y.Z` in the Makefile, then run `make prepare-release-branch`.
+This also updates the branch's installation examples through `site/hugo.toml`.
+On `main`, advance the separate `DEVELOPMENT_DOCS_VERSION` to the next planned
+release, run `make prepare-docs-release`, and commit both files. This changes only
+the documentation target, not chart or image versions; individual installation
+commands need no version edits.
+
 After the release and Helm chart are available, trigger a website rebuild.
 The build discovers stable tags and refreshes snapshots from `release-X.Y`.
 The latest tagged release is served at `/stable/docs/`; older releases keep

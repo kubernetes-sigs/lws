@@ -101,6 +101,12 @@ RELEASE_BRANCH=main
 # Version used form Helm which is not using the leading "v"
 CHART_VERSION := $(shell echo $(RELEASE_VERSION) | cut -c2-)
 
+# Main documents the next planned release without changing artifact versions.
+# Advance this target on main after cutting a release branch, then run
+# `make prepare-docs-release` and commit the updated site/hugo.toml.
+DEVELOPMENT_DOCS_VERSION = v1.1.0
+DOCS_VERSION := $(if $(filter main,$(RELEASE_BRANCH)),$(DEVELOPMENT_DOCS_VERSION),$(RELEASE_VERSION))
+
 .PHONY: all
 all: build
 
@@ -428,12 +434,17 @@ artifacts: kustomize helm yq
 	# Revert the image changes
 	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
 
+.PHONY: prepare-docs-release
+prepare-docs-release: ## Update the branch's documentation target without rewriting examples.
+	$(SED) -r -e '/^[[:space:]]*\[params\][[:space:]]*$$/,/^[[:space:]]*\[/ {' \
+		-e 's/^([[:space:]]*version[[:space:]]*=[[:space:]]*")[^"]*"/\1$(DOCS_VERSION)"/' \
+		-e 's/^([[:space:]]*githubbranch[[:space:]]*=[[:space:]]*")[^"]*"/\1$(RELEASE_BRANCH)"/' \
+		-e '}' -i site/hugo.toml
+
 .PHONY: prepare-release-branch
-prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
-	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md -i site/hugo.toml
+prepare-release-branch: yq kustomize prepare-docs-release ## Prepare the release branch with the release version.
+	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md
 	$(SED) -r 's/--version="v?[0-9]+\.[0-9]+\.[0-9]+/--version="$(CHART_VERSION)/g' -i charts/lws/README.md
-	$(SED) -r 's/\bVERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/VERSION=\1$(RELEASE_VERSION)/g' -i site/content/en/docs/installation/_index.md
-	$(SED) -r 's/\bCHART_VERSION=(\s*)v?[0-9]+\.[0-9]+\.[0-9]+\b/CHART_VERSION=\1$(CHART_VERSION)/g' -i site/content/en/docs/installation/_index.md
 	$(YQ) e '.appVersion = "$(RELEASE_VERSION)"' -i charts/lws/Chart.yaml
 	@$(call clean-manifests)
 

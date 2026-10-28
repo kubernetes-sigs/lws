@@ -140,11 +140,29 @@ docs rebuild. Backport documentation fixes to `release-X.Y` and rebuild to
 refresh that series; keep unreleased feature documentation on `main`. Do not
 backport installation instructions for an unavailable chart.
 
+All installation commands use the source branch's Hugo `version` parameter.
+`{{< params "version" >}}` outputs the release tag; `{{< chart-version >}}` derives
+the Helm version by stripping the leading `v` when Hugo renders the page.
+There is no separate chart-version setting to maintain.
+`make prepare-docs-release` updates this parameter and the source `githubbranch`
+without rewriting Markdown:
+
+- On `main` (`RELEASE_BRANCH=main`), use `DEVELOPMENT_DOCS_VERSION`, the next planned
+  release. This documentation-only target does not change chart or image versions.
+- On release branches, use `RELEASE_VERSION`. The existing
+  `make prepare-release-branch` target runs this update automatically.
+
+After cutting a release branch, advance `DEVELOPMENT_DOCS_VERSION` on `main`, run
+`make prepare-docs-release`, and commit both the Makefile and `site/hugo.toml`.
+Snapshots read the committed configuration from each branch, so stable retains
+its own installation version. Main's commands may reference unpublished artifacts;
+the `if-main` shortcode shows a warning only on main, directing readers to stable
+docs or development installs. Release snapshots omit that warning.
+Historical facts, such as a flag being removed in v1.1.0, stay fixed in the text.
+
 This implements the versioning tracked in
 [#1232](https://github.com/kubernetes-sigs/lws/issues/1232), plus a latest-stable
-default (the original issue leaves `/docs/` on main). The postponed installation
-changes in [#1235](https://github.com/kubernetes-sigs/lws/issues/1235) still require
-a separate, release-appropriate update.
+default (the original issue leaves `/docs/` on main).
 
 ## SEO titles
 

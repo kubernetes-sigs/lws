@@ -216,9 +216,9 @@ def release_params(source):
         if line.strip().startswith("["):
             in_params = line.strip() == "[params]"
         if in_params:
-            match = re.fullmatch(r'\s*(version|chart_version)\s*=\s*"([^"]*)"\s*(?:#.*)?', line)
+            match = re.fullmatch(r'\s*version\s*=\s*"([^"]*)"\s*(?:#.*)?', line)
             if match:
-                params[match[1]] = match[2]
+                params["version"] = match[1]
     return params
 
 

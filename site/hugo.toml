@@ -86,10 +86,9 @@ ignoreFiles = []
   # Text label for the version menu in the top bar of the website.
   version_menu = "Version"
 
-  # The major.minor version tag for the version of the docs represented in this
-  # branch of the repository. Used in the "version-banner" partial to display a
-  # version number for this doc set.
-  version = "v1.0.0"
+  # Target version for all installation examples in this branch.
+  # Updated by make prepare-docs-release (also part of prepare-release-branch).
+  version = "v1.1.0"
 
   # Flag used in the "version-banner" partial to decide whether to display a
   # banner on every page indicating that this is an archived version of the docs.
