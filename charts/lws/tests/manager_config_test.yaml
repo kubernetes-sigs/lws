@@ -19,6 +19,14 @@ tests:
             internalCertManagement:
               enable: true
 
+  - it: keeps default leader election timing when the configuration is absent
+    set:
+      leaderElection: null
+    asserts:
+      - matchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "(?m)^leaderElection:\\n  leaderElect: true\\nwebhook:$"
+
   - it: listens for webhooks on the configured service port
     set:
       service:
