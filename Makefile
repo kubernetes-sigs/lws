@@ -333,6 +333,10 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 helm-chart-push: yq helm crds
 	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ./hack/push-chart.sh
 
+.PHONY: test-chart-publishing
+test-chart-publishing: helm yq ## Test chart packaging and branch selection without publishing.
+	HELM="$(HELM)" YQ="$(YQ)" python3 hack/releasing/test_push_chart.py
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to

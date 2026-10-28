@@ -205,7 +205,8 @@ version = "v2.0.0"
         self.write("site/hugo.toml", config)
         installation_path = "site/content/en/docs/installation/_index.md"
         installation = (MAKEFILE.parent / installation_path).read_text()
-        self.assertNotRegex(installation, r"(?:CHART_)?VERSION=v?\d+\.\d+\.\d+")
+        # Released examples stay parameterized; the rolling 0.0.0-main alias is fixed.
+        self.assertNotRegex(installation, r"(?:CHART_)?VERSION=v?\d+\.\d+\.\d+(?=\s|$)")
         self.assertIn('VERSION={{< params "version" >}}', installation)
         self.assertIn('CHART_VERSION={{< chart-version >}}', installation)
         self.write(installation_path, installation)

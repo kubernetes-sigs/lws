@@ -83,15 +83,11 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 ### Install by Helm
 
 {{% if-main %}}
-Development charts are published to the staging registry with a build-specific
-version. With [Helm](https://helm.sh/), `curl`, and `jq` installed, select the
-chart matching the published `main` image and install it:
+With [Helm](https://helm.sh/), install the rolling development chart from the
+`main` branch:
 
 ```shell
-CHART_VERSION=$(curl -fsSL \
-  https://us-central1-docker.pkg.dev/v2/k8s-staging-images/lws/lws/tags/list |
-  jq -er '.manifest[] | select((.tag // []) | index("main")) |
-    .tag[] | select(test("^v[0-9]{8}-g[0-9a-f]+$"))') &&
+CHART_VERSION=0.0.0-main
 helm install lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
   --version="$CHART_VERSION" \
   --namespace lws-system \
@@ -99,9 +95,8 @@ helm install lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/
   --wait --timeout 300s
 ```
 
-The chart uses the controller image from the same build. If a new image has
-just been published and its chart is not available yet, retry after publishing
-finishes.
+This chart version is updated by `main` builds and uses the controller image
+from the same build. Existing installations only change when you upgrade them.
 {{% /if-main %}}
 {{% if-release %}}
 To install LWS in your cluster by [Helm](https://helm.sh/), run the following command:
@@ -138,18 +133,17 @@ Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
 {{% if-main %}}
 ```shell
-CHART_VERSION=$(curl -fsSL \
-  https://us-central1-docker.pkg.dev/v2/k8s-staging-images/lws/lws/tags/list |
-  jq -er '.manifest[] | select((.tag // []) | index("main")) |
-    .tag[] | select(test("^v[0-9]{8}-g[0-9a-f]+$"))') &&
+CHART_VERSION=0.0.0-main
 helm pull oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
   --version="$CHART_VERSION" --untar &&
 kubectl apply --server-side --force-conflicts -f lws/crds &&
-helm upgrade lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
-  --version="$CHART_VERSION" \
+helm upgrade lws ./lws \
   --namespace lws-system \
   --wait --timeout 300s
 ```
+
+Use the downloaded chart for the upgrade so its controller and CRDs stay on
+the same build, even if `0.0.0-main` is updated in the meantime.
 {{% /if-main %}}
 {{% if-release %}}
 ```shell

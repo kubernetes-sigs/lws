@@ -34,6 +34,7 @@ YQ=${YQ:-./bin/yq}
 
 readonly k8s_registry="registry.k8s.io/lws"
 readonly semver_regex='^v([0-9]+)(\.[0-9]+){1,2}$'
+readonly main_chart_version="0.0.0-main"
 
 image_repository=${IMAGE_REPO}
 chart_version=${GIT_TAG}
@@ -43,15 +44,40 @@ then
 	chart_version=${EXTRA_TAG}
 fi
 
-default_image_repo=$(${YQ} ".image.manager.repository" charts/lws/values.yaml)
-readonly default_image_repo
+# Package a copy so failures never leave modified values in the source chart.
+chart_workdir=$(mktemp -d)
+trap 'rm -rf -- "${chart_workdir}"' EXIT
+cp -R charts/lws "${chart_workdir}/lws"
 
-# Update the image repo, tag and policy
-${YQ}  e  ".image.manager.repository = \"${image_repository}\" | .image.manager.tag = \"${chart_version}\" | .image.manager.pullPolicy = \"IfNotPresent\"" -i charts/lws/values.yaml
+# Both chart versions refer to the same build-specific controller image.
+"${YQ}" e ".image.manager.repository = \"${image_repository}\" | .image.manager.tag = \"${chart_version}\" | .image.manager.pullPolicy = \"IfNotPresent\"" -i "${chart_workdir}/lws/values.yaml"
 
-${HELM} package --version "${chart_version}" --app-version "${chart_version}" charts/lws -d "${DEST_CHART_DIR}"
+"${HELM}" package --version "${chart_version}" --app-version "${chart_version}" "${chart_workdir}/lws" -d "${DEST_CHART_DIR}"
+"${HELM}" push "${DEST_CHART_DIR%/}/lws-${chart_version}.tgz" "oci://${HELM_CHART_REPO}"
 
-# Revert the image changes
-${YQ}  e  ".image.manager.repository = \"${default_image_repo}\" | .image.manager.tag = \"main\" | .image.manager.pullPolicy = \"Always\"" -i charts/lws/values.yaml
+if [[ ${EXTRA_TAG} != main ]]; then
+	exit 0
+fi
 
-${HELM} push "bin/lws-${chart_version}.tgz" "oci://${HELM_CHART_REPO}"
+"${HELM}" package --version "${main_chart_version}" --app-version "${chart_version}" "${chart_workdir}/lws" -d "${DEST_CHART_DIR}"
+
+# Cloud Build's source archive has no .git directory; use the source SHA from
+# GIT_TAG. Check immediately before pushing to skip already superseded builds.
+# This is a freshness check, not an atomic lock across concurrent publishers.
+if [[ ! ${GIT_TAG} =~ ^v[0-9]{8}-g([0-9a-f]{7,40})$ ]]; then
+	echo "Cannot publish the rolling chart: GIT_TAG has no verifiable source commit." >&2
+	exit 1
+fi
+build_sha=${BASH_REMATCH[1]}
+main_ref=$(git ls-remote https://github.com/kubernetes-sigs/lws.git refs/heads/main)
+if [[ ! ${main_ref} =~ ^([0-9a-f]{40})[[:space:]]refs/heads/main$ ]]; then
+	echo "Cannot publish the rolling chart: main's source commit could not be verified." >&2
+	exit 1
+fi
+main_sha=${BASH_REMATCH[1]}
+if [[ ${main_sha} != "${build_sha}"* ]]; then
+	echo "Skipping ${main_chart_version}: build ${build_sha} has been superseded on main."
+	exit 0
+fi
+
+"${HELM}" push "${DEST_CHART_DIR%/}/lws-${main_chart_version}.tgz" "oci://${HELM_CHART_REPO}"

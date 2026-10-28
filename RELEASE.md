@@ -28,3 +28,26 @@ feature documentation on `main`. See [the local generation and preview guide](si
 Automatic rebuilds for release-branch changes and new tags still need to be
 arranged with the Netlify administrators. Until then, these changes appear on
 the next `main` deployment or after an administrator manually rebuilds `main`.
+
+## Development Helm chart
+
+The existing image-publishing job also runs `make helm-chart-push`. Every build
+keeps its build-specific chart. Only builds from `main` additionally publish
+`0.0.0-main` to `oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws`.
+This rolling chart keeps the build-specific `appVersion` and controller image
+tag, so its chart and image come from the same build. Release branches and
+release tags never update `0.0.0-main`.
+
+The publisher checks the upstream `main` commit immediately before updating
+the rolling chart. Superseded builds skip that update, and an unverifiable
+commit fails closed. The lookup and registry push are not atomic; strictly
+ordered updates across concurrent builds would require serialized publication
+or a shared lock. The rolling chart can lag `main` while a newer build runs or
+fails. Use a build-specific chart version when reproducibility is required.
+
+The staging registry must allow mutable tags. No new Prow trigger is required;
+the existing job passes the source branch through `EXTRA_TAG`.
+
+Run `make test-chart-publishing` to check packaging and branch selection locally.
+The tests package real charts but replace registry pushes and upstream lookups
+with local test doubles; nothing is uploaded.
