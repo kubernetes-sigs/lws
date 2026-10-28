@@ -1481,7 +1481,11 @@ func TestScalingDuringRolloutExposesLatestExternalTarget(t *testing.T) {
 		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2}, nil)
 	}
 	assert.Equal(t, []int{5}, readTarget(), "default keeps the in-flight External target")
-	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
+	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}
+	assert.Equal(t, []int{5}, readTarget(), "immediate scale-up alone keeps the in-flight External target")
+	ds.Spec.ScalingPolicy.ScaleDownDuringRollout = disaggregatedsetv1.RolloutScalingDeferred
+	assert.Equal(t, []int{5}, readTarget(), "explicit Deferred scale-down keeps the in-flight External target too")
+	ds.Spec.ScalingPolicy.ScaleDownDuringRollout = disaggregatedsetv1.RolloutScalingImmediate
 	assert.Equal(t, []int{2}, readTarget(), "opt-in exposes the actual RoleScaler target")
 }
 
