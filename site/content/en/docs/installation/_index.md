@@ -9,7 +9,7 @@ description: >
 <!-- toc -->
 - [Before you begin](#before-you-begin)
 {{% if-main %}}
-- [Install the development version (main, bleeding edge)](#install-the-latest-development-version)
+- [Install the development version (main branch)](#install-the-latest-development-version)
 {{% /if-main %}}
 {{% if-release %}}
 - [Install a released version](#install-a-released-version)
@@ -43,11 +43,11 @@ machine type for your nodes.**
 {{% if-main %}}
 <div id="install-a-released-version"></div>
 
-## Install the development version (main, bleeding edge) {#install-the-latest-development-version}
+## Install the development version (main branch) {#install-the-latest-development-version}
 
 {{% alert title="Development documentation" color="warning" %}}
-The commands below install **unreleased development builds from `main`** for
-testing. They may include changes that are not available in a release.
+The commands below install **unreleased development builds from the `main` branch**
+for testing.
 
 For a released installation, use the
 [latest stable documentation](https://lws.sigs.k8s.io/stable/docs/installation/).
