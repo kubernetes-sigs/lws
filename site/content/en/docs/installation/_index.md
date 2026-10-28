@@ -38,14 +38,17 @@ machine type for your nodes.**
 
 ## Install a released version
 
-The commands below target **{{< params "version" >}}**, the version documented by
-the selected branch.
+The commands below target **{{< params "version" >}}**.
 
 {{% if-main %}}
-On `main`, this is the next planned release and its artifacts may not be published
-yet. For a released installation, use the
+{{% alert title="Development documentation" color="warning" %}}
+You are viewing the **development documentation (`main`)** for the next planned
+release. The release files and Helm chart used below may not be available yet.
+
+For a released installation, use the
 [latest stable documentation](https://lws.sigs.k8s.io/stable/docs/installation/).
 To try unreleased changes now, [install the latest development version](#install-the-latest-development-version).
+{{% /alert %}}
 {{% /if-main %}}
 
 ### Install by kubectl
