@@ -1371,7 +1371,7 @@ func TestImmediateScaleUpUsesRequestedCapacity(t *testing.T) {
 					c := newTestClient(objects...)
 					executor := newTestExecutor(c)
 					want := int32(2)
-					for tick, desired := range []int32{10, 10, 12, 10, 14, 12} {
+					for tick, desired := range []int32{10, 10, 12, 10, 14, 12, 14} {
 						if tick == 1 {
 							// Losing readiness does not free requested capacity.
 							for _, role := range testRoleNames() {
@@ -1391,6 +1391,20 @@ func TestImmediateScaleUpUsesRequestedCapacity(t *testing.T) {
 						assertRevisionReplicas(t, c, "old", [2]int32{4, 4})
 						assertRevisionReplicas(t, c, "target", [2]int32{want, want})
 					}
+					// Desired stays at 14. Observing old Spec fall from 4 to 2
+					// must reopen Immediate's top-up from 10 to 12 target groups.
+					for _, role := range testRoleNames() {
+						var old leaderworkersetv1.LeaderWorkerSet
+						require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: "test-0-old-" + role}, &old))
+						old.Spec.Replicas = ptr.To(int32(2))
+						require.NoError(t, c.Update(t.Context(), &old))
+					}
+					if immediateUp {
+						want = 12
+					}
+					reconcileExistingForTest(t, executor, ds, "target")
+					assertRevisionReplicas(t, c, "old", [2]int32{2, 2})
+					assertRevisionReplicas(t, c, "target", [2]int32{want, want})
 				})
 			}
 		}
