@@ -1,0 +1,4 @@
+{{- $branch := .Page.Param "docs_branch" | default (.Page.Param "githubbranch") -}}
+{{- if ne $branch "main" -}}
+{{ .Inner }}
+{{- end -}}

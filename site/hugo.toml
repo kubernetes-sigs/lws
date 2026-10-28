@@ -86,7 +86,7 @@ ignoreFiles = []
   # Text label for the version menu in the top bar of the website.
   version_menu = "Version"
 
-  # Target version for all installation examples in this branch.
+  # Documented release version; main's installation examples use development builds.
   # Updated by make prepare-docs-release (also part of prepare-release-branch).
   version = "v1.1.0"
 

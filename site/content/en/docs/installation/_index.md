@@ -8,16 +8,20 @@ description: >
 
 <!-- toc -->
 - [Before you begin](#before-you-begin)
+{{% if-main %}}
+- [Install the development version (main, bleeding edge)](#install-the-latest-development-version)
+{{% /if-main %}}
+{{% if-release %}}
 - [Install a released version](#install-a-released-version)
-  - [Uninstall](#uninstall)
+{{% /if-release %}}
 - [Enable native gang scheduling](#enable-native-gang-scheduling)
   - [Configure Kubernetes](#configure-kubernetes)
   - [Configure LeaderWorkerSet](#configure-leaderworkerset)
   - [Verify the prerequisites](#verify-the-prerequisites)
+{{% if-release %}}
 - [Install the latest development version](#install-the-latest-development-version)
-  - [Uninstall](#uninstall-1)
+{{% /if-release %}}
 - [Build and install from source](#build-and-install-from-source)
-  - [Uninstall](#uninstall-2)
 - [Install in a different namespace](#install-in-a-different-namespace)
 - [Optional: Use cert manager instead of internal cert](#optional-use-cert-manager-instead-of-internal-cert)
 - [Install with Helm chart](#install-with-helm-chart)
@@ -36,29 +40,39 @@ Make sure the following conditions are met:
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
 
-## Install a released version
-
 {{% if-main %}}
+<div id="install-a-released-version"></div>
+
+## Install the development version (main, bleeding edge) {#install-the-latest-development-version}
+
 {{% alert title="Development documentation" color="warning" %}}
-You are viewing the **development documentation (`main`)** for the next planned
-release **{{< params "version" >}}**. The release files and Helm chart used below
-may not be available yet.
+The commands below install **unreleased development builds from `main`** for
+testing. They may include changes that are not available in a release.
 
 For a released installation, use the
 [latest stable documentation](https://lws.sigs.k8s.io/stable/docs/installation/).
-To try unreleased changes now, [install the latest development version](#install-the-latest-development-version).
 {{% /alert %}}
 {{% /if-main %}}
+{{% if-release %}}
+## Install a released version
+{{% /if-release %}}
 
 ### Install by kubectl
 
 To install LeaderWorkerSet in your cluster, run the following command:
 
+{{% if-main %}}
+```shell
+kubectl apply --server-side -k 'github.com/kubernetes-sigs/lws/config/default?ref=main'
+```
+{{% /if-main %}}
+{{% if-release %}}
 
 ```shell
 VERSION={{< params "version" >}}
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
+{{% /if-release %}}
 
 To wait for LeaderWorkerSet to be fully available, run:
 
@@ -68,6 +82,28 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 
 ### Install by Helm
 
+{{% if-main %}}
+Development charts are published to the staging registry with a build-specific
+version. With [Helm](https://helm.sh/), `curl`, and `jq` installed, select the
+chart matching the published `main` image and install it:
+
+```shell
+CHART_VERSION=$(curl -fsSL \
+  https://us-central1-docker.pkg.dev/v2/k8s-staging-images/lws/lws/tags/list |
+  jq -er '.manifest[] | select((.tag // []) | index("main")) |
+    .tag[] | select(test("^v[0-9]{8}-g[0-9a-f]+$"))') &&
+helm install lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
+  --version="$CHART_VERSION" \
+  --namespace lws-system \
+  --create-namespace \
+  --wait --timeout 300s
+```
+
+The chart uses the controller image from the same build. If a new image has
+just been published and its chart is not available yet, retry after publishing
+finishes.
+{{% /if-main %}}
+{{% if-release %}}
 To install LWS in your cluster by [Helm](https://helm.sh/), run the following command:
 
 ```shell
@@ -88,6 +124,7 @@ helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSI
   --create-namespace \
   --wait --timeout 300s
 ```
+{{% /if-release %}}
 
 ### Upgrade by Helm
 
@@ -99,6 +136,22 @@ so CRD schema changes and newly added CRDs do not reach the cluster through
 
 Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
+{{% if-main %}}
+```shell
+CHART_VERSION=$(curl -fsSL \
+  https://us-central1-docker.pkg.dev/v2/k8s-staging-images/lws/lws/tags/list |
+  jq -er '.manifest[] | select((.tag // []) | index("main")) |
+    .tag[] | select(test("^v[0-9]{8}-g[0-9a-f]+$"))') &&
+helm pull oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
+  --version="$CHART_VERSION" --untar &&
+kubectl apply --server-side --force-conflicts -f lws/crds &&
+helm upgrade lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
+  --version="$CHART_VERSION" \
+  --namespace lws-system \
+  --wait --timeout 300s
+```
+{{% /if-main %}}
+{{% if-release %}}
 ```shell
 CHART_VERSION={{< chart-version >}}
 helm pull oci://registry.k8s.io/lws/charts/lws --version=$CHART_VERSION --untar
@@ -108,6 +161,7 @@ helm upgrade lws oci://registry.k8s.io/lws/charts/lws \
   --namespace lws-system \
   --wait --timeout 300s
 ```
+{{% /if-release %}}
 
 {{% alert title="Note" color="info" %}}
 `helm upgrade` does not update CRD schemas — Helm never modifies CRDs placed
@@ -141,10 +195,17 @@ Then follow the regular upgrade flow above (apply the CRDs, then
 
 To uninstall this version of LeaderWorkerSet from your cluster, run the following command:
 
+{{% if-main %}}
+```shell
+kubectl delete -k 'github.com/kubernetes-sigs/lws/config/default?ref=main'
+```
+{{% /if-main %}}
+{{% if-release %}}
 ```shell
 VERSION={{< params "version" >}}
 kubectl delete -f https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/manifests.yaml
 ```
+{{% /if-release %}}
 
 To uninstall LeaderWorkerSet from your cluster by Helm, run the following command:
 
@@ -232,24 +293,29 @@ Then follow the [native gang scheduling quickstart](../examples/leaderworkerset/
 > - When `gangSchedulingManagement.schedulerProvider` is set to `kubernetes`, `lws-controller-manager` indexes and watches `scheduling.k8s.io/v1beta1` `Workload` and `PodGroup` at startup and exits if those APIs are not served (for example, if `GenericWorkload` or the `scheduling.k8s.io/v1beta1` runtime config is disabled), even for `LeaderWorkerSet` objects that do not set `spec.scheduling`. Remove the `gangSchedulingManagement` block before disabling the upstream Kubernetes APIs.
 > - Disabling `featureGates.WorkloadAwareScheduling` or removing the `gangSchedulingManagement` block rejects new `LeaderWorkerSet` objects that request `spec.scheduling`, while keeping existing opted-in objects updateable so operators can scale them down (`spec.replicas: 0`) and delete them cleanly.
 
+{{% if-release %}}
 ## Install the latest development version
 
 To install the latest development version of LeaderWorkerSet in your cluster, run the
 following command:
 
 ```shell
-kubectl apply --server-side -k github.com/kubernetes-sigs/lws/config/default?ref=main
+kubectl apply --server-side -k 'github.com/kubernetes-sigs/lws/config/default?ref=main'
 ```
 
 The controller runs in the `lws-system` namespace.
+
+For development Helm builds, see the
+[development documentation](https://lws.sigs.k8s.io/main/docs/installation/#install-by-helm).
 
 ### Uninstall
 
 To uninstall LeaderWorkerSet, run the following command:
 
 ```shell
-kubectl delete -k github.com/kubernetes-sigs/lws/config/default
+kubectl delete -k 'github.com/kubernetes-sigs/lws/config/default?ref=main'
 ```
+{{% /if-release %}}
 
 ## Build and install from source
 
@@ -288,7 +354,7 @@ supports cert rotation), instead of internal cert, follow the [cert manage guide
 
 ## Install with Helm chart
 
-Please refer to the release page for [helm charts][helm_charts].
+See [Install by Helm](#install-by-helm) above.
 
 ## DisaggregatedSet
 
@@ -307,16 +373,7 @@ and user-facing ClusterRoles. The DisaggregatedSet controller and CRDs were alre
 Starting with **v1.1.0**, the option is removed and these resources are always
 installed, matching the standard manifests. No extra flag is needed.
 
-Install the [version documented on this page](#install-a-released-version) without the extra flag:
-
-```shell
-CHART_VERSION={{< chart-version >}}
-helm install lws oci://registry.k8s.io/lws/charts/lws \
-  --version=$CHART_VERSION \
-  --namespace lws-system \
-  --create-namespace \
-  --wait --timeout 300s
-```
+Follow the [Helm installation steps](#install-by-helm) above without the extra flag.
 
 In v1.1.0 and later, old `enableDisaggregatedSet` values are ignored, even with
 `--reuse-values`. If you previously set it to `false`, upgrading enables webhook
@@ -384,4 +441,3 @@ upgrading the chart. The **chart version you are upgrading to** determines the f
 [start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
 [max_unavailable]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods
 [max_unavailable_enhancement]: https://github.com/kubernetes/enhancements/issues/961
-[helm_charts]: https://github.com/kubernetes-sigs/lws/releases
