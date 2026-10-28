@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ import (
 	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -3208,6 +3210,162 @@ func TestSubRoleScalingWaitsUntilRequestedTargetsAreAccepted(t *testing.T) {
 	}
 }
 
+func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
+	type request struct {
+		at                 time.Duration
+		interactive, batch int32
+		physical           int
+	}
+	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
+		for _, tc := range []struct {
+			name     string
+			delay    *int32
+			initial  [2]int // Interactive and batch groups before any scaler writes.
+			requests []request
+		}{
+			{"opposite changes reuse existing groups by default", nil, [2]int{4, 8}, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"shrink before growth reuses existing groups by default", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"latest growth uses the original default deadline", nil, [2]int{4, 8}, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
+			{"shrink waits for the original default deadline", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {2*time.Second - time.Millisecond, 4, 6, 12}, {2 * time.Second, 4, 6, 10}}},
+			{"reversing direction keeps the original deadline", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {time.Second, 7, 6, 12}, {2 * time.Second, 7, 6, 13}}},
+			{"explicit zero disables the delay", ptr.To[int32](0), [2]int{4, 8}, []request{{0, 6, 8, 14}}},
+			{"explicit zero disables the shrink delay", ptr.To[int32](0), [2]int{4, 8}, []request{{0, 4, 6, 10}}},
+			{"custom delay overrides the default", ptr.To[int32](3), [2]int{4, 8}, []request{{0, 6, 8, 12}, {2 * time.Second, 6, 8, 12}, {3 * time.Second, 6, 8, 14}}},
+			{"scale to zero waits", nil, [2]int{4, 8}, []request{{0, 0, 0, 12}, {2 * time.Second, 0, 0, 0}}},
+			{"zero-sized child keeps its baseline while waiting", nil, [2]int{0, 4}, []request{{0, 2, 4, 4}, {2 * time.Second, 2, 4, 6}}},
+			{"initial population is not delayed", nil, [2]int{}, []request{{0, 2, 1, 3}}},
+		} {
+			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
+				children := append(slices.Repeat([]string{"batch"}, tc.initial[1]), slices.Repeat([]string{"interactive"}, tc.initial[0])...)
+				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
+				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+					{Name: "interactive", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+					{Name: "batch", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+				}}}
+				if tc.delay != nil {
+					f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{SubRoleScaleDelaySeconds: tc.delay}
+				}
+				clock := clocktesting.NewFakeClock(time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC))
+				f.manager.clock = clock
+				started := clock.Now()
+				delay := time.Duration(ptr.Deref(tc.delay, 2)) * time.Second
+				before := f.observe().Groups
+				floor, ceiling := len(children), len(children)
+				checkPhysicalWrite := func(object client.Object) {
+					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok {
+						require.GreaterOrEqual(t, int(getLWSReplicas(lws)), floor, "must not shrink below the permitted physical count")
+						require.LessOrEqual(t, int(getLWSReplicas(lws)), ceiling, "must not temporarily issue unwanted growth")
+					}
+				}
+				f.manager.client = interceptor.NewClient(f.manager.client.(client.WithWatch), interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+						checkPhysicalWrite(object)
+						return c.Patch(ctx, object, patch, options...)
+					},
+					Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+						checkPhysicalWrite(object)
+						return c.Update(ctx, object, options...)
+					},
+				})
+				scalerManager := NewScalerManager(f.manager.client, events.NewFakeRecorder(10))
+				initialCounts, err := subRoleCounts(f.lws, subRoleReplicasAnnotation)
+				require.NoError(t, err)
+				seed := func(role string) (int32, error) { return int32(initialCounts[strings.TrimPrefix(role, "model/")]), nil }
+				reconciler := &DisaggregatedSetReconciler{LWSManager: f.manager}
+				var expectedCounts map[string]int
+				for _, request := range tc.requests {
+					clock.SetTime(started.Add(request.at))
+					observed := f.observe()
+					baseline := observed.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey]
+					parentBaseline := observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
+					// Metadata/assignment writes may retain the old size until a permitted resize completes.
+					current := int(getLWSReplicas(observed.LWS))
+					floor, ceiling = min(current, request.physical), max(current, request.physical)
+					expectedCounts = map[string]int{"interactive": int(request.interactive), "batch": int(request.batch)}
+					scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+					require.NoError(t, err)
+					for child, replicas := range expectedCounts {
+						scaler := scalers["model/"+child]
+						scaler.Spec.Replicas = int32(replicas)
+						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
+					}
+					waiting := delay > 0 && len(children) > 0 && request.physical != int(request.interactive+request.batch)
+					for attempt := range 12 {
+						previous := observed
+						// Read both actual scaler objects again, just as top-level reconciliation does.
+						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
+						require.NoError(t, err)
+						desired := resolveDesiredReplicasByRole(f.ds, scalers)
+						result, err := reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, observed.LWS, &f.ds.Spec.Roles[0], "model", desired)
+						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
+						f.native()
+						observed = f.observe()
+						if waiting {
+							if err == nil {
+								require.Equal(t, started.Add(delay).Sub(clock.Now()), result.RequeueAfter)
+							}
+							require.Equal(t, baseline, observed.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey], "held targets must not become rollout history")
+							require.Equal(t, parentBaseline, observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+							require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
+							require.Equal(t, started.Add(delay),
+								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline")
+						} else {
+							require.Zero(t, result.RequeueAfter)
+						}
+						// With a frozen clock and synchronous clients, an unchanged full
+						// tick adds no work. Still run at least twice to check repeat calls.
+						if attempt > 0 && reflect.DeepEqual(previous, observed) {
+							require.NoError(t, err, "a settled request must finish or return its remaining delay")
+							break
+						}
+					}
+					require.EqualValues(t, request.physical, getLWSReplicas(observed.LWS), "at %s", request.at)
+					if waiting && tc.initial[0] == 0 {
+						old := f.revision("old")
+						readiness, err := f.manager.collectRolloutObservations(t.Context(), f.ds, disaggregatedsetutils.RevisionRolesList{old}, disaggregatedsetutils.RevisionRoles{}, nil)
+						require.NoError(t, err)
+						initial, state := observeOldRevision(old, []string{"model/interactive", "model/batch"}, readiness)
+						require.Equal(t, RoleReplicaState{0, tc.initial[1]}, initial)
+						require.Equal(t, []bool{false, true}, state.RequiredRoles)
+						require.Equal(t, tc.initial[1], state.readiness()[1].usable, "a held request must not hide the old revision's serving capacity")
+					}
+					if request.physical == int(request.interactive+request.batch) {
+						counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
+						require.NoError(t, err)
+						require.Equal(t, expectedCounts, counts, "accepted counts must match the latest request")
+						initial, err := subRoleCounts(observed.LWS, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+						require.NoError(t, err)
+						require.Equal(t, expectedCounts, initial)
+						require.Equal(t, strconv.Itoa(request.physical), observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
+						require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation])
+						actual := map[string]int{"interactive": 0, "batch": 0}
+						for _, group := range observed.Groups {
+							child, coherent := groupSubRole(group)
+							require.True(t, coherent)
+							require.NotContains(t, group.Leader.Annotations, subRoleOriginalDeletionCostAnnotation)
+							actual[child]++
+						}
+						require.Equal(t, expectedCounts, actual, "finish labels and Hash cleanup before the next request")
+					}
+				}
+				after := f.observe()
+				require.Empty(t, after.LWS.Annotations[subRolePlanAnnotation])
+				require.Empty(t, f.manager.scaleWindows)
+				if countSubRoles(expectedCounts) == len(before) {
+					require.Len(t, after.Groups, len(before))
+					for i, group := range after.Groups {
+						require.Len(t, group.Pods, len(before[i].Pods))
+						for j, pod := range group.Pods {
+							require.Equal(t, before[i].Pods[j].UID, pod.UID, "reuse every original leader and worker")
+						}
+						require.True(t, group.Ready)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestSubRoleBaselineRepairAndLiveMembership(t *testing.T) {
 	for _, parent := range []string{"bootstrap", "", "999"} {
 		t.Run(parent, func(t *testing.T) {
@@ -4694,9 +4852,10 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 					require.ErrorIs(t, f.scale(target), errReplicaGroupsPending)
 					plan, err := readSubRolePlan(f.observe().LWS)
 					require.NoError(t, err)
-					checkFloor := func() {
+					checkFloor := func() *replicagroups.Snapshot {
+						observed := f.observe()
 						ready := map[string]int{}
-						for _, group := range f.observe().Groups {
+						for _, group := range observed.Groups {
 							if child, coherent := groupSubRole(group); coherent && group.Ready {
 								ready[child]++
 							}
@@ -4704,6 +4863,7 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 						for child, floor := range plan.ReadyFloor {
 							require.GreaterOrEqual(t, ready[child], floor, "every Pod patch must preserve %s, even between worker writes", child)
 						}
+						return observed
 					}
 					base := f.manager.client
 					f.manager.client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
@@ -4719,16 +4879,23 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 							prefixReady++
 						}
 					}
+					observed := checkFloor()
 					for range 8 {
+						previous := observed
 						f.sync()
 						f.native()
-						checkFloor()
+						observed = checkFloor()
+						// All writes are synchronous; an unchanged full snapshot is
+						// either settled or safely blocked until readiness changes.
+						if reflect.DeepEqual(previous, observed) {
+							break
+						}
 					}
 					if prefixReady >= countSubRoles(plan.ReadyFloor) {
-						require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation])
-						require.Len(t, f.observe().Groups, countSubRoles(target))
+						require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation])
+						require.Len(t, observed.Groups, countSubRoles(target))
 					} else {
-						require.EqualValues(t, 4, getLWSReplicas(f.observe().LWS), "an unsafe suffix deletion must still wait")
+						require.EqualValues(t, 4, getLWSReplicas(observed.LWS), "an unsafe suffix deletion must still wait")
 					}
 				})
 			}
@@ -4933,4 +5100,62 @@ func subRoleParentRevision(parents []*subRoleFixture) disaggregatedsetutils.Revi
 	return disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 		"prefill": parents[0].observe().LWS, "decode": parents[1].observe().LWS,
 	}}
+}
+
+func TestCurrentRevisionKeepsEarliestSubRoleRequeue(t *testing.T) {
+	f := newSubRoleFixture(t, 0, "a", "b")
+	clock := clocktesting.NewFakeClock(time.Now())
+	f.manager.clock = clock
+	f.manager.scaleWindows = make(map[types.UID]subRoleScaleWindow)
+	f.ds.Spec.Roles = nil
+	current := &disaggregatedsetutils.RevisionRoles{Roles: make(map[string]*leaderworkersetv1.LeaderWorkerSet)}
+	desired := map[string]int{}
+	r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+	for _, tc := range []struct {
+		role      string
+		remaining time.Duration
+		fixture   *subRoleFixture
+	}{
+		{"model", 250 * time.Millisecond, f},
+		{"later", 3 * time.Second, f.withRevision("later", "a", "b")},
+		{"pending", 0, f.withRevision("pending", "a", "b")},
+	} {
+		config := disaggregatedsetv1.DisaggregatedRoleSpec{Name: tc.role, SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+			{Name: "a", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			{Name: "b", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+		}}
+		f.ds.Spec.Roles = append(f.ds.Spec.Roles, config)
+		desired[tc.role+"/a"], desired[tc.role+"/b"] = 2, 1
+		lws := tc.fixture.observe().LWS
+		lws.Labels[disaggregatedsetv1.RoleLabelKey] = tc.role
+		if tc.remaining > 0 {
+			f.manager.scaleWindows[lws.UID] = subRoleScaleWindow{replicas: 2, deadline: clock.Now().Add(tc.remaining)}
+		} else {
+			// A previously accepted transfer cannot finish until its groups are Ready.
+			setSubRoleJSON(lws, subRolePlanAnnotation, map[string]int{"a": 0, "b": 2})
+			leader := tc.fixture.observe().Groups[0].Leader
+			leader.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), leader))
+		}
+		require.NoError(t, f.manager.client.Update(t.Context(), lws))
+		current.Roles[tc.role] = lws
+		result, err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, lws, &config, "current", desired)
+		if tc.remaining > 0 {
+			require.NoError(t, err)
+			require.Equal(t, tc.remaining, result.RequeueAfter)
+		} else {
+			require.ErrorIs(t, err, errReplicaGroupsPending, "ordinary pending work contributes the one-second retry")
+		}
+	}
+	// Role configs are a map: neither a longer timer nor a pending sibling may
+	// overwrite the earliest deadline, regardless of traversal order.
+	for range 24 {
+		result, err := r.reconcileCurrentRevision(t.Context(), f.ds, 0, "current", current, desired)
+		require.NoError(t, err)
+		require.Equal(t, 250*time.Millisecond, result.RequeueAfter)
+	}
+	f.ds.Spec.Roles = f.ds.Spec.Roles[1:]
+	result, err := r.reconcileCurrentRevision(t.Context(), f.ds, 0, "current", current, desired)
+	require.NoError(t, err)
+	require.Equal(t, time.Second, result.RequeueAfter, "ordinary pending work retries before the longer timer")
 }

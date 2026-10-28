@@ -262,6 +262,16 @@ reductions during the rollout, preferring safe old-revision drains.
 Both policies allow scale-up and old-revision drains within rollout bounds.</p>
 </td>
 </tr>
+<tr><td><code>subRoleScaleDelaySeconds</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>SubRoleScaleDelaySeconds batches scale updates within a fixed window for LWS
+pools with multiple sub-roles and at least one External scaler. Defaults to 2
+seconds (range 0 to 60); zero disables it. Scaling from zero and rollouts bypass
+the delay. Controller restarts reset the window.</p>
+</td>
+</tr>
 </tbody>
 </table>
 

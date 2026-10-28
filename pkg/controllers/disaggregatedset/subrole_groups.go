@@ -24,6 +24,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -268,6 +269,7 @@ func (m *LeaderWorkerSetManager) labelSubRoleGroup(ctx context.Context, lws *lea
 type subRoleUpdate struct {
 	membership, target, initial map[string]int
 	rolloutStrategy             *leaderv1.RolloutStrategy
+	scaleDelay                  time.Duration // Only steady-state reconciliation delays scaling.
 }
 
 type subRoleState struct {
@@ -277,6 +279,7 @@ type subRoleState struct {
 	written                  bool // A conditional LWS write succeeded in this call.
 	plan                     *subRolePlan
 	rolloutStrategy          *leaderv1.RolloutStrategy
+	requeueAfter             time.Duration
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
@@ -319,6 +322,7 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 		}
 	}
 	if len(membership) == 0 {
+		m.delaySubRoleScale(lws, 0, 0)
 		state.pending = map[string]int{"": int(getLWSReplicas(lws))}
 		state.startSubRolePlan()
 		return state, m.saveSubRoles(ctx, state)
@@ -337,7 +341,11 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 			state.issued[child] = 0
 		}
 	}
-	if update.initial != nil {
+	var waitForScale time.Duration
+	if update.target != nil {
+		waitForScale = m.delaySubRoleScale(lws, countSubRoles(update.target), update.scaleDelay)
+	}
+	if update.initial != nil && waitForScale == 0 {
 		state.initial = update.initial
 	}
 	if err := m.saveSubRoles(ctx, state); err != nil {
@@ -353,6 +361,12 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 			target[name] = 0
 		}
 	}
+	// Coalesce before accepting a plan: an accepted transfer must finish even
+	// if newer scaler requests arrive. Keep their desired counts untouched.
+	if waitForScale > 0 {
+		state.requeueAfter = waitForScale
+		return state, nil
+	}
 	if decreasing {
 		state.pending = target
 		state.startSubRolePlan()
@@ -360,6 +374,56 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 		state.issued = target
 	}
 	return state, m.saveSubRoles(ctx, state)
+}
+
+type subRoleScaleWindow struct {
+	deadline time.Time
+	replicas int
+	parent   client.ObjectKey // Allows cleanup when the LWS or its parent disappears.
+}
+
+// Keep a fixed window in memory. A restart may add one extra delay, but later
+// scaler writes and failed resize attempts must not keep restarting the window.
+func (m *LeaderWorkerSetManager) delaySubRoleScale(lws *leaderv1.LeaderWorkerSet, target int, delay time.Duration) time.Duration {
+	m.scaleMu.Lock()
+	defer m.scaleMu.Unlock()
+	replicas := int(getLWSReplicas(lws))
+	if delay <= 0 || replicas == 0 || target == replicas {
+		delete(m.scaleWindows, lws.UID)
+		return 0
+	}
+	window, found := m.scaleWindows[lws.UID]
+	if !found || window.replicas != replicas {
+		window = subRoleScaleWindow{
+			deadline: m.clock.Now().Add(delay), replicas: replicas,
+			parent: client.ObjectKey{Namespace: lws.Namespace, Name: metav1.GetControllerOf(lws).Name},
+		}
+		if m.scaleWindows == nil {
+			m.scaleWindows = make(map[types.UID]subRoleScaleWindow)
+		}
+		m.scaleWindows[lws.UID] = window
+	}
+	// Retain expired windows through retries. Observing a changed physical count
+	// starts the next window, including when the previous write's reply was lost.
+	return max(0, window.deadline.Sub(m.clock.Now()))
+}
+
+// Use the already-observed children to discard windows for deleted workloads.
+// A nil list forgets the deleted parent without affecting other DisaggregatedSets.
+func (m *LeaderWorkerSetManager) pruneSubRoleScaleWindows(parent client.ObjectKey, workloads []*leaderv1.LeaderWorkerSet) {
+	live := make(map[types.UID]bool, len(workloads))
+	for _, lws := range workloads {
+		if lws.DeletionTimestamp.IsZero() {
+			live[lws.UID] = true
+		}
+	}
+	m.scaleMu.Lock()
+	defer m.scaleMu.Unlock()
+	for uid, window := range m.scaleWindows {
+		if window.parent == parent && !live[uid] {
+			delete(m.scaleWindows, uid)
+		}
+	}
 }
 
 func (state *subRoleState) startSubRolePlan() {

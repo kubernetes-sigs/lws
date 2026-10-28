@@ -145,6 +145,16 @@ type DisaggregatedSetScalingPolicy struct {
 	// +optional
 	// +kubebuilder:default=Deferred
 	ScaleDownDuringRollout RolloutScaleDownPolicy `json:"scaleDownDuringRollout,omitempty"`
+
+	// SubRoleScaleDelaySeconds batches scale updates within a fixed window for LWS
+	// pools with multiple sub-roles and at least one External scaler. Defaults to 2
+	// seconds (range 0 to 60); zero disables it. Scaling from zero and rollouts bypass
+	// the delay. Controller restarts reset the window.
+	// +optional
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=60
+	SubRoleScaleDelaySeconds *int32 `json:"subRoleScaleDelaySeconds,omitempty"`
 }
 
 // DisaggregatedSubRoleSpec defines a scaling and routing pool sharing its parent's templates.

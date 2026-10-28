@@ -19617,6 +19617,17 @@ spec:
                     - Deferred
                     - Immediate
                     type: string
+                  subRoleScaleDelaySeconds:
+                    default: 2
+                    description: |-
+                      SubRoleScaleDelaySeconds batches scale updates within a fixed window for LWS
+                      pools with multiple sub-roles and at least one External scaler. Defaults to 2
+                      seconds (range 0 to 60); zero disables it. Scaling from zero and rollouts bypass
+                      the delay. Controller restarts reset the window.
+                    format: int32
+                    maximum: 60
+                    minimum: 0
+                    type: integer
                 type: object
               slices:
                 default: 1
