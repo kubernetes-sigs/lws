@@ -340,12 +340,12 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 			state.issued[child] = 0
 		}
 	}
-	if update.initial != nil {
-		state.initial = update.initial
-	}
 	waitForScale := false
 	if update.target != nil {
 		waitForScale = m.delaySubRoleScale(lws, countSubRoles(update.target), update.scaleDelay)
+	}
+	if update.initial != nil && !waitForScale {
+		state.initial = update.initial
 	}
 	if err := m.saveSubRoles(ctx, state); err != nil {
 		return state, err // Observe metadata publication before assignment or planning.

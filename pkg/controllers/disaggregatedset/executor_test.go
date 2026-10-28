@@ -3218,27 +3218,25 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 	}
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		for _, tc := range []struct {
-			name      string
-			delay     *int32
-			bootstrap bool
-			requests  []request
+			name     string
+			delay    *int32
+			initial  [2]int // Interactive and batch groups before any scaler writes.
+			requests []request
 		}{
-			{"opposite changes reuse existing groups by default", nil, false, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
-			{"shrink before growth reuses existing groups by default", nil, false, []request{{0, 4, 6, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
-			{"latest growth uses the original default deadline", nil, false, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
-			{"shrink waits for the original default deadline", nil, false, []request{{0, 4, 6, 12}, {2*time.Second - time.Millisecond, 4, 6, 12}, {2 * time.Second, 4, 6, 10}}},
-			{"reversing direction keeps the original deadline", nil, false, []request{{0, 4, 6, 12}, {time.Second, 7, 6, 12}, {2 * time.Second, 7, 6, 13}}},
-			{"explicit zero disables the delay", ptr.To[int32](0), false, []request{{0, 6, 8, 14}}},
-			{"explicit zero disables the shrink delay", ptr.To[int32](0), false, []request{{0, 4, 6, 10}}},
-			{"custom delay overrides the default", ptr.To[int32](3), false, []request{{0, 6, 8, 12}, {2 * time.Second, 6, 8, 12}, {3 * time.Second, 6, 8, 14}}},
-			{"scale to zero waits", nil, false, []request{{0, 0, 0, 12}, {2 * time.Second, 0, 0, 0}}},
-			{"initial population is not delayed", nil, true, []request{{0, 2, 1, 3}}},
+			{"opposite changes reuse existing groups by default", nil, [2]int{4, 8}, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"shrink before growth reuses existing groups by default", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"latest growth uses the original default deadline", nil, [2]int{4, 8}, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
+			{"shrink waits for the original default deadline", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {2*time.Second - time.Millisecond, 4, 6, 12}, {2 * time.Second, 4, 6, 10}}},
+			{"reversing direction keeps the original deadline", nil, [2]int{4, 8}, []request{{0, 4, 6, 12}, {time.Second, 7, 6, 12}, {2 * time.Second, 7, 6, 13}}},
+			{"explicit zero disables the delay", ptr.To[int32](0), [2]int{4, 8}, []request{{0, 6, 8, 14}}},
+			{"explicit zero disables the shrink delay", ptr.To[int32](0), [2]int{4, 8}, []request{{0, 4, 6, 10}}},
+			{"custom delay overrides the default", ptr.To[int32](3), [2]int{4, 8}, []request{{0, 6, 8, 12}, {2 * time.Second, 6, 8, 12}, {3 * time.Second, 6, 8, 14}}},
+			{"scale to zero waits", nil, [2]int{4, 8}, []request{{0, 0, 0, 12}, {2 * time.Second, 0, 0, 0}}},
+			{"zero-sized child keeps its baseline while waiting", nil, [2]int{0, 4}, []request{{0, 2, 4, 4}, {2 * time.Second, 2, 4, 6}}},
+			{"initial population is not delayed", nil, [2]int{}, []request{{0, 2, 1, 3}}},
 		} {
 			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
-				var children []string
-				if !tc.bootstrap {
-					children = append(slices.Repeat([]string{"batch"}, 8), slices.Repeat([]string{"interactive"}, 4)...)
-				}
+				children := append(slices.Repeat([]string{"batch"}, tc.initial[1]), slices.Repeat([]string{"interactive"}, tc.initial[0])...)
 				f := newSubRoleFixtureForIdentity(t, identity, 0, children...)
 				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
 					{Name: "interactive", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
@@ -3278,6 +3276,8 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 				for _, request := range tc.requests {
 					clock.SetTime(started.Add(request.at))
 					observed := f.observe()
+					baseline := observed.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey]
+					parentBaseline := observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey]
 					// Metadata/assignment writes may retain the old size until a permitted resize completes.
 					current := int(getLWSReplicas(observed.LWS))
 					floor, ceiling = min(current, request.physical), max(current, request.physical)
@@ -3289,7 +3289,7 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						scaler.Spec.Replicas = int32(replicas)
 						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
 					}
-					waiting := delay > 0 && !tc.bootstrap && request.physical != int(request.interactive+request.batch)
+					waiting := delay > 0 && len(children) > 0 && request.physical != int(request.interactive+request.batch)
 					for attempt := range 12 {
 						previous := observed
 						// Read both actual scaler objects again, just as top-level reconciliation does.
@@ -3302,9 +3302,11 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						observed = f.observe()
 						if waiting {
 							require.ErrorIs(t, err, errReplicaGroupsPending)
+							require.Equal(t, baseline, observed.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey], "held targets must not become rollout history")
+							require.Equal(t, parentBaseline, observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
 							require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
 							require.Equal(t, started.Add(delay),
-								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline, even while updating the baseline")
+								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline")
 						}
 						// With a frozen clock and synchronous clients, an unchanged full
 						// tick adds no work. Still run at least twice to check repeat calls.
@@ -3316,10 +3318,23 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						}
 					}
 					require.EqualValues(t, request.physical, getLWSReplicas(observed.LWS), "at %s", request.at)
+					if waiting && tc.initial[0] == 0 {
+						old := f.revision("old")
+						readiness, err := f.manager.collectRolloutObservations(t.Context(), f.ds, disaggregatedsetutils.RevisionRolesList{old}, disaggregatedsetutils.RevisionRoles{}, nil)
+						require.NoError(t, err)
+						initial, state := observeOldRevision(old, []string{"model/interactive", "model/batch"}, readiness)
+						require.Equal(t, RoleReplicaState{0, tc.initial[1]}, initial)
+						require.Equal(t, []bool{false, true}, state.RequiredRoles)
+						require.Equal(t, tc.initial[1], state.readiness()[1].usable, "a held request must not hide the old revision's serving capacity")
+					}
 					if request.physical == int(request.interactive+request.batch) {
 						counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
 						require.NoError(t, err)
 						require.Equal(t, expectedCounts, counts, "accepted counts must match the latest request")
+						initial, err := subRoleCounts(observed.LWS, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+						require.NoError(t, err)
+						require.Equal(t, expectedCounts, initial)
+						require.Equal(t, strconv.Itoa(request.physical), observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
 						require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation])
 						actual := map[string]int{"interactive": 0, "batch": 0}
 						for _, group := range observed.Groups {
