@@ -128,7 +128,31 @@ func furthestNewTargets(snapshot rolloutSnapshot, phase, limits RoleReplicaState
 	for i := range targets {
 		targets[i] = min(phase[i], limits[i])
 	}
-	return boundGrowingRoleTargetsToWindow(snapshot.Target.SpecReplicas, phase, targets)
+	return boundGrowingSnapshotTargets(snapshot, phase, targets)
+}
+
+// Immediate scale-up fills requested capacity, not a readiness shortfall. Count
+// all observed old Spec, including loading groups; a proposed drain frees no room.
+func (snapshot rolloutSnapshot) immediateScaleUpTarget(role int) int {
+	if !snapshot.ScaleUpDuringRollout {
+		return 0
+	}
+	// A renamed role replaces differently named capacity. Do not mistake its
+	// missing same-role history for a request to create its entire fleet at once.
+	if snapshot.AvailabilityBaseline[role] == 0 && slices.ContainsFunc(snapshot.old.disjointSpec, func(n int) bool { return n > 0 }) {
+		return 0
+	}
+	return max(0, snapshot.Target.DesiredReplicas[role]-snapshot.old.spec[role])
+}
+
+func boundGrowingSnapshotTargets(snapshot rolloutSnapshot, phase, proposed RoleReplicaState) RoleReplicaState {
+	bounded := boundGrowingRoleTargetsToWindow(snapshot.Target.SpecReplicas, phase, proposed)
+	for i := range bounded {
+		// Only the missing requested capacity may bypass rollout pacing. Growth
+		// above it still follows the ordinary fractional window and hard limits.
+		bounded[i] = max(bounded[i], min(proposed[i], snapshot.immediateScaleUpTarget(i)))
+	}
+	return bounded
 }
 
 // Intersect surge, pending-readiness and renamed-role replacement limits.
@@ -144,6 +168,7 @@ func hardNewReplicaLimits(snapshot rolloutSnapshot) RoleReplicaState {
 	}
 	for i := range limits {
 		limit, credit := snapshot.pendingGrowthLimit(i, progress, steps, disjoint)
+		limit = max(limit, snapshot.immediateScaleUpTarget(i))
 		if released != nil {
 			replacement := released[i]
 			if hasTarget && progress.leastAdvancedReplicas > 0 {

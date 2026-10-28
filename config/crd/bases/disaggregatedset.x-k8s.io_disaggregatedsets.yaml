@@ -19603,8 +19603,9 @@ spec:
                 x-kubernetes-list-type: map
               scalingPolicy:
                 description: |-
-                  ScalingPolicy controls scale-down during rolling updates. Omit it to
-                  preserve the default Deferred behavior.
+                  ScalingPolicy controls scale-up and scale-down during rolling updates.
+                  Omit it to use Deferred for both directions: readiness-paced growth and
+                  target reductions after old revisions drain.
                 properties:
                   scaleDownDuringRollout:
                     default: Deferred
@@ -19613,6 +19614,30 @@ spec:
                       Deferred waits until old revisions finish draining. Immediate considers
                       reductions during the rollout, preferring safe old-revision drains.
                       Both policies allow scale-up and old-revision drains within rollout bounds.
+                      Deferred uses max(initial old replicas, effective desired) + maxSurge as
+                      the surge ceiling. External roles retain at least the target's current Spec
+                      as effective desired while old replicas of that role remain.
+                      Immediate uses desired + maxSurge as the surge ceiling and may shrink
+                      target replicas when old revisions must remain. Under both policies,
+                      reductions of roles still present preserve max(0, effective desired -
+                      maxUnavailable) Ready replicas, or avoid worsening an existing shortfall.
+                      Renamed-role surplus recovery uses the same availability and scheduled-startup
+                      protection as other target reductions. These safeguards may delay
+                      reductions: Immediate does not mean instant deletion.
+                    enum:
+                    - Deferred
+                    - Immediate
+                    type: string
+                  scaleUpDuringRollout:
+                    default: Deferred
+                    description: |-
+                      ScaleUpDuringRollout controls target growth while old revisions remain.
+                      Deferred preserves readiness-paced growth, without waiting for the entire
+                      rollout to finish. Immediate also tops up target replicas to desired minus
+                      replicas requested from all old revisions of the same role. Loading groups
+                      count, so readiness loss alone does not trigger extra growth.
+                      Old-revision retirement checks are unchanged.
+                      Renamed-role replacement limits still apply.
                     enum:
                     - Deferred
                     - Immediate

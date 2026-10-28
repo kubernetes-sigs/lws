@@ -51,6 +51,7 @@ type Config struct {
 	Name                   string
 	Namespace              string
 	Roles                  []Role
+	RolloutScaleUpPolicy   string
 	RolloutScaleDownPolicy string
 	// PlacementType, when non-empty, adds a spec.placementPolicy block
 	// (None | ExclusiveSlice | ExclusiveTopology). PlacementTopology is the
@@ -83,8 +84,14 @@ spec:
 		}
 	}
 
-	if c.RolloutScaleDownPolicy != "" {
-		sb.WriteString(fmt.Sprintf("  scalingPolicy:\n    scaleDownDuringRollout: %s\n", c.RolloutScaleDownPolicy))
+	if c.RolloutScaleUpPolicy != "" || c.RolloutScaleDownPolicy != "" {
+		sb.WriteString("  scalingPolicy:\n")
+		if c.RolloutScaleUpPolicy != "" {
+			sb.WriteString(fmt.Sprintf("    scaleUpDuringRollout: %s\n", c.RolloutScaleUpPolicy))
+		}
+		if c.RolloutScaleDownPolicy != "" {
+			sb.WriteString(fmt.Sprintf("    scaleDownDuringRollout: %s\n", c.RolloutScaleDownPolicy))
+		}
 	}
 	sb.WriteString("  roles:\n")
 	for _, p := range c.Roles {

@@ -30,25 +30,57 @@ import (
 )
 
 var _ = Describe("Scaling During a Rolling Update", func() {
-	DescribeTable("pipelines target changes before the previous batch is Ready", func(identity string) {
-		name := "moving-target-" + strings.ToLower(identity)
+	DescribeTable("applies scale-up and scale-down policies independently before the previous batch is Ready", func(identity, up, down string) {
+		// Leave room for generated LWS/Pod suffixes within the DNS name limit.
+		name := "moving-target-" + strings.ToLower(identity+"-"+up[:1]+down[:1])
 		DeferCleanup(kubectl.CleanupDeployment, name)
 		manifest := func(replicas int, updated bool) string {
+			version := "source"
+			if updated {
+				version = "target"
+			}
 			role := fixtures.Role{Replicas: replicas, GroupIdentity: identity,
 				HasRollout: true, MaxSurge: intstr.FromString("25%"), MaxUnavailable: intstr.FromString("25%"),
-				HoldReadiness: updated}
-			if updated {
-				role.Labels = map[string]string{"scaling-test-version": "target"}
-			}
+				HoldReadiness: true, Labels: map[string]string{"scaling-test-version": version}}
 			config := fixtures.PrefillDecode(name, role, role)
-			config.RolloutScaleDownPolicy = "Immediate"
+			config.RolloutScaleUpPolicy, config.RolloutScaleDownPolicy = up, down
 			return config.YAML()
+		}
+		setReadiness := func(version string, ready bool) error {
+			for _, role := range []string{"prefill", "decode"} {
+				pods, err := kubectl.Get("pods").Label("disaggregatedset.x-k8s.io/name", name).
+					Label("scaling-test-version", version).Label("disaggregatedset.x-k8s.io/role", role).
+					FieldSelector("status.phase=Running").Output("name").RunQuiet()
+				if err != nil {
+					return err
+				}
+				for _, pod := range strings.Fields(pods) {
+					command := []string{"touch", "/tmp/ready"}
+					if !ready {
+						command = []string{"rm", "-f", "/tmp/ready"}
+					}
+					// A terminating group may disappear between list and exec. The
+					// caller retries until observed readiness reaches its goal.
+					_, _ = utils.Run(exec.Command("kubectl", append([]string{"exec", pod, "--"}, command...)...))
+					if !ready {
+						break // Lose one group's readiness, preserving a healthy old revision.
+					}
+				}
+			}
+			return nil
 		}
 		By("stabilizing the source revision")
 		Expect(applyYAML(manifest(8, false))).To(Succeed())
 		kubectl.ForRunningPodCountWithTimeout(name, 16, 3*time.Minute)
 		oldRevision, err := kubectl.GetRevision(name)
 		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			g.Expect(setReadiness("source", true)).To(Succeed())
+			obs, err := getCurrentRolloutObservation(name, oldRevision)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(obs.OldReadyPrefill).To(Equal(8))
+			g.Expect(obs.OldReadyDecode).To(Equal(8))
+		}, 3*time.Minute, time.Second).Should(Succeed())
 
 		By("holding every target Pod unready, independently of wall-clock timing")
 		Expect(applyYAML(manifest(8, true))).To(Succeed())
@@ -57,6 +89,8 @@ var _ = Describe("Scaling During a Rolling Update", func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(obs.Spec.NewPrefill).To(Equal(4)) // The full pending allowance, not a transient first batch.
 			g.Expect(obs.Spec.NewDecode).To(Equal(4))
+			g.Expect(obs.Spec.OldPrefill).To(Equal(6))
+			g.Expect(obs.Spec.OldDecode).To(Equal(6))
 			g.Expect(obs.NewReadyPrefill + obs.NewReadyDecode).To(BeZero())
 		}, 3*time.Minute, time.Second).Should(Succeed())
 		targetRevisions := func() (string, error) {
@@ -68,47 +102,84 @@ var _ = Describe("Scaling During a Rolling Update", func() {
 		Expect(strings.Fields(targetRevision)).To(HaveLen(2))
 		Expect(strings.Fields(targetRevision)[0]).To(Equal(strings.Fields(targetRevision)[1]))
 
-		By("raising the target and issuing more groups while all four previous groups remain unready")
-		Expect(applyYAML(manifest(12, true))).To(Succeed())
+		By("raising desired 8 to 16: Deferred allows 8 pending groups; Immediate fills the 10 missing requests")
+		Expect(applyYAML(manifest(16, true))).To(Succeed())
+		raisedTarget := 8 // maxSurge + maxUnavailable = 4 + 4, with no Ready target groups.
+		if up == "Immediate" {
+			raisedTarget = 10 // desired - old Spec = 16 - 6, still below desired + surge.
+		}
 		var raised rolloutObservation
 		Eventually(func(g Gomega) {
 			raised, err = getCurrentRolloutObservation(name, oldRevision)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(raised.Spec.NewPrefill).To(Equal(6))
-			g.Expect(raised.Spec.NewDecode).To(Equal(6))
+			g.Expect(raised.Spec).To(Equal(rolloutState{OldPrefill: 6, OldDecode: 6, NewPrefill: raisedTarget, NewDecode: raisedTarget}))
+			g.Expect(raised.OldReadyPrefill).To(Equal(6))
+			g.Expect(raised.OldReadyDecode).To(Equal(6))
 			g.Expect(raised.NewReadyPrefill + raised.NewReadyDecode).To(BeZero())
-			g.Expect(raised.Spec.OldPrefill).To(BeNumerically(">", 0))
 		}, 3*time.Minute, time.Second).Should(Succeed())
+		// The later scale-down checks protect scheduled startup work, not
+		// wholly unscheduled groups that may safely be cancelled further.
+		kubectl.ForRunningPodCountWithTimeout(name, 2*(6+raisedTarget), 3*time.Minute)
 		sameRevision, err := targetRevisions()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sameRevision).To(Equal(targetRevision), "replica edits must not create another revision")
 
+		By("losing old readiness without changing requested replicas: neither policy issues additional groups")
+		Eventually(func(g Gomega) {
+			g.Expect(setReadiness("source", false)).To(Succeed())
+			obs, err := getCurrentRolloutObservation(name, oldRevision)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(obs.OldReadyPrefill).To(Equal(5))
+			g.Expect(obs.OldReadyDecode).To(Equal(5))
+		}, time.Minute, time.Second).Should(Succeed())
+		Consistently(func(g Gomega) {
+			obs, err := getCurrentRolloutObservation(name, oldRevision)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(obs.Spec).To(Equal(raised.Spec))
+		}, 10*time.Second, time.Second).Should(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(setReadiness("source", true)).To(Succeed())
+			obs, err := getCurrentRolloutObservation(name, oldRevision)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(obs.OldReadyPrefill).To(Equal(6))
+			g.Expect(obs.OldReadyDecode).To(Equal(6))
+		}, time.Minute, time.Second).Should(Succeed())
+
 		By("lowering the target while the rollout is still held, draining old capacity first")
 		Expect(applyYAML(manifest(5, true))).To(Succeed())
+		retainedTarget := raisedTarget
+		if down == "Immediate" {
+			retainedTarget = 5
+		}
 		Eventually(func(g Gomega) {
 			obs, err := getCurrentRolloutObservation(name, oldRevision)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(obs.Spec.OldPrefill).To(BeNumerically("<", raised.Spec.OldPrefill))
-			g.Expect(obs.Spec.OldPrefill).To(BeNumerically(">", 0))
+			g.Expect(obs.Spec).To(Equal(rolloutState{OldPrefill: 4, OldDecode: 4, NewPrefill: retainedTarget, NewDecode: retainedTarget}))
 			g.Expect(obs.NewReadyPrefill + obs.NewReadyDecode).To(BeZero())
-			g.Expect(obs.OldReadyPrefill).To(BeNumerically(">=", 4)) // floor(25% of 5)=1 unavailable.
+			g.Expect(obs.OldReadyPrefill).To(Equal(4)) // floor(25% of 5)=1 unavailable.
+			g.Expect(obs.OldReadyDecode).To(Equal(4))
 		}, 3*time.Minute, time.Second).Should(Succeed())
+		sameRevision, err = targetRevisions()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sameRevision).To(Equal(targetRevision), "scale-down must keep the same target revision too")
 
 		By("releasing readiness, including later batches, and reaching the exact latest target")
 		Eventually(func(g Gomega) {
-			pods, err := kubectl.Get("pods").Label("disaggregatedset.x-k8s.io/name", name).
-				Label("scaling-test-version", "target").FieldSelector("status.phase=Running").Output("name").RunQuiet()
-			g.Expect(err).NotTo(HaveOccurred())
-			for _, pod := range strings.Fields(pods) {
-				// A terminating group may disappear between list and exec. Retrying
-				// the final state handles that race without changing the template.
-				_, _ = utils.Run(exec.Command("kubectl", "exec", pod, "--", "touch", "/tmp/ready"))
-			}
+			g.Expect(setReadiness("target", true)).To(Succeed())
 			obs, err := getCurrentRolloutObservation(name, oldRevision)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(obs.Spec).To(Equal(rolloutState{NewPrefill: 5, NewDecode: 5}))
 			g.Expect(obs.NewReadyPrefill).To(Equal(5))
 			g.Expect(obs.NewReadyDecode).To(Equal(5))
 		}, 5*time.Minute, time.Second).Should(Succeed())
-	}, Entry("Ordinal", "Ordinal"), Entry("Hash", "Hash"))
+	},
+		Entry("Ordinal / up Deferred / down Deferred", "Ordinal", "Deferred", "Deferred"),
+		Entry("Ordinal / up Deferred / down Immediate", "Ordinal", "Deferred", "Immediate"),
+		Entry("Ordinal / up Immediate / down Deferred", "Ordinal", "Immediate", "Deferred"),
+		Entry("Ordinal / up Immediate / down Immediate", "Ordinal", "Immediate", "Immediate"),
+		Entry("Hash / up Deferred / down Deferred", "Hash", "Deferred", "Deferred"),
+		Entry("Hash / up Deferred / down Immediate", "Hash", "Deferred", "Immediate"),
+		Entry("Hash / up Immediate / down Deferred", "Hash", "Immediate", "Deferred"),
+		Entry("Hash / up Immediate / down Immediate", "Hash", "Immediate", "Immediate"),
+	)
 })
