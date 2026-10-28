@@ -3296,24 +3296,26 @@ func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
 						require.NoError(t, err)
 						desired := resolveDesiredReplicasByRole(f.ds, scalers)
-						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, observed.LWS, &f.ds.Spec.Roles[0], "model", desired)
+						result, err := reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, observed.LWS, &f.ds.Spec.Roles[0], "model", desired)
 						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 						f.native()
 						observed = f.observe()
 						if waiting {
-							require.ErrorIs(t, err, errReplicaGroupsPending)
+							if err == nil {
+								require.Equal(t, started.Add(delay).Sub(clock.Now()), result.RequeueAfter)
+							}
 							require.Equal(t, baseline, observed.LWS.Annotations[disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey], "held targets must not become rollout history")
 							require.Equal(t, parentBaseline, observed.LWS.Annotations[disaggregatedsetv1.InitialReplicasAnnotationKey])
 							require.Empty(t, observed.LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
 							require.Equal(t, started.Add(delay),
 								f.manager.scaleWindows[f.lws.UID].deadline, "keep the original deadline")
+						} else {
+							require.Zero(t, result.RequeueAfter)
 						}
 						// With a frozen clock and synchronous clients, an unchanged full
 						// tick adds no work. Still run at least twice to check repeat calls.
 						if attempt > 0 && reflect.DeepEqual(previous, observed) {
-							if !waiting {
-								require.NoError(t, err, "an accepted request must finish, not stall")
-							}
+							require.NoError(t, err, "a settled request must finish or return its remaining delay")
 							break
 						}
 					}
@@ -5098,4 +5100,62 @@ func subRoleParentRevision(parents []*subRoleFixture) disaggregatedsetutils.Revi
 	return disaggregatedsetutils.RevisionRoles{Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
 		"prefill": parents[0].observe().LWS, "decode": parents[1].observe().LWS,
 	}}
+}
+
+func TestCurrentRevisionKeepsEarliestSubRoleRequeue(t *testing.T) {
+	f := newSubRoleFixture(t, 0, "a", "b")
+	clock := clocktesting.NewFakeClock(time.Now())
+	f.manager.clock = clock
+	f.manager.scaleWindows = make(map[types.UID]subRoleScaleWindow)
+	f.ds.Spec.Roles = nil
+	current := &disaggregatedsetutils.RevisionRoles{Roles: make(map[string]*leaderworkersetv1.LeaderWorkerSet)}
+	desired := map[string]int{}
+	r := &DisaggregatedSetReconciler{LWSManager: f.manager}
+	for _, tc := range []struct {
+		role      string
+		remaining time.Duration
+		fixture   *subRoleFixture
+	}{
+		{"model", 250 * time.Millisecond, f},
+		{"later", 3 * time.Second, f.withRevision("later", "a", "b")},
+		{"pending", 0, f.withRevision("pending", "a", "b")},
+	} {
+		config := disaggregatedsetv1.DisaggregatedRoleSpec{Name: tc.role, SubRoles: []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+			{Name: "a", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+			{Name: "b", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
+		}}
+		f.ds.Spec.Roles = append(f.ds.Spec.Roles, config)
+		desired[tc.role+"/a"], desired[tc.role+"/b"] = 2, 1
+		lws := tc.fixture.observe().LWS
+		lws.Labels[disaggregatedsetv1.RoleLabelKey] = tc.role
+		if tc.remaining > 0 {
+			f.manager.scaleWindows[lws.UID] = subRoleScaleWindow{replicas: 2, deadline: clock.Now().Add(tc.remaining)}
+		} else {
+			// A previously accepted transfer cannot finish until its groups are Ready.
+			setSubRoleJSON(lws, subRolePlanAnnotation, map[string]int{"a": 0, "b": 2})
+			leader := tc.fixture.observe().Groups[0].Leader
+			leader.Status.Conditions = nil
+			require.NoError(t, f.manager.client.Status().Update(t.Context(), leader))
+		}
+		require.NoError(t, f.manager.client.Update(t.Context(), lws))
+		current.Roles[tc.role] = lws
+		result, err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, lws, &config, "current", desired)
+		if tc.remaining > 0 {
+			require.NoError(t, err)
+			require.Equal(t, tc.remaining, result.RequeueAfter)
+		} else {
+			require.ErrorIs(t, err, errReplicaGroupsPending, "ordinary pending work contributes the one-second retry")
+		}
+	}
+	// Role configs are a map: neither a longer timer nor a pending sibling may
+	// overwrite the earliest deadline, regardless of traversal order.
+	for range 24 {
+		result, err := r.reconcileCurrentRevision(t.Context(), f.ds, 0, "current", current, desired)
+		require.NoError(t, err)
+		require.Equal(t, 250*time.Millisecond, result.RequeueAfter)
+	}
+	f.ds.Spec.Roles = f.ds.Spec.Roles[1:]
+	result, err := r.reconcileCurrentRevision(t.Context(), f.ds, 0, "current", current, desired)
+	require.NoError(t, err)
+	require.Equal(t, time.Second, result.RequeueAfter, "ordinary pending work retries before the longer timer")
 }

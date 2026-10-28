@@ -279,6 +279,7 @@ type subRoleState struct {
 	written                  bool // A conditional LWS write succeeded in this call.
 	plan                     *subRolePlan
 	rolloutStrategy          *leaderv1.RolloutStrategy
+	requeueAfter             time.Duration
 }
 
 func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.DisaggregatedSet, lws *leaderv1.LeaderWorkerSet, update subRoleUpdate) (*subRoleState, error) {
@@ -340,11 +341,11 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 			state.issued[child] = 0
 		}
 	}
-	waitForScale := false
+	var waitForScale time.Duration
 	if update.target != nil {
 		waitForScale = m.delaySubRoleScale(lws, countSubRoles(update.target), update.scaleDelay)
 	}
-	if update.initial != nil && !waitForScale {
+	if update.initial != nil && waitForScale == 0 {
 		state.initial = update.initial
 	}
 	if err := m.saveSubRoles(ctx, state); err != nil {
@@ -362,8 +363,9 @@ func (m *LeaderWorkerSetManager) syncSubRoles(ctx context.Context, ds *disaggv1.
 	}
 	// Coalesce before accepting a plan: an accepted transfer must finish even
 	// if newer scaler requests arrive. Keep their desired counts untouched.
-	if waitForScale {
-		return state, errReplicaGroupsPending
+	if waitForScale > 0 {
+		state.requeueAfter = waitForScale
+		return state, nil
 	}
 	if decreasing {
 		state.pending = target
@@ -382,13 +384,13 @@ type subRoleScaleWindow struct {
 
 // Keep a fixed window in memory. A restart may add one extra delay, but later
 // scaler writes and failed resize attempts must not keep restarting the window.
-func (m *LeaderWorkerSetManager) delaySubRoleScale(lws *leaderv1.LeaderWorkerSet, target int, delay time.Duration) bool {
+func (m *LeaderWorkerSetManager) delaySubRoleScale(lws *leaderv1.LeaderWorkerSet, target int, delay time.Duration) time.Duration {
 	m.scaleMu.Lock()
 	defer m.scaleMu.Unlock()
 	replicas := int(getLWSReplicas(lws))
 	if delay <= 0 || replicas == 0 || target == replicas {
 		delete(m.scaleWindows, lws.UID)
-		return false
+		return 0
 	}
 	window, found := m.scaleWindows[lws.UID]
 	if !found || window.replicas != replicas {
@@ -403,7 +405,7 @@ func (m *LeaderWorkerSetManager) delaySubRoleScale(lws *leaderv1.LeaderWorkerSet
 	}
 	// Retain expired windows through retries. Observing a changed physical count
 	// starts the next window, including when the previous write's reply was lost.
-	return m.clock.Now().Before(window.deadline)
+	return max(0, window.deadline.Sub(m.clock.Now()))
 }
 
 // Use the already-observed children to discard windows for deleted workloads.

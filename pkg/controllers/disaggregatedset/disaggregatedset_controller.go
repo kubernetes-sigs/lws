@@ -435,7 +435,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	return result, nil
 }
 
-// earliestRequeue keeps the soonest non-zero RequeueAfter across slices.
+// earliestRequeue keeps the soonest non-zero RequeueAfter across roles and slices.
 func earliestRequeue(a, b ctrl.Result) ctrl.Result {
 	if b.RequeueAfter > 0 && (a.RequeueAfter == 0 || b.RequeueAfter < a.RequeueAfter) {
 		return b
@@ -499,19 +499,20 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevision(ctx context.Contex
 		if current != nil {
 			existing = current.Roles[role]
 		}
-		if err := r.reconcileCurrentRevisionRole(ctx, disaggregatedSet, slice, existing, config, revision, desiredReplicasByRole); err != nil {
-			if errors.Is(err, errReplicaGroupsPending) {
-				result.RequeueAfter = time.Second
-				continue
-			}
+		roleResult, err := r.reconcileCurrentRevisionRole(ctx, disaggregatedSet, slice, existing, config, revision, desiredReplicasByRole)
+		if errors.Is(err, errReplicaGroupsPending) {
+			roleResult, err = ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile %s role: %w", role, err)
 		}
+		result = earliestRequeue(result, roleResult)
 	}
 
 	return result, nil
 }
 
-func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, existing *leaderworkersetv1.LeaderWorkerSet, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) error {
+func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, slice int, existing *leaderworkersetv1.LeaderWorkerSet, config *disaggregatedsetv1.DisaggregatedRoleSpec, revision string, desiredReplicasByRole map[string]int) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	role := config.Name
@@ -521,12 +522,12 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	// conditionally scaled to the latest desired size.
 	if existing == nil {
 		if err := r.LWSManager.Create(ctx, disaggregatedSet, config, slice, revision, int(desiredReplicas), desiredSubRoles(config, desiredReplicasByRole)); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 		if desiredReplicas > 0 {
-			return errReplicaGroupsPending
+			return ctrl.Result{}, errReplicaGroupsPending
 		}
-		return nil
+		return ctrl.Result{}, nil
 	}
 	counts := desiredSubRoles(config, desiredReplicasByRole)
 	var scaleDelay time.Duration
@@ -538,9 +539,12 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	}
 	// Outside rollout, membership, issued target and effective baseline all follow desired.
 	state, err := r.LWSManager.syncSubRoles(ctx, disaggregatedSet, existing, subRoleUpdate{membership: counts, target: counts, initial: counts, rolloutStrategy: &config.Spec.RolloutStrategy, scaleDelay: scaleDelay})
-	if err != nil || state != nil {
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if state != nil {
 		// A non-nil state means subrole reconciliation owns this LWS's scaling.
-		return err
+		return ctrl.Result{RequeueAfter: state.requeueAfter}, nil
 	}
 
 	// This revision remains the current target outside a revision transition, so
@@ -550,7 +554,7 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 	initialReplicas, hasInitialReplicas := disaggregatedsetutils.GetInitialReplicas(existing)
 	if !hasInitialReplicas || initialReplicas != desiredReplicas {
 		if err := r.LWSManager.UpdateInitialReplicas(ctx, disaggregatedSet, existing, int(desiredReplicas)); err != nil {
-			return fmt.Errorf("failed to update initial replicas on LWS %s: %w", existing.Name, err)
+			return ctrl.Result{}, fmt.Errorf("failed to update initial replicas on LWS %s: %w", existing.Name, err)
 		}
 	}
 
@@ -562,10 +566,10 @@ func (r *DisaggregatedSetReconciler) reconcileCurrentRevisionRole(ctx context.Co
 		log.Info("Scaling LWS", "role", role, "name", existing.Name, "from", existingReplicas, "to", desiredReplicas)
 	}
 	if err := r.LWSManager.scale(ctx, disaggregatedSet, existing, int(desiredReplicas), &config.Spec.RolloutStrategy); err != nil {
-		return fmt.Errorf("failed to sync replicas and rollout strategy on LWS %s: %w", existing.Name, err)
+		return ctrl.Result{}, fmt.Errorf("failed to sync replicas and rollout strategy on LWS %s: %w", existing.Name, err)
 	}
 
-	return nil
+	return ctrl.Result{}, nil
 }
 
 // syncGroupReplacementPolicies pushes each role's groupReplacementPolicy onto

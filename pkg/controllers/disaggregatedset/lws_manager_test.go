@@ -87,7 +87,7 @@ func TestSubRoleScaleDelayEligibility(t *testing.T) {
 				f.manager.clock = clocktesting.NewFakeClock(time.Now()) // No time passes between reconciliations.
 				r := &DisaggregatedSetReconciler{LWSManager: f.manager}
 				for range 10 {
-					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, desired)
+					_, err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, desired)
 					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 					f.native()
 				}
@@ -184,37 +184,39 @@ func TestSubRoleScaleDelayRestartAndResizeRetry(t *testing.T) {
 
 func TestSubRoleScaleDelayCancellationAndReversal(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		replicas int32
-		target   int
-		delay    time.Duration
-		waiting  bool
+		name      string
+		replicas  int32
+		target    int
+		delay     time.Duration
+		remaining time.Duration
 	}{
-		{"same total cancels", 2, 2, 2 * time.Second, false},
-		{"zero-to-positive bypasses", 0, 3, 2 * time.Second, false},
-		{"disabled or rollout bypasses", 2, 3, 0, false},
-		{"reversal keeps the deadline", 2, 1, 2 * time.Second, true},
-		{"scaling to zero still waits", 2, 0, 2 * time.Second, true},
+		{"same total cancels", 2, 2, 2 * time.Second, 0},
+		{"zero-to-positive bypasses", 0, 3, 2 * time.Second, 0},
+		{"disabled or rollout bypasses", 2, 3, 0, 0},
+		{"reversal keeps the deadline", 2, 1, 2 * time.Second, 250 * time.Millisecond},
+		{"scaling to zero still waits", 2, 0, 2 * time.Second, 250 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := clocktesting.NewFakeClock(time.Now())
 			manager := &LeaderWorkerSetManager{clock: clock}
 			lws := buildOwnedManagerTestLWS("pool", 2, testManagerDS("ds"))
 			lws.UID = "pool"
-			require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			require.Equal(t, 2*time.Second, manager.delaySubRoleScale(lws, 3, 2*time.Second))
 			deadline := manager.scaleWindows[lws.UID].deadline
-			clock.Step(time.Second)
+			clock.Step(1750 * time.Millisecond)
 			lws.Spec.Replicas = ptr.To(tc.replicas)
-			require.Equal(t, tc.waiting, manager.delaySubRoleScale(lws, tc.target, tc.delay))
-			if !tc.waiting {
+			require.Equal(t, tc.remaining, manager.delaySubRoleScale(lws, tc.target, tc.delay))
+			if tc.remaining == 0 {
 				require.Empty(t, manager.scaleWindows)
 				deadline = clock.Now().Add(2 * time.Second)
 			}
 			lws.Spec.Replicas = ptr.To[int32](2)
-			require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			require.Equal(t, deadline.Sub(clock.Now()), manager.delaySubRoleScale(lws, 3, 2*time.Second))
 			require.Equal(t, deadline, manager.scaleWindows[lws.UID].deadline, "only cancellation starts a fresh window")
 			clock.SetTime(deadline)
-			require.False(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			require.Zero(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+			clock.Step(time.Second)
+			require.Zero(t, manager.delaySubRoleScale(lws, 3, 2*time.Second), "an expired window must not return a negative delay")
 		})
 	}
 }
@@ -225,17 +227,17 @@ func TestSubRoleScaleWindowLifecycle(t *testing.T) {
 	parent, otherParent := testManagerDS("ds"), testManagerDS("other")
 	old := buildOwnedManagerTestLWS("pool", 2, parent)
 	old.UID = "old"
-	require.True(t, manager.delaySubRoleScale(old, 3, 2*time.Second))
+	require.Equal(t, 2*time.Second, manager.delaySubRoleScale(old, 3, 2*time.Second))
 	originalDeadline := manager.scaleWindows[old.UID].deadline
 	clock.Step(time.Second)
 	replacement := old.DeepCopy()
 	replacement.UID = "replacement"
-	require.True(t, manager.delaySubRoleScale(replacement, 3, 2*time.Second))
+	require.Equal(t, 2*time.Second, manager.delaySubRoleScale(replacement, 3, 2*time.Second))
 	require.Equal(t, originalDeadline, manager.scaleWindows[old.UID].deadline)
 	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline, "same name cannot inherit another UID's window")
 	clock.Step(2 * time.Second)
 	replacement.Spec.Replicas = ptr.To[int32](3)
-	require.True(t, manager.delaySubRoleScale(replacement, 4, 2*time.Second))
+	require.Equal(t, 2*time.Second, manager.delaySubRoleScale(replacement, 4, 2*time.Second))
 	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline, "observing a previous resize starts the next window")
 
 	deleting := old.DeepCopy()
@@ -243,7 +245,7 @@ func TestSubRoleScaleWindowLifecycle(t *testing.T) {
 	other := buildOwnedManagerTestLWS("pool", 2, otherParent)
 	other.UID = "other"
 	for _, lws := range []*leaderworkersetv1.LeaderWorkerSet{deleting, other} {
-		require.True(t, manager.delaySubRoleScale(lws, 3, 2*time.Second))
+		require.Equal(t, 2*time.Second, manager.delaySubRoleScale(lws, 3, 2*time.Second))
 	}
 	deleting.DeletionTimestamp = ptr.To(metav1.Now())
 	manager.pruneSubRoleScaleWindows(client.ObjectKeyFromObject(parent), []*leaderworkersetv1.LeaderWorkerSet{replacement, deleting})
@@ -298,7 +300,8 @@ func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
 				r := &DisaggregatedSetReconciler{Client: c, LWSManager: manager}
 				existing, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
 				require.NoError(t, err)
-				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.before)}))
+				_, err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.before)})
+				require.NoError(t, err)
 				role.Spec.Replicas = ptr.To(tc.after)
 				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &tc.newBudget
 				_, err = w.ValidateUpdate(t.Context(), oldDS, ds)
@@ -308,7 +311,8 @@ func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
 				for range 2 {
 					existing, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
 					require.NoError(t, err)
-					require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.after)}))
+					_, err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, existing, role, revision, map[string]int{role.Name: int(tc.after)})
+					require.NoError(t, err)
 				}
 				got, err := manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
 				require.NoError(t, err)
@@ -316,7 +320,8 @@ func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
 				require.Equal(t, tc.newBudget.MaxSurge, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge)
 				require.Equal(t, tc.newBudget.MaxUnavailable, got.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable)
 				resourceVersion := got.ResourceVersion
-				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, got, role, revision, map[string]int{role.Name: int(tc.after)}))
+				_, err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, got, role, revision, map[string]int{role.Name: int(tc.after)})
+				require.NoError(t, err)
 				got, err = manager.GetForRole(t.Context(), ds, 0, revision, role.Name)
 				require.NoError(t, err)
 				require.Equal(t, resourceVersion, got.ResourceVersion, "settled configuration must not be rewritten")
@@ -410,7 +415,7 @@ func TestSubRoleRolloutBudgetUpdates(t *testing.T) {
 				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &tc.budget
 				r := &DisaggregatedSetReconciler{LWSManager: f.manager}
 				for range 10 {
-					err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, map[string]int{"model": tc.after, "model/a": tc.after})
+					_, err := r.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, role, f.lws.Name, map[string]int{"model": tc.after, "model/a": tc.after})
 					require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
 					f.native()
 				}
@@ -2415,7 +2420,8 @@ func TestCreateDefersGrowthUntilObserved(t *testing.T) {
 				current, err := manager.GetForRole(t.Context(), ds, 0, "latest", role.Name)
 				require.NoError(t, err)
 				r := &DisaggregatedSetReconciler{LWSManager: manager}
-				require.NoError(t, r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "latest", map[string]int{role.Name: 2}))
+				_, err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "latest", map[string]int{role.Name: 2})
+				require.NoError(t, err)
 				require.EqualValues(t, 2, getTestLWSReplicas(base, ds.Namespace, current.Name))
 			})
 		}
@@ -2477,7 +2483,7 @@ func TestCreateSubRolesStartEmpty(t *testing.T) {
 				require.NoError(t, manager.pending.observed(t.Context(), ds.UID, "0"))
 				current, err = manager.GetForRole(t.Context(), ds, 0, "current", role.Name)
 				require.NoError(t, err)
-				err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "current",
+				_, err = r.reconcileCurrentRevisionRole(t.Context(), ds, 0, current, role, "current",
 					map[string]int{role.Name: 3, role.Name + "/a": 1, role.Name + "/b": 2})
 				if err != nil {
 					require.ErrorIs(t, err, errReplicaGroupsPending)
@@ -2685,7 +2691,7 @@ func TestInformerObservationWithAPIServer(t *testing.T) {
 			r := &DisaggregatedSetReconciler{LWSManager: manager}
 			for range 3 {
 				require.NoError(t, manager.reader.Get(ctx, key, current))
-				if err := r.reconcileCurrentRevisionRole(ctx, ds, 0, current, role, revision, map[string]int{role.Name: 2}); err != nil {
+				if _, err := r.reconcileCurrentRevisionRole(ctx, ds, 0, current, role, revision, map[string]int{role.Name: 2}); err != nil {
 					require.ErrorIs(t, err, errReplicaGroupsPending)
 				}
 				require.Eventually(t, func() bool { return manager.pending.observed(ctx, ds.UID, "0") == nil }, 5*time.Second, 10*time.Millisecond)
