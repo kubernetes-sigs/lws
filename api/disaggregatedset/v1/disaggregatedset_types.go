@@ -146,20 +146,22 @@ type DisaggregatedSetScalingPolicy struct {
 	// +kubebuilder:default=Deferred
 	ScaleDownDuringRollout RolloutScaleDownPolicy `json:"scaleDownDuringRollout,omitempty"`
 
-	// SubRoleScaleUpDelaySeconds delays growth of an existing sub-role LWS so
+	// SubRoleScaleDelaySeconds delays scaling of an existing sub-role LWS so
 	// nearby target updates can be applied together. Valid values are 0 to 60;
 	// defaults to 2, and zero disables the delay. It applies only to steady-state
-	// net growth in roles with multiple sub-roles and at least one External scaler.
+	// net growth or shrink in roles with multiple sub-roles and at least one External scaler.
 	// Ordinary roles, zero-to-positive scaling, and template rollouts do not wait.
-	// The first growth request starts a fixed window; later updates do not extend
-	// it. At expiry, the latest targets apply. The wait is cancelled if their sum
-	// no longer exceeds current replicas. This adds scale-up latency and does not
-	// combine updates arriving after the window.
+	// Reductions, including scaling to zero, wait too. The first change to the total
+	// starts a fixed, persisted window; later updates and controller restarts do not
+	// extend it. At expiry, the latest targets apply. The wait is cancelled if their
+	// sum returns to the current LWS replica target, allowing redistribution without
+	// scaling. This adds scale-up and scale-down latency and does not combine updates
+	// arriving after the window.
 	// +optional
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=60
-	SubRoleScaleUpDelaySeconds *int32 `json:"subRoleScaleUpDelaySeconds,omitempty"`
+	SubRoleScaleDelaySeconds *int32 `json:"subRoleScaleDelaySeconds,omitempty"`
 }
 
 // DisaggregatedSubRoleSpec defines a scaling and routing pool sharing its parent's templates.
@@ -257,7 +259,8 @@ type DisaggregatedSetSpec struct {
 	Slices *int32 `json:"slices,omitempty"`
 
 	// ScalingPolicy controls replica target changes. Omit it for Deferred
-	// scale-down during rollouts and a 2-second delay for steady-state sub-role growth.
+	// scale-down during rollouts and a 2-second delay for steady-state scaling
+	// of eligible sub-role pools.
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 

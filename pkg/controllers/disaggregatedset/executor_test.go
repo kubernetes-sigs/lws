@@ -3209,7 +3209,7 @@ func TestSubRoleScalingWaitsUntilRequestedTargetsAreAccepted(t *testing.T) {
 	}
 }
 
-func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
+func TestSubRoleScaleCoalescingWithExternalScalers(t *testing.T) {
 	type request struct {
 		at                 time.Duration
 		interactive, batch int32
@@ -3223,9 +3223,14 @@ func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
 			requests  []request
 		}{
 			{"opposite changes reuse existing groups by default", nil, false, []request{{0, 6, 8, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
+			{"shrink before growth reuses existing groups by default", nil, false, []request{{0, 4, 6, 12}, {time.Second, 6, 6, 12}, {3 * time.Second, 6, 6, 12}}},
 			{"latest growth uses the original default deadline", nil, false, []request{{0, 6, 8, 12}, {time.Second, 7, 8, 12}, {2*time.Second - time.Millisecond, 7, 8, 12}, {2 * time.Second, 7, 8, 15}}},
+			{"shrink waits for the original default deadline", nil, false, []request{{0, 4, 6, 12}, {2*time.Second - time.Millisecond, 4, 6, 12}, {2 * time.Second, 4, 6, 10}}},
+			{"reversing direction keeps the original deadline", nil, false, []request{{0, 4, 6, 12}, {time.Second, 7, 6, 12}, {2 * time.Second, 7, 6, 13}}},
 			{"explicit zero disables the delay", ptr.To[int32](0), false, []request{{0, 6, 8, 14}}},
+			{"explicit zero disables the shrink delay", ptr.To[int32](0), false, []request{{0, 4, 6, 10}}},
 			{"custom delay overrides the default", ptr.To[int32](3), false, []request{{0, 6, 8, 12}, {2 * time.Second, 6, 8, 12}, {3 * time.Second, 6, 8, 14}}},
+			{"scale to zero waits", nil, false, []request{{0, 0, 0, 12}, {2 * time.Second, 0, 0, 0}}},
 			{"initial population is not delayed", nil, true, []request{{0, 2, 1, 3}}},
 		} {
 			t.Run(string(identity)+"/"+tc.name, func(t *testing.T) {
@@ -3239,17 +3244,17 @@ func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
 					{Name: "batch", Scaling: &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}},
 				}}}
 				if tc.delay != nil {
-					f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{SubRoleScaleUpDelaySeconds: tc.delay}
+					f.ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{SubRoleScaleDelaySeconds: tc.delay}
 				}
 				clock := clocktesting.NewFakeClock(time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC))
 				f.manager.clock = clock
 				started := clock.Now()
 				delay := time.Duration(ptr.Deref(tc.delay, 2)) * time.Second
 				before := f.observe().Groups
-				ceiling := len(children)
+				floor, ceiling := len(children), len(children)
 				checkPhysicalWrite := func(object client.Object) {
 					if lws, ok := object.(*leaderworkersetv1.LeaderWorkerSet); ok {
-						require.GreaterOrEqual(t, int(getLWSReplicas(lws)), len(children), "must not temporarily shrink the physical pool")
+						require.GreaterOrEqual(t, int(getLWSReplicas(lws)), floor, "must not shrink below the permitted physical count")
 						require.LessOrEqual(t, int(getLWSReplicas(lws)), ceiling, "must not temporarily issue unwanted growth")
 					}
 				}
@@ -3271,7 +3276,9 @@ func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
 				var expectedCounts map[string]int
 				for _, request := range tc.requests {
 					clock.SetTime(started.Add(request.at))
-					ceiling = request.physical
+					// Metadata/assignment writes may retain the old size until a permitted resize completes.
+					current := int(getLWSReplicas(f.observe().LWS))
+					floor, ceiling = min(current, request.physical), max(current, request.physical)
 					expectedCounts = map[string]int{"interactive": int(request.interactive), "batch": int(request.batch)}
 					scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
 					require.NoError(t, err)
@@ -3280,16 +3287,17 @@ func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
 						scaler.Spec.Replicas = int32(replicas)
 						require.NoError(t, f.manager.client.Update(t.Context(), scaler))
 					}
-					for attempt := range 12 {
+					for range 12 {
 						// Read both actual scaler objects again, just as top-level reconciliation does.
 						scalers, err := scalerManager.Reconcile(t.Context(), f.ds, seed)
 						require.NoError(t, err)
 						desired := resolveDesiredReplicasByRole(f.ds, scalers)
 						err = reconciler.reconcileCurrentRevisionRole(t.Context(), f.ds, 0, f.observe().LWS, &f.ds.Spec.Roles[0], "model", desired)
 						require.True(t, err == nil || errors.Is(err, errReplicaGroupsPending), "%v", err)
-						if attempt == 0 && delay > 0 && !tc.bootstrap && request.physical < int(request.interactive+request.batch) {
+						if delay > 0 && !tc.bootstrap && request.physical != int(request.interactive+request.batch) {
+							require.Empty(t, f.observe().LWS.Annotations[subRolePlanAnnotation], "do not accept a shrink plan before the window closes")
 							require.Equal(t, started.Add(delay).Format(time.RFC3339Nano),
-								f.observe().LWS.Annotations[subRoleScaleUpNotBeforeAnnotation], "the first reconcile must persist the original deadline, even while updating the baseline")
+								f.observe().LWS.Annotations[subRoleScaleNotBeforeAnnotation], "keep the original deadline, even while updating the baseline")
 						}
 						f.native()
 					}
@@ -3297,13 +3305,13 @@ func TestSubRoleGrowthCoalescingWithExternalScalers(t *testing.T) {
 					if request.physical == int(request.interactive+request.batch) {
 						counts, err := subRoleCounts(f.observe().LWS, subRoleReplicasAnnotation)
 						require.NoError(t, err)
-						require.Equal(t, expectedCounts, counts, "same-size transfers must not wait for the growth deadline")
+						require.Equal(t, expectedCounts, counts, "accepted counts must match the latest request")
 					}
 				}
 				after := f.observe()
 				require.Empty(t, after.LWS.Annotations[subRolePlanAnnotation])
-				require.Empty(t, after.LWS.Annotations[subRoleScaleUpNotBeforeAnnotation])
-				if tc.name == "opposite changes reuse existing groups by default" {
+				require.Empty(t, after.LWS.Annotations[subRoleScaleNotBeforeAnnotation])
+				if countSubRoles(expectedCounts) == len(before) {
 					require.Len(t, after.Groups, len(before))
 					actual := map[string]int{}
 					for i, group := range after.Groups {
