@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -43,6 +44,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -67,7 +69,6 @@ type LeaderWorkerSetReconciler struct {
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
 
-	apiReader             client.Reader // ReplicaSet lookups must not start a cluster-wide informer.
 	revisionEqualityCache *lru.Cache
 }
 
@@ -118,7 +119,6 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 	}
 	return &LeaderWorkerSetReconciler{
 		Client:                client,
-		apiReader:             client, // SetupWithManager supplies the uncached reader in production.
 		Scheme:                scheme,
 		Record:                record,
 		SchedulerProvider:     provider,
@@ -136,7 +136,7 @@ func NewLeaderWorkerSetReconciler(client client.Client, scheme *runtime.Scheme, 
 //+kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get
+//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
@@ -466,7 +466,6 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Conte
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.apiReader = mgr.GetAPIReader()
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
@@ -544,6 +543,21 @@ func enqueueLWSRequests(ctx context.Context, a client.Object) []reconcile.Reques
 			Namespace: a.GetNamespace(),
 		}},
 	}
+}
+
+// ConfigureCacheOptions scopes lazy controller-runtime informers to LWS-managed
+// objects so on-demand cache reads (such as ReplicaSet during parallel Hash LWS
+// deletion) do not list or watch unrelated cluster-wide workloads.
+func ConfigureCacheOptions(opts *ctrlcache.Options) error {
+	selector, err := labels.Parse(leaderworkerset.SetNameLabelKey)
+	if err != nil {
+		return err
+	}
+	if opts.ByObject == nil {
+		opts.ByObject = make(map[client.Object]ctrlcache.ByObject)
+	}
+	opts.ByObject[&appsv1.ReplicaSet{}] = ctrlcache.ByObject{Label: selector}
+	return nil
 }
 
 func SetupIndexes(indexer client.FieldIndexer) error {
@@ -1507,11 +1521,7 @@ func (r *LeaderWorkerSetReconciler) workerStatefulSetOwnedByLWS(ctx context.Cont
 		if rs, isReplicaSet := parent.(*appsv1.ReplicaSet); isReplicaSet {
 			cached, found := replicaSets[ref.Name]
 			if !found {
-				reader := r.apiReader
-				if reader == nil {
-					reader = r.Client
-				}
-				if err := reader.Get(ctx, key, rs); err != nil {
+				if err := r.Get(ctx, key, rs); err != nil {
 					if !apierrors.IsNotFound(err) {
 						return false, err
 					}

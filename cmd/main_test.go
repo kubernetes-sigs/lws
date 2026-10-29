@@ -85,6 +85,7 @@ internalCertManagement:
 		cmpopts.IgnoreUnexported(ctrl.Options{}),
 		cmpopts.IgnoreUnexported(webhook.DefaultServer{}),
 		cmpopts.IgnoreUnexported(ctrlcache.Options{}),
+		cmpopts.IgnoreFields(ctrlcache.Options{}, "ByObject"),
 		cmpopts.IgnoreUnexported(net.ListenConfig{}),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Scheme", "Logger", "Metrics", "WebhookServer", "LeaderElectionNamespace"),
 		cmpopts.IgnoreFields(ctrl.Options{}, "Controller", "Logger"),

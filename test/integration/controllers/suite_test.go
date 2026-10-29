@@ -47,9 +47,10 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	cfg       *rest.Config
-	k8sClient client.Client
-	testEnv   *envtest.Environment
+	cfg        *rest.Config
+	k8sClient  client.Client
+	k8sManager ctrl.Manager
+	testEnv    *envtest.Environment
 	// These global context vars used to pass ctx cancel func to AfterSuite as
 	// a workaround for https://github.com/kubernetes-sigs/controller-runtime/issues/1571
 	ctx           context.Context
@@ -109,9 +110,11 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
-	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
+	mgrOpts := ctrl.Options{
 		Scheme: scheme.Scheme,
-	})
+	}
+	Expect(controllers.ConfigureCacheOptions(&mgrOpts.Cache)).To(Succeed())
+	k8sManager, err = ctrl.NewManager(cfg, mgrOpts)
 	Expect(err).ToNot(HaveOccurred())
 
 	kubernetesProvider := schedulerprovider.NewKubernetesProvider(k8sManager.GetClient())
