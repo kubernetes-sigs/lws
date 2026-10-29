@@ -41,7 +41,9 @@ machine type for your nodes.**
 ## Install the development version (main branch) {#install-the-latest-development-version}
 
 {{% alert title="Development documentation" color="warning" %}}
-These commands install **unreleased builds from the main branch**.
+These commands install **unreleased builds from the main branch only**.
+For a very recent commit on `main`, the documentation may update before its Helm
+chart is published. If the chart is not yet available, retry the same command later.
 For released installations, use the [latest stable documentation](https://lws.sigs.k8s.io/stable/docs/installation/).
 {{% /alert %}}
 {{% /if-main %}}
@@ -89,10 +91,6 @@ helm install lws "$CHART_REFERENCE" \
   --wait --timeout 300s
 ```
 
-{{% if-main %}}
-This chart matches the documented `main` commit and pins its controller image by
-digest. If publishing is still running, retry later. PR commits are not published.
-{{% /if-main %}}
 {{% if-release %}}
 You can also use the following command:
 
