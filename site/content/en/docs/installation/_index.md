@@ -301,7 +301,7 @@ For kubectl and Kustomize installs, the standard v0.9.0+ manifests include the D
 CRD, controller permissions, and validating webhook. No separate DisaggregatedSet installation
 step is required.
 
-Helm charts before **v1.1.0** require `--set enableDisaggregatedSet=true` for the
+Helm charts **v1.0.0 and prior** require `--set enableDisaggregatedSet=true` for the
 validating webhook and editor/viewer/admin ClusterRoles. Despite its name, this
 option never controlled the DisaggregatedSet controller or CRDs, which were
 already installed. Starting with **v1.1.0**, these resources are always installed,
@@ -367,7 +367,7 @@ upgrading the chart. The **chart version you are upgrading to** determines the f
 
 - **v1.1.0 and later:** omit `--set enableDisaggregatedSet=true`; the webhook and
   user-facing ClusterRoles are always installed, ignoring any saved flag value.
-- **Before v1.1.0:** add `--set enableDisaggregatedSet=true` to install those resources.
+- **v1.0.0 and prior:** add `--set enableDisaggregatedSet=true` to install those resources.
 
 [feature_gate]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 [start_ordinal]: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#start-ordinal
