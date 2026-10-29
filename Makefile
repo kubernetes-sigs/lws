@@ -68,6 +68,7 @@ LD_FLAGS += -X '$(version_pkg).BuildDate=$(BUILD_DATE)'
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 ARTIFACTS ?= $(PROJECT_DIR)/bin
+IMAGE_BUILD_METADATA ?= $(ARTIFACTS)/image-build-metadata.json
 
 INTEGRATION_TARGET ?= ./test/integration/...
 
@@ -283,6 +284,7 @@ run: manifests fmt vet ## Run a controller from your host.
 
 .PHONY: image-build
 image-build:
+	$(if $(PUSH),mkdir -p "$(dir $(IMAGE_BUILD_METADATA))")
 	$(IMAGE_BUILD_CMD) -t $(IMG) \
 		--platform=$(PLATFORMS) \
 		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
@@ -292,6 +294,7 @@ image-build:
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--output=type=$(OUTPUT_TYPE) \
 		$(PUSH) \
+		$(if $(PUSH),--metadata-file "$(IMAGE_BUILD_METADATA)") \
 		$(IMAGE_BUILD_EXTRA_OPTS) ./
 
 .PHONY: image-push
@@ -330,8 +333,8 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: helm-chart-push
-helm-chart-push: yq helm crds
-	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ./hack/push-chart.sh
+helm-chart-push: yq helm crds oras
+	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_BUILD_METADATA="$(IMAGE_BUILD_METADATA)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ORAS="$(ORAS)" ./hack/push-chart.sh
 
 .PHONY: test-chart-publishing
 test-chart-publishing: helm yq ## Test chart packaging and branch selection without publishing.

@@ -31,23 +31,36 @@ the next `main` deployment or after an administrator manually rebuilds `main`.
 
 ## Development Helm chart
 
-The existing image-publishing job also runs `make helm-chart-push`. Every build
-keeps its build-specific chart. Only builds from `main` additionally publish
-`0.0.0-main` to `oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws`.
-This rolling chart keeps the build-specific `appVersion` and controller image
-tag, so its chart and image come from the same build. Release branches and
-release tags never update `0.0.0-main`.
+The existing image-publishing job also runs `make helm-chart-push`. Builds from
+`main` publish one chart version, `0.0.0-dev-<full-commit-sha>`, to
+`oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws`. They no longer
+publish a dated chart or a rolling alias. Release branches and release tags
+retain their existing chart versions.
 
-The publisher checks the upstream `main` commit immediately before updating
-the rolling chart. Superseded builds skip that update, and an unverifiable
-commit fails closed. The lookup and registry push are not atomic; strictly
-ordered updates across concurrent builds would require serialized publication
-or a shared lock. The rolling chart can lag `main` while a newer build runs or
-fails. Use a build-specific chart version when reproducibility is required.
+The publisher resolves the exact abbreviated commit in `GIT_TAG` through
+GitHub's commits API. It never looks up the current tip of `main`. The chart's
+`appVersion` and image tag retain the existing dated build tag, but
+`image.manager.digest` pins the controller to the digest emitted by that
+build's `docker buildx --metadata-file` output. Retagging or rebuilding an image
+cannot change what an already published chart installs.
 
-The staging registry must allow mutable tags. No new Prow trigger is required;
-the existing job passes the source branch through `EXTRA_TAG`.
+The publisher uploads Helm-compatible OCI content by digest, then uses Google
+Artifact Registry's create-only tag API. If concurrent builds race, only the
+first can create the commit's chart tag. A retry verifies the existing chart's
+source commit, version, repository and pinned image digest, then reuses it
+without overwriting it, even if the rebuild produced a different image digest.
+An unsuccessful attempt can leave untagged content for registry cleanup, but
+does not create another named chart version. Authentication, network and
+validation errors fail closed rather than being treated as an absent chart.
+Development artifacts remain subject to the staging registry's retention
+policy; this does not promise permanent availability after registry cleanup.
+
+This uses the publishing job's existing Google credentials and requires its
+Artifact Registry tag create/read permissions. No Netlify token, new Prow
+configuration or serialized build is needed. A website build can show the
+commit-specific command before publication finishes; it becomes usable once
+the chart is published, without rebuilding the website.
 
 Run `make test-chart-publishing` to check packaging and branch selection locally.
-The tests package real charts but replace registry pushes and upstream lookups
+The tests package real charts but replace registry operations and commit lookups
 with local test doubles; nothing is uploaded.

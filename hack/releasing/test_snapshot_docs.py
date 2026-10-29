@@ -174,6 +174,7 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
                 self.assertIn(link, page)
             metadata = json.loads((self.output / "content/en" / prefix / "_index.md").read_text())
             self.assertEqual(metadata["cascade"]["params"]["docs_version"], key)
+            self.assertEqual(metadata["cascade"]["params"]["docs_commit"], commit)
             self.assertEqual(metadata["cascade"]["params"]["docs_source_prefix"], prefix)
             self.assertEqual(metadata["cascade"]["params"]["version"], source_version)
         for route in ("docs/intro", "v1.0/docs/intro", "legacy", "v1.0/legacy"):
@@ -205,10 +206,12 @@ version = "v2.0.0"
         self.write("site/hugo.toml", config)
         installation_path = "site/content/en/docs/installation/_index.md"
         installation = (MAKEFILE.parent / installation_path).read_text()
-        # Released examples stay parameterized; the rolling 0.0.0-main alias is fixed.
+        # Release versions and exact-commit development versions are rendered by Hugo.
         self.assertNotRegex(installation, r"(?:CHART_)?VERSION=v?\d+\.\d+\.\d+(?=\s|$)")
         self.assertIn('VERSION={{< params "version" >}}', installation)
         self.assertIn('CHART_VERSION={{< chart-version >}}', installation)
+        self.assertEqual(installation.count('CHART_VERSION={{< dev-chart-version >}}'), 2)
+        self.assertNotIn("0.0.0-main", installation)
         self.write(installation_path, installation)
         chart = 'appVersion: v1.0.0\nversion: 0.0.0-master\n'
         self.write("charts/lws/Chart.yaml", chart)

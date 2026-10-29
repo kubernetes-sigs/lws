@@ -83,11 +83,11 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 ### Install by Helm
 
 {{% if-main %}}
-With [Helm](https://helm.sh/), install the rolling development chart from the
-`main` branch:
+With [Helm](https://helm.sh/), install the development chart for the exact
+`main` commit documented on this page:
 
 ```shell
-CHART_VERSION=0.0.0-main
+CHART_VERSION={{< dev-chart-version >}}
 helm install lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
   --version="$CHART_VERSION" \
   --namespace lws-system \
@@ -95,8 +95,9 @@ helm install lws oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/
   --wait --timeout 300s
 ```
 
-This chart version is updated by `main` builds and uses the controller image
-from the same build. Existing installations only change when you upgrade them.
+Each commit has its own chart version, pinned to its controller image by digest.
+The website may update before publishing finishes; if the chart is not found,
+retry the same command later. PR preview commits are not published automatically.
 {{% /if-main %}}
 {{% if-release %}}
 To install LWS in your cluster by [Helm](https://helm.sh/), run the following command:
@@ -133,7 +134,7 @@ Apply the CRDs explicitly before upgrading, then upgrade the release in place:
 
 {{% if-main %}}
 ```shell
-CHART_VERSION=0.0.0-main
+CHART_VERSION={{< dev-chart-version >}}
 helm pull oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws \
   --version="$CHART_VERSION" --untar &&
 kubectl apply --server-side --force-conflicts -f lws/crds &&
@@ -142,8 +143,8 @@ helm upgrade lws ./lws \
   --wait --timeout 300s
 ```
 
-Use the downloaded chart for the upgrade so its controller and CRDs stay on
-the same build, even if `0.0.0-main` is updated in the meantime.
+Use the downloaded chart for the upgrade so its controller and CRDs come from
+the same build.
 {{% /if-main %}}
 {{% if-release %}}
 ```shell
