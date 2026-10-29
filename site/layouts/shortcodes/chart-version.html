@@ -1,8 +1,8 @@
 {{- $branch := .Page.Param "docs_branch" | default (.Page.Param "githubbranch") -}}
 {{- if eq $branch "main" -}}
-  {{- $commit := .Page.Param "docs_commit" | default (os.Getenv "HUGO_PARAMS_DOCS_COMMIT") -}}
+  {{- $commit := .Page.Param "chart_commit" | default (.Page.Param "docs_commit") | default (os.Getenv "HUGO_PARAMS_DOCS_COMMIT") -}}
   {{- if not (findRE `^[0-9a-f]{40}$` $commit) -}}
-    {{- errorf "chart-version requires docs_commit or HUGO_PARAMS_DOCS_COMMIT for local previews (%s)" .Position -}}
+    {{- errorf "chart-version requires chart_commit, docs_commit or HUGO_PARAMS_DOCS_COMMIT (%s)" .Position -}}
   {{- end -}}
   {{- printf "0.0.0-main-%s" (substr $commit 0 7) -}}
 {{- else -}}

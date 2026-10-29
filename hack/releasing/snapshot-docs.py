@@ -100,10 +100,12 @@ def discover_versions(repo, minimum, main_ref=None):
         versions.append(dict(key=key, prefix=prefix, label=f"{key}.{patch}", branch=branch,
                              commit=resolve_branch(repo, branch, cached),
                              url=f"/{prefix}/docs/", latest=not versions))
+    # Preview the PR's docs, but install charts from upstream main: PR charts are not published.
+    chart_commit = resolve_branch(repo, "main", cached)
     main_commit = (git(repo, "rev-parse", "--verify", f"{main_ref}^{{commit}}").strip()
-                   if main_ref else resolve_branch(repo, "main", cached))
+                   if main_ref else chart_commit)
     versions.append(dict(key="main", prefix="main", label="main", branch="main", commit=main_commit,
-                         url="/main/docs/", latest=False))
+                         chart_commit=chart_commit, url="/main/docs/", latest=False))
     return dict(latest=versions[0]["key"], versions=versions)
 
 
@@ -320,6 +322,7 @@ def generate(repo, manifest, output, offline=False):
                 # or cascades in branch content. Docsy needs type: docs here.
                 params = dict(docs_version=key, docs_branch=version["branch"],
                               docs_commit=version["commit"], docs_source_prefix=prefix,
+                              chart_commit=version.get("chart_commit", version["commit"]),
                               githubbranch=version["branch"], github_branch=version["branch"],
                               path_base_for_github_subdir=dict(
                                   **{"from": f"^content/{locale}/{re.escape(prefix)}/", "to": f"content/{locale}/"}))

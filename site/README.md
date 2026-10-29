@@ -141,9 +141,12 @@ docs rebuild. Backport documentation fixes to `release-X.Y` and rebuild to
 refresh that series; keep unreleased feature documentation on `main`. Do not
 backport installation instructions for an unavailable chart.
 
-Main's Helm examples use `0.0.0-main-<first 7 characters of docs_commit>`, matching
-the version selector's source commit. They work when that commit's chart is published;
-no website rebuild is needed. PR preview commits normally have no published chart.
+Main's Helm examples use `0.0.0-main-<first 7 characters of chart_commit>`, sourced
+from upstream `main`. In production, `chart_commit` and `docs_commit` match.
+PR previews retain the PR's `docs_commit` for content and the version selector,
+but use upstream `main` for the chart because PR charts are not published.
+The command works once that upstream commit's chart is published; no website
+rebuild is needed. This requires the development chart publisher on `main`.
 Released examples derive their version from the source branch's Hugo `version`.
 
 This implements the versioning tracked in
