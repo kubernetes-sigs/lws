@@ -72,6 +72,13 @@ kubectl wait deploy/lws-controller-manager -n lws-system --for=condition=availab
 
 ### Install by Helm
 
+{{% if-main %}}
+To install lws from the main branch in your cluster by [Helm](https://helm.sh/), run the following command:
+{{% /if-main %}}
+{{% if-release %}}
+To install a released version of lws in your cluster by [Helm](https://helm.sh/), run the following command:
+{{% /if-release %}}
+
 ```shell
 CHART_VERSION={{< chart-version >}}
 CHART_REFERENCE={{< chart-reference >}}
@@ -86,6 +93,17 @@ helm install lws "$CHART_REFERENCE" \
 This chart matches the documented `main` commit and pins its controller image by
 digest. If publishing is still running, retry later. PR commits are not published.
 {{% /if-main %}}
+{{% if-release %}}
+You can also use the following command:
+
+```shell
+VERSION={{< params "version" >}}
+helm install lws https://github.com/kubernetes-sigs/lws/releases/download/$VERSION/lws-chart-$VERSION.tgz \
+  --namespace lws-system \
+  --create-namespace \
+  --wait --timeout 300s
+```
+{{% /if-release %}}
 
 ### Upgrade by Helm
 
@@ -304,11 +322,11 @@ step is required.
 Helm charts **v1.0.0 and prior** require `--set enableDisaggregatedSet=true` for the
 validating webhook and editor/viewer/admin ClusterRoles. Despite its name, this
 option never controlled the DisaggregatedSet controller or CRDs, which were
-already installed. Starting with **v1.1.0**, these resources are always installed,
-matching the standard manifests. Follow the [Helm installation steps](#install-by-helm)
+already installed. The Helm chart now always installs these resources, matching
+the standard manifests. Follow the [Helm installation steps](#install-by-helm)
 without the extra flag.
 
-In v1.1.0 and later, old `enableDisaggregatedSet` values are ignored, even with
+Old `enableDisaggregatedSet` values are now ignored, even with
 `--reuse-values`. If you previously set it to `false`, upgrading enables webhook
 validation for new or updated DisaggregatedSets. You can remove the obsolete
 option from your values files.
@@ -365,7 +383,7 @@ kubectl get leaderworkersets -A \
 Follow the [Upgrade by Helm](#upgrade-by-helm) steps to apply all CRDs before
 upgrading the chart. The **chart version you are upgrading to** determines the flag:
 
-- **v1.1.0 and later:** omit `--set enableDisaggregatedSet=true`; the webhook and
+- **The chart documented here:** omit `--set enableDisaggregatedSet=true`; the webhook and
   user-facing ClusterRoles are always installed, ignoring any saved flag value.
 - **v1.0.0 and prior:** add `--set enableDisaggregatedSet=true` to install those resources.
 

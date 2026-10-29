@@ -27,5 +27,5 @@ Main publishes `0.0.0-dev-<full-commit-sha>` with the controller image pinned by
 its build digest. Artifact Registry's create-only tag command prevents retries
 or concurrent builds from overwriting an existing version. The website uses
 the same commit, so its installation command works once publishing finishes,
-without a Netlify rebuild. Development artifacts remain subject to staging
-registry retention. No Netlify or test-infra configuration changes are needed.
+without a Netlify rebuild. Staging artifacts are eligible for deletion after
+[90 days](https://github.com/kubernetes/k8s.io/blob/main/infra/gcp/terraform/k8s-staging-images/registries.tf#L131-L140).

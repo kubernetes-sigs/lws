@@ -71,10 +71,10 @@ editor/viewer/admin ClusterRoles.
 
 Despite its name, `enableDisaggregatedSet` only controlled the validating webhook
 and user-facing ClusterRoles. The DisaggregatedSet controller and CRDs were already installed.
-Starting with **v1.1.0**, the option is removed and these resources are always
-installed, matching the standard manifests. No extra flag is needed.
+The chart now always installs these resources, matching the standard manifests.
+No extra flag is needed.
 
-In v1.1.0 and later, old `enableDisaggregatedSet` values are ignored, even with
+Old `enableDisaggregatedSet` values are now ignored, even with
 `--reuse-values`. If you previously set it to `false`, upgrading enables webhook
 validation for new or updated DisaggregatedSets. You can remove the obsolete
 option from your values files.

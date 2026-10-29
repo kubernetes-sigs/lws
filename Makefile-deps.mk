@@ -32,5 +32,5 @@ genref: ## Download genref locally if necessary.
 
 ORAS = $(PROJECT_DIR)/bin/oras
 .PHONY: oras
-oras: ## Download the OCI client used for create-only development chart publishing.
+oras: ## Download ORAS to upload chart content without creating a tag.
 	@GOBIN=$(PROJECT_DIR)/bin $(GO_CMD) install oras.land/oras/cmd/oras@v1.2.3
