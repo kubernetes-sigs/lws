@@ -20,3 +20,12 @@ feature documentation on `main`. See [the local generation and preview guide](si
 Automatic rebuilds for release-branch changes and new tags still need to be
 arranged with the Netlify administrators. Until then, these changes appear on
 the next `main` deployment or after an administrator manually rebuilds `main`.
+
+## Development Helm charts
+
+Main publishes `0.0.0-main-<7-character-sha>`, retaining the full commit in chart
+metadata and pinning the image by digest. Create-only tag publication prevents retries
+or concurrent builds from overwriting an existing version. The website uses
+the same commit, so its installation command works once publishing finishes,
+without a Netlify rebuild. Staging artifacts are eligible for deletion after
+[90 days](https://github.com/kubernetes/k8s.io/blob/main/infra/gcp/terraform/k8s-staging-images/registries.tf#L131-L140).

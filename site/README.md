@@ -81,7 +81,8 @@ Without cached snapshot refs, offline mode uses local tags and local branches
 clone must be fetched before offline generation. Main's displayed SHA always
 identifies the content source, not the shared theme's checkout. Uncommitted
 content edits are not snapshotted: commit them and use `--main-ref HEAD`, or run
-plain `hugo server --source site` for an unversioned working-copy preview.
+`HUGO_PARAMS_DOCS_COMMIT=$(git rev-parse HEAD) hugo server --source site` for an
+unversioned working-copy preview. Uncommitted edits have no chart of their own.
 
 After editing templates, regenerate before reloading the generated preview.
 For the Makefile equivalents:
@@ -140,11 +141,17 @@ docs rebuild. Backport documentation fixes to `release-X.Y` and rebuild to
 refresh that series; keep unreleased feature documentation on `main`. Do not
 backport installation instructions for an unavailable chart.
 
+Main's Helm examples use `0.0.0-main-<first 7 characters of chart_commit>`, sourced
+from upstream `main`. In production, `chart_commit` and `docs_commit` match.
+PR previews retain the PR's `docs_commit` for content and the version selector,
+but use upstream `main` for the chart because PR charts are not published.
+The command works once that upstream commit's chart is published; no website
+rebuild is needed. This requires the development chart publisher on `main`.
+Released examples derive their version from the source branch's Hugo `version`.
+
 This implements the versioning tracked in
 [#1232](https://github.com/kubernetes-sigs/lws/issues/1232), plus a latest-stable
-default (the original issue leaves `/docs/` on main). The postponed installation
-changes in [#1235](https://github.com/kubernetes-sigs/lws/issues/1235) still require
-a separate, release-appropriate update.
+default (the original issue leaves `/docs/` on main).
 
 ## SEO titles
 

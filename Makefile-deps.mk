@@ -29,3 +29,8 @@ GENREF = $(PROJECT_DIR)/bin/genref
 .PHONY: genref
 genref: ## Download genref locally if necessary.
 	@GOBIN=$(PROJECT_DIR)/bin $(GO_CMD) install github.com/kubernetes-sigs/reference-docs/genref@v0.28.0
+
+ORAS = $(PROJECT_DIR)/bin/oras
+.PHONY: oras
+oras: ## Download ORAS to upload chart content without creating a tag.
+	@GOBIN=$(PROJECT_DIR)/bin $(GO_CMD) install oras.land/oras/cmd/oras@v1.2.3

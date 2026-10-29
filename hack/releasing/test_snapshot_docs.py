@@ -201,9 +201,17 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         self.add_release("9.0")
         self.write_site("LOCAL PREVIEW", "v99.0.0")
         self.commit("Unfetched local changes")
-        self.assertEqual([v["key"] for v in self.generate()["versions"]], ["v1.0", "main"])
+        versions = self.generate()["versions"]
+        self.assertEqual([v["key"] for v in versions], ["v1.0", "main"])
+        upstream_commit = versions[-1]["commit"]
+        self.assertEqual(versions[-1]["chart_commit"], upstream_commit)
         self.assertIn("MAIN", self.page("main"))
-        self.generate("--main-ref", "HEAD")
+        preview = self.generate("--main-ref", "HEAD")["versions"][-1]
+        self.assertEqual(preview["commit"], self.git("rev-parse", "HEAD"))
+        self.assertEqual(preview["chart_commit"], upstream_commit)
+        metadata = json.loads((self.output / "content/en/main/_index.md").read_text())
+        self.assertEqual(metadata["cascade"]["params"]["docs_commit"], preview["commit"])
+        self.assertEqual(metadata["cascade"]["params"]["chart_commit"], upstream_commit)
         self.assertIn("LOCAL PREVIEW", self.page("main"))
         self.assertIn("BRANCH 1.0", self.page("v1.0"))
         previous = self.output_bytes()
