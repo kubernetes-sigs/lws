@@ -4,7 +4,7 @@
   {{- if not (findRE `^[0-9a-f]{40}$` $commit) -}}
     {{- errorf "chart-version requires docs_commit or HUGO_PARAMS_DOCS_COMMIT for local previews (%s)" .Position -}}
   {{- end -}}
-  {{- printf "0.0.0-dev-%s" $commit -}}
+  {{- printf "0.0.0-dev-%s" (substr $commit 0 12) -}}
 {{- else -}}
   {{- strings.TrimPrefix "v" (.Page.Param "version") -}}
 {{- end -}}
