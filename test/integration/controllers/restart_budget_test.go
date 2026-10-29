@@ -101,6 +101,9 @@ var _ = ginkgo.Describe("Group restart budget", func() {
 			var counts map[string]int32
 			g.Expect(json.Unmarshal([]byte(current.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]), &counts)).To(gomega.Succeed())
 			g.Expect(counts).To(gomega.Equal(map[string]int32{countKey: 1}))
+			var charged map[string]types.UID
+			g.Expect(json.Unmarshal([]byte(current.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey]), &charged)).To(gomega.Succeed())
+			g.Expect(charged).To(gomega.Equal(map[string]types.UID{countKey: leader.UID}))
 		}, 2*time.Second, testing.Interval).Should(gomega.Succeed())
 	})
 })
