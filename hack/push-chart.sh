@@ -66,11 +66,17 @@ trap 'rm -rf -- "${chart_workdir}"' EXIT
 cp -R charts/lws "${chart_workdir}/lws"
 
 if [[ ${EXTRA_TAG} == main ]]; then
-	# Cloud Build has no .git. Resolve the commit supplied in its image tag.
+	# Resolve the exact build commit, even if main has advanced since this build started.
 	# ##*-g removes everything through the last "-g", leaving the abbreviated commit.
 	build_sha=${GIT_TAG##*-g}
-	source_sha=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 60 \
-		"https://api.github.com/repos/kubernetes-sigs/lws/commits/${build_sha}" | "${YQ}" -r '.sha')
+	source_sha=${PULL_BASE_SHA:-}
+	if [[ -z ${source_sha} ]]; then
+		# The current Cloud Build job omits .git and PULL_BASE_SHA. Fetch only commit
+		# history, avoiding GitHub's unauthenticated API quota and source downloads.
+		git clone --quiet --bare --filter=tree:0 --single-branch --branch main --no-tags \
+			https://github.com/kubernetes-sigs/lws.git "${chart_workdir}/source.git"
+		source_sha=$(git --git-dir="${chart_workdir}/source.git" rev-parse --verify "${build_sha}^{commit}")
+	fi
 	# "!" negates the regex test: reject anything other than a full 40-digit hex SHA.
 	if ! [[ ${source_sha} =~ ^[0-9a-f]{40}$ ]]; then
 		fail "Invalid source SHA."
