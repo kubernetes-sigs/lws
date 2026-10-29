@@ -1,0 +1,17 @@
+{{- /* Resolve the same page in another version, or that version's overview. */ -}}
+{{- $page := .page -}}
+{{- $version := .version -}}
+{{- $url := $version.url -}}
+{{- $missing := false -}}
+{{- with $page.Site.GetPage (printf "/%s/docs/overview" $version.prefix) -}}
+  {{- $url = .RelPermalink -}}
+{{- end -}}
+{{- with $page.Param "docs_source_prefix" -}}
+  {{- $pagePath := strings.TrimPrefix (printf "/%s" .) $page.Path -}}
+  {{- with $page.Site.GetPage (printf "/%s%s" $version.prefix $pagePath) -}}
+    {{- $url = .RelPermalink -}}
+  {{- else -}}
+    {{- $missing = true -}}
+  {{- end -}}
+{{- end -}}
+{{- return (dict "url" $url "missing" $missing) -}}

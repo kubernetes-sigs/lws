@@ -405,6 +405,18 @@ enabling sub-roles preserves total capacity. For a fresh role, each External sca
 seeded at one replica for vanilla-HPA bootstrap; scale-to-zero-aware autoscalers may
 subsequently write zero.
 
+For roles with multiple sub-roles and at least one External scaler, a short window combines nearby requests. A `4+8 → 6+6` change can reuse two groups in either write order if both requests arrive within it.
+
+The default is 2 seconds; values range from 0 to 60, with 0 disabling it:
+
+```yaml
+spec:
+  scalingPolicy:
+    subRoleScaleDelaySeconds: 2
+```
+
+Later writes update targets without extending the deadline; returning to the current LWS replica target cancels the wait. Growth and shrink, including scale-to-zero, wait. Zero-to-positive and template rollouts bypass it. Deadlines stay in memory, so controller restarts restart outstanding waits. The writes are not atomic: requests outside the window can still cause unnecessary group creation/deletion.
+
 ### Routing and Service Compatibility
 
 llm-d's Kubernetes discovery watches selected Pods and refreshes endpoint metadata on
@@ -521,6 +533,7 @@ existing tests to make this code solid enough prior to implementation.
 ## Implementation History
 
 - 2026-08-04: Initial provisional KEP draft.
+- 2026-10-28: Added a configurable, two-second coalescing window for scale updates in pools with multiple sub-roles and an External scaler.
 
 ## Drawbacks
 

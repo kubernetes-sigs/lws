@@ -9,13 +9,14 @@
 		<ul class="navbar-nav ms-auto my-0">
 			{{ if eq .Type "docs" }}
 			<li class="nav-item d-md-none">
-				<button class="btn docs-section-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#td-section-nav" aria-controls="td-section-nav" aria-expanded="false" aria-label="Toggle section navigation">
+				<button class="docs-section-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#td-section-nav" aria-controls="td-section-nav" aria-expanded="false" aria-label="Toggle section navigation">
 					<i class="fa-solid fa-bars" aria-hidden="true"></i>
 				</button>
 			</li>
 			{{ end }}
 			{{ $p := . }}
 			{{ range .Site.Menus.main }}
+			{{ if and (eq $p.Type "docs") (eq .Name "Documentation") }}{{ continue }}{{ end }}
 			<li class="nav-item mr-2 mr-lg-4 mt-1 mt-lg-0">
 				{{ $active := or ($p.IsMenuCurrent "main" .) ($p.HasMenuCurrent "main" .) }}
 				{{ with .Page }}
@@ -29,7 +30,7 @@
 			</li>
 			{{ end }}
 			{{ if or .Site.Data.docs_versions .Site.Params.versions }}
-			<li class="nav-item dropdown mt-1 mt-lg-0 mr-2">
+			<li class="nav-item dropdown docs-version-nav mt-1 mt-lg-0 mr-2">
 				{{ partial "navbar-version-selector.html" . }}
 			</li>
 			{{ end }}

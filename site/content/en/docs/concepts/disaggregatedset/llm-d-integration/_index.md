@@ -13,7 +13,7 @@ Prefill and Decode from different revisions may use incompatible KV-cache format
 <figure class="td-max-width-on-larger-screens">
 <!-- Keep a compact area for native playback controls below the picture. -->
 <div style="position: relative; padding-top: calc(75% + 2rem);">
-<video controls autoplay muted playsinline preload="metadata" poster="/images/disaggregatedset-llm-d-routing-poster.png" width="1400" height="1050" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="Revision gating with llm-d during a DisaggregatedSet rollout">
+<video controls autoplay loop muted playsinline preload="metadata" poster="/images/disaggregatedset-llm-d-routing-poster.png" width="1400" height="1050" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="Revision gating with llm-d during a DisaggregatedSet rollout">
   <source src="/videos/disaggregatedset-llm-d-routing.mp4" type="video/mp4">
   <a href="/videos/disaggregatedset-llm-d-routing.mp4">Download the revision gating animation.</a>
 </video>

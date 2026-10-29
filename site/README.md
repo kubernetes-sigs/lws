@@ -101,7 +101,7 @@ adapted to latest-stable defaults, tag discovery, isolated assets, and ignored
 build output instead of committed copies.
 
 Netlify deploy previews and branch deploys use `--main-ref HEAD`: select
-Development to review the PR's documentation changes. Production uses upstream
+`main` to review the PR's documentation changes. Production uses upstream
 `main`. The `--cleanDestinationDir` build flag removes stale files from the
 generated `site/public` output; do not store hand-written files there.
 
@@ -112,7 +112,7 @@ generated `site/public` output; do not store hand-written files there.
 | Merge into `main` | Existing Netlify Git integration builds `main` | Development docs refresh; release snapshots are regenerated too. |
 | Merge docs/examples into `release-X.Y` | No automatic production trigger added here | The next **main-based** build updates `/stable/docs/` for the latest release, or `/vX.Y/docs/` for an older release, without a new tag. |
 | Publish a stable tag | No automatic production trigger added here | The next **main-based** build refreshes patch labels and the latest-default selection. |
-| Open/update a PR | Netlify deploy preview builds the PR checkout | Select Development to read the PR's docs; production is unchanged. |
+| Open/update a PR | Netlify deploy preview builds the PR checkout | Select `main` to read the PR's docs; production is unchanged. |
 | Run the generator locally | No deployment | Preview the same versioned site locally. |
 
 This is one combined website, not a deployment of an old release branch over

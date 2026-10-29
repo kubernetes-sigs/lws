@@ -1,0 +1,12 @@
+{{- if eq .Type "docs" -}}
+{{/* Apply the same looping behavior to these animations in release snapshots. */}}
+<script>
+  document.querySelectorAll([
+    'video source[src$="/disaggregatedset-fractional-rollout.mp4"]',
+    'video source[src$="/disaggregatedset-scale-down-comparison.mp4"]',
+    'video source[src$="/disaggregatedset-llm-d-routing.mp4"]'
+  ].join(',')).forEach(source => {
+    source.closest('video').loop = true;
+  });
+</script>
+{{- end -}}

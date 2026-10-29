@@ -68,31 +68,62 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 		return disagg
 	}
 
-	ginkgo.DescribeTable("rollout scale-down policy defaulting and validation",
-		func(policy *disaggregatedset.DisaggregatedSetScalingPolicy, want disaggregatedset.RolloutScaleDownPolicy, valid bool) {
+	policy := func(up, down disaggregatedset.RolloutScalingPolicy) *disaggregatedset.DisaggregatedSetScalingPolicy {
+		return &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: up, ScaleDownDuringRollout: down}
+	}
+	ginkgo.DescribeTable("rollout scaling policy defaulting and validation",
+		func(input, want *disaggregatedset.DisaggregatedSetScalingPolicy, invalidField string) {
 			disagg := buildDisaggregatedSet().Obj()
-			disagg.Spec.ScalingPolicy = policy
+			disagg.Spec.ScalingPolicy = input
 			err := k8sClient.Create(ctx, disagg)
-			if !valid {
+			if invalidField != "" {
 				gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
-				gomega.Expect(err.Error()).To(gomega.ContainSubstring("scaleDownDuringRollout"))
+				gomega.Expect(err.Error()).To(gomega.ContainSubstring(invalidField))
 				return
 			}
 			gomega.Expect(err).To(gomega.Succeed())
 			var fetched disaggregatedset.DisaggregatedSet
 			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: disagg.Name, Namespace: ns.Name}, &fetched)).To(gomega.Succeed())
-			if policy == nil {
-				gomega.Expect(fetched.Spec.ScalingPolicy).To(gomega.BeNil())
+			if want != nil {
+				want = want.DeepCopy()
+				want.SubRoleScaleDelaySeconds = ptr.To[int32](2)
+			}
+			gomega.Expect(fetched.Spec.ScalingPolicy).To(gomega.Equal(want))
+		},
+		ginkgo.Entry("omitted policy", nil, nil, ""),
+		ginkgo.Entry("empty policy defaults both fields", policy("", ""), policy("Deferred", "Deferred"), ""),
+		ginkgo.Entry("scale-up only defaults scale-down", policy("Immediate", ""), policy("Immediate", "Deferred"), ""),
+		ginkgo.Entry("scale-down only defaults scale-up", policy("", "Immediate"), policy("Deferred", "Immediate"), ""),
+		ginkgo.Entry("Deferred and Deferred", policy("Deferred", "Deferred"), policy("Deferred", "Deferred"), ""),
+		ginkgo.Entry("Deferred and Immediate", policy("Deferred", "Immediate"), policy("Deferred", "Immediate"), ""),
+		ginkgo.Entry("Immediate and Deferred", policy("Immediate", "Deferred"), policy("Immediate", "Deferred"), ""),
+		ginkgo.Entry("Immediate and Immediate", policy("Immediate", "Immediate"), policy("Immediate", "Immediate"), ""),
+		ginkgo.Entry("invalid scale-up policy", policy("invalid", "Deferred"), nil, "scaleUpDuringRollout"),
+		ginkgo.Entry("invalid scale-down policy", policy("Deferred", "invalid"), nil, "scaleDownDuringRollout"),
+	)
+
+	ginkgo.DescribeTable("sub-role scale delay validation",
+		func(seconds *int32, valid bool) {
+			disagg := buildDisaggregatedSet().Obj()
+			disagg.Spec.ScalingPolicy = &disaggregatedset.DisaggregatedSetScalingPolicy{SubRoleScaleDelaySeconds: seconds}
+			err := k8sClient.Create(ctx, disagg)
+			if !valid {
+				gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue())
+				gomega.Expect(err.Error()).To(gomega.ContainSubstring("subRoleScaleDelaySeconds"))
 				return
 			}
-			gomega.Expect(fetched.Spec.ScalingPolicy).NotTo(gomega.BeNil())
-			gomega.Expect(fetched.Spec.ScalingPolicy.ScaleDownDuringRollout).To(gomega.Equal(want))
+			gomega.Expect(err).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleDelaySeconds).To(gomega.Equal(seconds))
+			disagg.Spec.ScalingPolicy.SubRoleScaleDelaySeconds = nil
+			gomega.Expect(k8sClient.Update(ctx, disagg)).To(gomega.Succeed())
+			gomega.Expect(disagg.Spec.ScalingPolicy.SubRoleScaleDelaySeconds).To(gomega.Equal(ptr.To[int32](2)))
+			disagg.Spec.ScalingPolicy.SubRoleScaleDelaySeconds = ptr.To[int32](61)
+			gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, disagg))).To(gomega.BeTrue())
 		},
-		ginkgo.Entry("omitted policy", nil, disaggregatedset.RolloutScaleDownPolicy(""), true),
-		ginkgo.Entry("empty policy defaults to Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{}, disaggregatedset.RolloutScaleDownDeferred, true),
-		ginkgo.Entry("explicit Deferred", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownDeferred}, disaggregatedset.RolloutScaleDownDeferred, true),
-		ginkgo.Entry("explicit Immediate", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: disaggregatedset.RolloutScaleDownImmediate}, disaggregatedset.RolloutScaleDownImmediate, true),
-		ginkgo.Entry("invalid policy", &disaggregatedset.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: "invalid"}, disaggregatedset.RolloutScaleDownPolicy(""), false),
+		ginkgo.Entry("disabled", ptr.To[int32](0), true),
+		ginkgo.Entry("maximum", ptr.To[int32](60), true),
+		ginkgo.Entry("negative", ptr.To[int32](-1), false),
+		ginkgo.Entry("above maximum", ptr.To[int32](61), false),
 	)
 
 	type testValidationCase struct {
