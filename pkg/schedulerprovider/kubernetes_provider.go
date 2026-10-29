@@ -701,15 +701,14 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 		return nil, fmt.Errorf("%s requires a controller owner", GroupTemplateNameAnnotation)
 	}
 
-	visited := make(map[types.UID]struct{})
-	for owner != nil {
+	for hops := 0; owner != nil; hops++ {
+		// Bounds the walk without per-call allocation; this also stops cycles.
+		if hops == maxControllerOwnerHops {
+			return nil, fmt.Errorf("controller-owner chain exceeds %d hops at %s %s/%s, possibly a cycle", maxControllerOwnerHops, owner.Kind, lws.Namespace, owner.Name)
+		}
 		if owner.UID == "" {
 			return nil, fmt.Errorf("controller owner %s %s/%s has no UID", owner.Kind, lws.Namespace, owner.Name)
 		}
-		if _, ok := visited[owner.UID]; ok {
-			return nil, fmt.Errorf("controller-owner chain has a cycle at %s %s/%s", owner.Kind, lws.Namespace, owner.Name)
-		}
-		visited[owner.UID] = struct{}{}
 
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
 		if err != nil {
@@ -751,6 +750,10 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 	}
 	return nil, fmt.Errorf("no parent Workload matches the LWS controller-owner chain")
 }
+
+// maxControllerOwnerHops caps the delegated Workload owner walk. Only cached
+// DisaggregatedSet hops can repeat, so real chains stay far below it.
+const maxControllerOwnerHops = 8
 
 // cachedControllerOwnerObject returns a typed object for intermediate
 // controller owners that the manager caches and has RBAC to list and watch, or

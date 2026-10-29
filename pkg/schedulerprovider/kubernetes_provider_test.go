@@ -1190,7 +1190,7 @@ func TestKubernetesProviderDelegatedWorkloadDoesNotGetUncachedParent(t *testing.
 			Controller: &controller,
 		},
 		"non-cached built-in owner": {
-			APIVersion: "core/v1",
+			APIVersion: "v1",
 			Kind:       "ConfigMap",
 			Name:       "parent-cm",
 			UID:        types.UID("parent-cm-uid"),
@@ -1396,7 +1396,7 @@ func TestKubernetesProviderDelegatedWorkloadWalksCachedDisaggregatedSet(t *testi
 		err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
 		require.Error(t, err)
 		assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
-		assert.ErrorContains(t, err, "controller-owner chain has a cycle")
+		assert.ErrorContains(t, err, "possibly a cycle")
 	})
 }
 
