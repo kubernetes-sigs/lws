@@ -23,7 +23,7 @@ the next `main` deployment or after an administrator manually rebuilds `main`.
 
 ## Development Helm charts
 
-Main publishes `0.0.0-dev-<12-character-sha>`, retaining the full commit in chart
+Main publishes `0.0.0-dev-<7-character-sha>`, retaining the full commit in chart
 metadata and pinning the image by digest. Create-only tag publication prevents retries
 or concurrent builds from overwriting an existing version. The website uses
 the same commit, so its installation command works once publishing finishes,

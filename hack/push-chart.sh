@@ -79,8 +79,8 @@ if [[ ${EXTRA_TAG} == main ]]; then
 	if [[ ${source_sha} != "${build_sha}"* ]]; then
 		fail "Resolved source SHA does not match the build SHA."
 	fi
-	# :0:12 takes the first 12 characters, matching the docs' chart-version shortcode.
-	chart_version="0.0.0-dev-${source_sha:0:12}"
+	# :0:7 takes the first 7 characters, matching the docs' chart-version shortcode.
+	chart_version="0.0.0-dev-${source_sha:0:7}"
 	# Store the full SHA for collision checks; NAME=value sets a variable just for yq.
 	CHART_SOURCE_SHA=${source_sha} "${YQ}" e \
 		'.annotations."org.opencontainers.image.revision" = strenv(CHART_SOURCE_SHA)' -i "${chart_workdir}/lws/Chart.yaml"
