@@ -1,9 +1,0 @@
-{{- $branch := .Page.Param "docs_branch" | default (.Page.Param "githubbranch") -}}
-{{- if eq $branch "main" -}}
-  {{- $commit := .Page.Param "docs_commit" | default (os.Getenv "HUGO_PARAMS_DOCS_COMMIT") -}}
-  {{- if not (findRE `^[0-9a-f]{40}$` $commit) -}}
-    {{- errorf "dev-chart-version requires the full docs_commit from snapshot-docs.py, or HUGO_PARAMS_DOCS_COMMIT for an unversioned local preview (%s)" .Position -}}
-  {{- else -}}
-    {{- printf "0.0.0-dev-%s" $commit -}}
-  {{- end -}}
-{{- end -}}

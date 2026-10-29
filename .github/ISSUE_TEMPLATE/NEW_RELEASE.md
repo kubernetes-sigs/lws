@@ -18,9 +18,6 @@ Please do not remove items from the checklist
         `git branch release-$MAJ.$MIN main`
   - [ ] An OWNER pushes the new release branch with
         `git push --set-upstream upstream release-$MAJ.$MIN`
-  - [ ] On `main`, advance `DEVELOPMENT_DOCS_VERSION` to the next planned release,
-        run `make prepare-docs-release`, and submit the updated `Makefile` and
-        `site/hugo.toml` in a pull request.
 - [ ] Update the release branch:
   - [ ] Update `RELEASE_BRANCH` and `RELEASE_VERSION` in `Makefile` and run `make prepare-release-branch`
   - [ ] Submit a pull request with the changes: <!-- example kubernetes-sigs/kueue#4698 -->

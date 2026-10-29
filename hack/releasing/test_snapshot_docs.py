@@ -24,7 +24,6 @@ import tempfile
 import unittest
 
 SCRIPT = Path(__file__).with_name("snapshot-docs.py")
-MAKEFILE = SCRIPT.resolve().parents[2] / "Makefile"
 ASSETS = ("images/diagram.svg", "videos/demo.mp4", "examples/demo.yaml")
 BRANDING = ("images/lws-ds-logos.svg", "images/ds-concept.svg", "images/ds-logo.svg")
 
@@ -63,6 +62,7 @@ class SnapshotDocsTest(unittest.TestCase):
         self.write("site/hugo.toml", f'''baseURL = "/"
 [params]
 version = "{version}"
+chart_version = "{version.removeprefix('v')}"
 ''')
         self.write("site/content/en/docs/_index.md", "---\ntitle: Documentation\n---\n")
         self.write("site/content/en/docs/intro/_index.md", '''---
@@ -174,9 +174,9 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
                 self.assertIn(link, page)
             metadata = json.loads((self.output / "content/en" / prefix / "_index.md").read_text())
             self.assertEqual(metadata["cascade"]["params"]["docs_version"], key)
-            self.assertEqual(metadata["cascade"]["params"]["docs_commit"], commit)
             self.assertEqual(metadata["cascade"]["params"]["docs_source_prefix"], prefix)
             self.assertEqual(metadata["cascade"]["params"]["version"], source_version)
+            self.assertEqual(metadata["cascade"]["params"]["chart_version"], source_version[1:])
         for route in ("docs/intro", "v1.0/docs/intro", "legacy", "v1.0/legacy"):
             fallback = (self.output / "static" / route / "index.html").read_text()
             self.assertIn("/stable/docs/intro/", fallback)
@@ -193,48 +193,6 @@ curl https://raw.githubusercontent.com/kubernetes-sigs/lws/main/docs/examples/de
         self.assertNotIn("/main/*", redirects)
         self.assertEqual((self.output / "postcss.config.js").read_text(),
                          (self.repo / "site/postcss.config.js").read_text())
-
-    def test_release_preparation_selects_branch_documentation_target(self):
-        self.write("go.mod", "module fixture.invalid/docs\n\ngo 1.20\n")
-        config = '''[params]
-version = "v99.0.0"
-githubbranch = "main"
-historical_version = "v1.1.0"
-[other]
-version = "v2.0.0"
-'''
-        self.write("site/hugo.toml", config)
-        installation_path = "site/content/en/docs/installation/_index.md"
-        installation = (MAKEFILE.parent / installation_path).read_text()
-        # Release versions and exact-commit development versions are rendered by Hugo.
-        self.assertNotRegex(installation, r"(?:CHART_)?VERSION=v?\d+\.\d+\.\d+(?=\s|$)")
-        self.assertIn('VERSION={{< params "version" >}}', installation)
-        self.assertIn('CHART_VERSION={{< chart-version >}}', installation)
-        self.assertEqual(installation.count('CHART_VERSION={{< dev-chart-version >}}'), 2)
-        self.assertNotIn("0.0.0-main", installation)
-        self.write(installation_path, installation)
-        chart = 'appVersion: v1.0.0\nversion: 0.0.0-master\n'
-        self.write("charts/lws/Chart.yaml", chart)
-        for branch, release, development, expected in (
-                ("main", "1.0.0", "1.1.0", "1.1.0"),
-                ("release-1.0", "1.0.1", "1.1.0", "1.0.1"),
-                ("release-1.1", "1.1.3", "1.2.0", "1.1.3"),
-                ("main", "1.1.0", "1.2.0", "1.2.0")):
-            with self.subTest(branch=branch, release=release, development=development):
-                for _ in range(2):  # Repeated preparation must be idempotent.
-                    result = subprocess.run(["make", "-s", "-I", str(MAKEFILE.parent),
-                                             "-f", str(MAKEFILE), "prepare-docs-release",
-                                             f"RELEASE_BRANCH={branch}",
-                                             f"RELEASE_VERSION=v{release}",
-                                             f"DEVELOPMENT_DOCS_VERSION=v{development}"],
-                                            cwd=self.repo, env=self.env, capture_output=True,
-                                            text=True, timeout=30)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual((self.repo / "site/hugo.toml").read_text(),
-                                     config.replace("99.0.0", expected).replace(
-                                         'githubbranch = "main"', f'githubbranch = "{branch}"'))
-                    self.assertEqual((self.repo / installation_path).read_text(), installation)
-                    self.assertEqual((self.repo / "charts/lws/Chart.yaml").read_text(), chart)
 
     def test_offline_cache_isolation_and_main_preview(self):
         for destination, source in (("heads/main", "main"), ("heads/release-1.0", "release-1.0"),

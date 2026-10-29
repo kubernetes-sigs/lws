@@ -80,15 +80,9 @@ Without cached snapshot refs, offline mode uses local tags and local branches
 (then `upstream/` or `origin/` tracking branches). Missing objects in a partial
 clone must be fetched before offline generation. Main's displayed SHA always
 identifies the content source, not the shared theme's checkout. Uncommitted
-content edits are not snapshotted: commit them and use `--main-ref HEAD`. For an
-unversioned working-copy preview, explicitly supply the checkout's full commit
-for the development Helm example:
-
-```sh
-HUGO_PARAMS_DOCS_COMMIT=$(git rev-parse HEAD) hugo server --source site
-```
-
-This previews uncommitted edits, but they have no published chart of their own.
+content edits are not snapshotted: commit them and use `--main-ref HEAD`, or run
+`HUGO_PARAMS_DOCS_COMMIT=$(git rev-parse HEAD) hugo server --source site` for an
+unversioned working-copy preview. Uncommitted edits have no chart of their own.
 
 After editing templates, regenerate before reloading the generated preview.
 For the Makefile equivalents:
@@ -147,35 +141,10 @@ docs rebuild. Backport documentation fixes to `release-X.Y` and rebuild to
 refresh that series; keep unreleased feature documentation on `main`. Do not
 backport installation instructions for an unavailable chart.
 
-Released installation commands use the source branch's Hugo `version` parameter.
-`{{< params "version" >}}` outputs the release tag; `{{< chart-version >}}` derives
-the Helm version by stripping the leading `v` when Hugo renders the page.
-There is no separate chart-version setting to maintain.
-`make prepare-docs-release` updates this parameter and the source `githubbranch`
-without rewriting Markdown:
-
-- On `main` (`RELEASE_BRANCH=main`), use `DEVELOPMENT_DOCS_VERSION`, the next planned
-  release. This documentation-only target does not change chart or image versions.
-- On release branches, use `RELEASE_VERSION`. The existing
-  `make prepare-release-branch` target runs this update automatically.
-
-After cutting a release branch, advance `DEVELOPMENT_DOCS_VERSION` on `main`, run
-`make prepare-docs-release`, and commit both the Makefile and `site/hugo.toml`.
-Snapshots read the committed configuration from each branch, so stable retains
-its own installation version. The `if-main` shortcode shows a warning only on
-main, directing readers to stable docs for released installations. Release
-snapshots omit that warning.
-Historical facts, such as a flag being removed in v1.1.0, stay fixed in the text.
-
-Main's Helm example uses `{{< dev-chart-version >}}` to generate
-`0.0.0-dev-<full-commit-sha>` from the snapshot's `docs_commit`, the same source
-commit shown in the version selector. The chart pins its controller image by
-digest. There is no registry lookup, rolling chart alias, or fallback to an older
-build. The docs keep the latest source even while publishing is pending; the
-command starts working once that exact chart is published, without a Netlify
-rebuild or build hook. Unmerged PR preview commits normally have no published
-chart. The shortcode requires an explicit full commit for unversioned local
-previews, rather than guessing from a page's last-edit commit.
+Main's Helm examples use `0.0.0-dev-<docs_commit>`, matching the source commit in
+the version selector. They become usable when that commit's chart is published;
+no website rebuild is needed. PR preview commits normally have no published chart.
+Released examples derive their version from the source branch's Hugo `version`.
 
 This implements the versioning tracked in
 [#1232](https://github.com/kubernetes-sigs/lws/issues/1232), plus a latest-stable

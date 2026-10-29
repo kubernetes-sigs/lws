@@ -1,0 +1,6 @@
+{{- $branch := .Page.Param "docs_branch" | default (.Page.Param "githubbranch") -}}
+{{- if eq $branch "main" -}}
+  oci://us-central1-docker.pkg.dev/k8s-staging-images/lws/charts/lws
+{{- else -}}
+  oci://registry.k8s.io/lws/charts/lws
+{{- end -}}

@@ -102,12 +102,6 @@ RELEASE_BRANCH=main
 # Version used form Helm which is not using the leading "v"
 CHART_VERSION := $(shell echo $(RELEASE_VERSION) | cut -c2-)
 
-# Main documents the next planned release without changing artifact versions.
-# Advance this target on main after cutting a release branch, then run
-# `make prepare-docs-release` and commit the updated site/hugo.toml.
-DEVELOPMENT_DOCS_VERSION = v1.1.0
-DOCS_VERSION := $(if $(filter main,$(RELEASE_BRANCH)),$(DEVELOPMENT_DOCS_VERSION),$(RELEASE_VERSION))
-
 .PHONY: all
 all: build
 
@@ -336,10 +330,6 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 helm-chart-push: yq helm crds oras
 	EXTRA_TAG="$(EXTRA_TAG)" GIT_TAG="$(GIT_TAG)" IMAGE_BUILD_METADATA="$(IMAGE_BUILD_METADATA)" IMAGE_REGISTRY="$(IMAGE_REGISTRY)" HELM_CHART_REPO="$(HELM_CHART_REPO)" IMAGE_REPO="$(IMAGE_REPO)" HELM="$(HELM)" YQ="$(YQ)" ORAS="$(ORAS)" ./hack/push-chart.sh
 
-.PHONY: test-chart-publishing
-test-chart-publishing: helm yq ## Test chart packaging and branch selection without publishing.
-	HELM="$(HELM)" YQ="$(YQ)" python3 hack/releasing/test_push_chart.py
-
 ##@ Build Dependencies
 
 ## Location to install dependencies to
@@ -441,16 +431,10 @@ artifacts: kustomize helm yq
 	# Revert the image changes
 	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
 
-.PHONY: prepare-docs-release
-prepare-docs-release: ## Update the branch's documentation target without rewriting examples.
-	$(SED) -r -e '/^[[:space:]]*\[params\][[:space:]]*$$/,/^[[:space:]]*\[/ {' \
-		-e 's/^([[:space:]]*version[[:space:]]*=[[:space:]]*")[^"]*"/\1$(DOCS_VERSION)"/' \
-		-e 's/^([[:space:]]*githubbranch[[:space:]]*=[[:space:]]*")[^"]*"/\1$(RELEASE_BRANCH)"/' \
-		-e '}' -i site/hugo.toml
-
 .PHONY: prepare-release-branch
-prepare-release-branch: yq kustomize prepare-docs-release ## Prepare the release branch with the release version.
-	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md
+prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
+	$(SED) -r 's/v[0-9]+\.[0-9]+\.[0-9]+/$(RELEASE_VERSION)/g' -i README.md -i site/hugo.toml
+	$(SED) -r 's/(githubbranch = ")[^"]*/\1$(RELEASE_BRANCH)/' -i site/hugo.toml
 	$(SED) -r 's/--version="v?[0-9]+\.[0-9]+\.[0-9]+/--version="$(CHART_VERSION)/g' -i charts/lws/README.md
 	$(YQ) e '.appVersion = "$(RELEASE_VERSION)"' -i charts/lws/Chart.yaml
 	@$(call clean-manifests)
