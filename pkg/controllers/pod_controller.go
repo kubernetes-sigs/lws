@@ -1303,7 +1303,7 @@ func (r *PodReconciler) claimGroupRestartCountForHashLeader(ctx context.Context,
 	if revisionKey == "" || leader.Labels[leaderworkerset.GroupIndexLabelKey] == "" {
 		return nil
 	}
-	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32, _ map[string]types.UID) (bool, error) {
 		if _, exists := counts[targetKey]; exists {
 			return false, nil
 		}
