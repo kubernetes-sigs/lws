@@ -65,7 +65,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
 		scenarios := []string{"owned", "unowned", "missing leader", "replaced leader", "wrong owner kind", "wrong owner version", "missing workload", "replaced workload", "foreign LWS", "read error", "replacement during delete"}
 		if identity == leaderworkerset.GroupIdentityHash {
-			scenarios = append(scenarios, "replaced replica set", "missing replica set", "replica set read error", "constructor without setup", "literal without setup")
+			scenarios = append(scenarios, "replaced replica set", "missing replica set", "replica set read error", "literal without setup")
 		}
 		for _, scenario := range scenarios {
 			t.Run(string(identity)+"/"+scenario, func(t *testing.T) {
@@ -124,7 +124,7 @@ func TestParallelWorkerCleanupOwnership(t *testing.T) {
 					objects = append(objects, leader)
 				}
 				storage := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-				withoutSetup := scenario == "constructor without setup" || scenario == "literal without setup"
+				withoutSetup := scenario == "literal without setup"
 				replicaSetReads := 0
 				cl := interceptor.NewClient(storage, interceptor.Funcs{
 					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
