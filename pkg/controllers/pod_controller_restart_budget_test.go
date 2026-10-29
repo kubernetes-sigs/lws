@@ -276,7 +276,7 @@ func TestPersistGroupRestartCountDeduplicatesAfterConflict(t *testing.T) {
 }
 
 func TestRestartBudgetPrunesChargedLeadersWithCounts(t *testing.T) {
-	for _, action := range []string{"recovery", "revision", "scale-down", "surge", "hash handoff", "last entry"} {
+	for _, action := range []string{"recovery", "revision", "scale-down", "surge", "hash handoff", "hash scale-down", "last entry"} {
 		t.Run(action, func(t *testing.T) {
 			scheme := restartBudgetTestScheme(t)
 			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Obj()
@@ -320,6 +320,10 @@ func TestRestartBudgetPrunesChargedLeadersWithCounts(t *testing.T) {
 				err = pods.claimGroupRestartCountForHashLeader(t.Context(), lws, leader)
 				wantCounts = map[string]int32{"revision-a/0": 1, "revision-a/new-group": 2, "old-revision/0": 3}
 				wantCharged = map[string]types.UID{"revision-a/0": "leader-0", "old-revision/0": "old-leader"}
+			case "hash scale-down":
+				err = sets.pruneHashGroupRestartCounts(t.Context(), lws, "revision-a")
+				wantCounts = map[string]int32{"revision-a/1": 2, "old-revision/0": 3}
+				wantCharged = map[string]types.UID{"revision-a/1": "leader-1", "old-revision/0": "old-leader"}
 			}
 			if err != nil {
 				t.Fatal(err)
