@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/controllers"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -97,6 +98,8 @@ var _ = BeforeSuite(func() {
 	Expect(cfg).NotTo(BeNil())
 
 	err = leaderworkerset.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = disaggregatedsetv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = volcanov1beta1.AddToScheme(scheme.Scheme)
