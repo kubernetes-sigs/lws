@@ -88,6 +88,15 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		return pod
 	}
 
+	// envtest runs no garbage collector. Delete a ComputeDomain the way garbage
+	// collection does once its owner is gone, and let the protection finalizer
+	// hold it.
+	gcDeleteComputeDomain := func(name string) {
+		var cd computedomain.ComputeDomain
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: name}, &cd)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, &cd)).To(gomega.Succeed())
+	}
+
 	ginkgo.BeforeEach(func() {
 		features.SetFeatureGateDuringTest(ginkgo.GinkgoTB(), features.AutoComputeDomain, true)
 		pw = webhooks.NewPodWebhook(nil)
@@ -144,6 +153,8 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName1}, &cd1)).To(gomega.Succeed())
 			g.Expect(controllerutil.ContainsFinalizer(&cd0, leaderworkerset.ComputeDomainProtectionFinalizer)).To(gomega.BeTrue())
 			g.Expect(cd0.Spec.Channel.ResourceClaimTemplate.Name).To(gomega.Equal(cdName0))
+			g.Expect(metav1.IsControlledBy(&cd0, leader0)).To(gomega.BeTrue())
+			g.Expect(metav1.IsControlledBy(&cd1, leader1)).To(gomega.BeTrue())
 
 			var refreshedLeader0 corev1.Pod
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader0), &refreshedLeader0)).To(gomega.Succeed())
@@ -170,12 +181,13 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 
 		gomega.Expect(k8sClient.Delete(ctx, leader1)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, &workerSts1)).To(gomega.Succeed())
+		gcDeleteComputeDomain(cdName1)
 
 		gomega.Consistently(func(g gomega.Gomega) {
 			var cd1 computedomain.ComputeDomain
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName1}, &cd1)).To(gomega.Succeed())
-			g.Expect(cd1.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
-		}, "500ms", testing.Interval).Should(gomega.Succeed())
+			g.Expect(controllerutil.ContainsFinalizer(&cd1, leaderworkerset.ComputeDomainProtectionFinalizer)).To(gomega.BeTrue())
+		}, "2s", testing.Interval).Should(gomega.Succeed())
 
 		// Once worker1 finishes terminating, cdName1 is cleaned up automatically.
 		gomega.Expect(k8sClient.Delete(ctx, worker1)).To(gomega.Succeed())
@@ -200,6 +212,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 			var p corev1.Pod
 			return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader0), &p))
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+		gcDeleteComputeDomain(cdName0)
 
 		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name}, &leaderSts)).To(gomega.Succeed())
 		restartedLeader0 := admitPodFromStatefulSet(&leaderSts, 0)
@@ -227,7 +240,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 
-	ginkgo.It("manages Hash groupIdentity ComputeDomains and releases protection finalizer after parent LWS deletion", func() {
+	ginkgo.It("owns Hash groupIdentity ComputeDomains by the leader Pod and releases the finalizer after it is gone", func() {
 		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
 			Name("hash-model").
 			Replica(1).
@@ -269,6 +282,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		gomega.Eventually(func(g gomega.Gomega) {
 			var cd computedomain.ComputeDomain
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName}, &cd)).To(gomega.Succeed())
+			g.Expect(metav1.IsControlledBy(&cd, leader)).To(gomega.BeTrue())
 			var workerSts appsv1.StatefulSet
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: leader.Spec.Hostname}, &workerSts)).To(gomega.Succeed())
 			g.Expect(workerSts.Spec.Template.Annotations[leaderworkerset.ComputeDomainNameAnnotationKey]).To(gomega.Equal(cdName))
@@ -278,12 +292,15 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		gomega.Expect(k8sClient.Delete(ctx, lws)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, leader)).To(gomega.Succeed())
 
+		// Garbage collection deletes the ComputeDomain while the terminating leader
+		// still references it, and the finalizer holds it.
+		gcDeleteComputeDomain(cdName)
 		gomega.Consistently(func(g gomega.Gomega) {
 			var cd computedomain.ComputeDomain
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName}, &cd)).To(gomega.Succeed())
-		}, "500ms", testing.Interval).Should(gomega.Succeed())
+		}, "2s", testing.Interval).Should(gomega.Succeed())
 
-		// Remove pod finalizer -> ComputeDomainReconciler releases protection finalizer and deletes ComputeDomain.
+		// Remove the pod finalizer: the reconciler releases the protection finalizer.
 		gomega.Eventually(func(g gomega.Gomega) {
 			var p corev1.Pod
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &p)).To(gomega.Succeed())

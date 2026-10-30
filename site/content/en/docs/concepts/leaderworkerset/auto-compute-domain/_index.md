@@ -16,9 +16,8 @@ creates, isolates across revisions and replica restarts, injects pod DRA claims
 for, and garbage-collects `ComputeDomain` resources at two scopes:
 
 1. **Per `LeaderWorkerSet` replica** (`leaderworkerset.sigs.k8s.io/auto-compute-domain: "enabled"`):
-   one `ComputeDomain` per replica incarnation, shared by the replica's leader
-   and worker GPU containers. In the default `Ordinal` group identity mode, a
-   restarted replica gets a new `ComputeDomain`.
+   one `ComputeDomain` per leader Pod, shared by the replica's leader and worker
+   GPU containers. A restarted or replaced group gets a new `ComputeDomain`.
 2. **Per `DisaggregatedSet` slice** (`disaggregatedset.x-k8s.io/auto-compute-domain: "enabled"`):
    one `ComputeDomain` per active `(slice, revision)`, shared across enrolled
    roles (such as `prefill` and `decode`) within the same slice.
@@ -224,11 +223,17 @@ workerTemplate:
   changes the workload revision, so it triggers a rolling update of all groups.
   Unset and `"disabled"` produce the same revision, so upgrading LWS does not
   restart existing workloads.
+- **Ownership and cleanup**: Each replica `ComputeDomain` is owned by its
+  leader Pod, so Kubernetes garbage collection deletes it once that leader Pod
+  is gone (group restart, rolling update, scale-down, or `LeaderWorkerSet`
+  deletion). Each slice `ComputeDomain` is owned by the `DisaggregatedSet`,
+  which deletes it once no child `LeaderWorkerSet` remains for its
+  `(slice, revision)`.
 - **Protection finalizer**: Each managed `ComputeDomain` carries the
   `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. LWS removes
-  it, and deletes obsolete `ComputeDomain`s, only once no Pod references the
-  `ComputeDomain`'s `ResourceClaimTemplate`. Old revisions keep their
-  `ComputeDomain` until their Pods finish terminating.
+  it from a deleted `ComputeDomain` only once no Pod references the
+  `ComputeDomain`'s `ResourceClaimTemplate`, so worker Pods that are still
+  terminating keep their IMEX domain.
 - **Name collisions**: If a `ComputeDomain` with the generated name exists and
   is controlled by another object, LWS does not adopt it. It emits an
   `UnexpectedComputeDomainOwner` Warning event and keeps the leader gated or the

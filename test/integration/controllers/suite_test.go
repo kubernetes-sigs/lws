@@ -146,7 +146,7 @@ var _ = BeforeSuite(func() {
 	err = dsController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	err = computedomain.NewReconciler(k8sManager.GetClient(), k8sManager.GetAPIReader()).SetupWithManager(k8sManager)
+	err = computedomain.NewReconciler(k8sManager.GetClient()).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("pod"), kubernetesProvider)

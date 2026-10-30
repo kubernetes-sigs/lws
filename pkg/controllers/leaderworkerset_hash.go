@@ -38,8 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"sigs.k8s.io/lws/pkg/computedomain"
-	"sigs.k8s.io/lws/pkg/features"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
@@ -138,11 +136,6 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 			return ctrl.Result{}, err
 		}
 		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-	if features.Enabled(features.AutoComputeDomain) {
-		if err := computedomain.CleanupLWSComputeDomains(ctx, r.Client, lws); err != nil {
 			return ctrl.Result{}, err
 		}
 	}

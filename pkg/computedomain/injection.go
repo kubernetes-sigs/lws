@@ -271,12 +271,7 @@ func InjectPodClaims(pod *corev1.Pod) error {
 			if groupIndex == "" || revisionKey == "" {
 				return fmt.Errorf("leader pod %s/%s is missing group-index or template-revision-hash label for ComputeDomain naming", pod.Namespace, pod.Name)
 			}
-			hashIdentity := pod.Annotations[leaderworkersetv1.GroupIdentityAnnotationKey] == string(leaderworkersetv1.GroupIdentityHash)
-			incarnation := ""
-			if !hashIdentity {
-				incarnation = utilrand.String(incarnationLength)
-			}
-			cdName = ReplicaComputeDomainName(prefix, groupIndex, revisionKey, incarnation, hashIdentity)
+			cdName = ReplicaComputeDomainName(prefix, groupIndex, revisionKey, utilrand.String(incarnationLength))
 			if pod.Annotations == nil {
 				pod.Annotations = make(map[string]string)
 			}

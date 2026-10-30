@@ -1653,7 +1653,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// gate does not change the worker StatefulSet template and restart workers.
 	// The annotation has no effect while the gate is off.
 	if computedomain.LWSNeedsReplicaDomain(currentLws) {
-		if cdName := computedomain.LeaderComputeDomainName(currentLws, &leaderPod); cdName != "" {
+		if cdName := computedomain.LeaderComputeDomainName(&leaderPod); cdName != "" {
 			podAnnotations[leaderworkerset.ComputeDomainNameAnnotationKey] = cdName
 		}
 	}

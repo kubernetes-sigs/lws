@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,9 +54,9 @@ const (
 // desired name already exists and is not controlled by the expected workload.
 var ErrUnexpectedComputeDomainOwner = errors.New("unexpected ComputeDomain owner")
 
-// errComputeDomainTerminating indicates that the desired ComputeDomain exists
+// ErrComputeDomainTerminating indicates that the desired ComputeDomain exists
 // but is being deleted.
-var errComputeDomainTerminating = errors.New("ComputeDomain is terminating")
+var ErrComputeDomainTerminating = errors.New("ComputeDomain is terminating")
 
 // SetupIndexes registers the Pod ResourceClaimTemplateName field index used for
 // ComputeDomain cleanup and finalizer release.
@@ -92,12 +93,17 @@ func VerifyAPI(restMapper apimeta.RESTMapper) error {
 }
 
 // EnsureReplicaComputeDomain ensures the ComputeDomain backing leaderPod's
-// replica exists, controller-owned by lws. A terminating ComputeDomain blocks a
-// gated leader, but not one already admitted: its group is running, and
-// returning an error would stop the pod reconciler from reaching the worker
-// StatefulSet.
+// replica exists. The ComputeDomain is controller-owned by the leader Pod, so
+// garbage collection deletes it once that leader incarnation is gone and the
+// protection finalizer holds it until the group's last Pod terminates. Owner
+// deletion is not blocked: the finalizer waits for the leader, so blocking
+// would deadlock a foreground delete of the leader.
+//
+// A terminating ComputeDomain blocks a gated leader, but not one already
+// admitted: its group is running, and returning an error would stop the pod
+// reconciler from reaching the worker StatefulSet.
 func EnsureReplicaComputeDomain(ctx context.Context, c client.Client, lws *leaderworkersetv1.LeaderWorkerSet, leaderPod *corev1.Pod) error {
-	cdName := LeaderComputeDomainName(lws, leaderPod)
+	cdName := LeaderComputeDomainName(leaderPod)
 	if cdName == "" {
 		return nil
 	}
@@ -106,18 +112,28 @@ func EnsureReplicaComputeDomain(ctx context.Context, c client.Client, lws *leade
 		leaderworkersetv1.GroupIndexLabelKey: leaderPod.Labels[leaderworkersetv1.GroupIndexLabelKey],
 		leaderworkersetv1.RevisionKey:        leaderPod.Labels[leaderworkersetv1.RevisionKey],
 	}
-	ownerRef := *metav1.NewControllerRef(lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         corev1.SchemeGroupVersion.String(),
+		Kind:               "Pod",
+		Name:               leaderPod.Name,
+		UID:                leaderPod.UID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(false),
+	}
 
 	err := ensureComputeDomain(ctx, c, lws.Namespace, cdName, labels, ownerRef)
-	if errors.Is(err, errComputeDomainTerminating) && !podutils.HasSchedulingGate(leaderPod, leaderworkersetv1.GroupReplacementSchedulingGate) {
+	if errors.Is(err, ErrComputeDomainTerminating) && !podutils.HasSchedulingGate(leaderPod, leaderworkersetv1.GroupReplacementSchedulingGate) {
 		return nil
 	}
 	return err
 }
 
 // EnsureSliceComputeDomain ensures the ComputeDomain backing a DisaggregatedSet
-// (slice, revision) exists before child LeaderWorkerSets scale up.
-func EnsureSliceComputeDomain(ctx context.Context, c client.Client, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision string) error {
+// (slice, revision) exists before child LeaderWorkerSets scale up. A terminating
+// ComputeDomain only blocks a slice that has no children for the revision yet:
+// existing children run against it, and blocking would stop scaling and
+// rollout until a new revision.
+func EnsureSliceComputeDomain(ctx context.Context, c client.Client, ds *disaggregatedsetv1.DisaggregatedSet, slice int, revision string, hasChildren bool) error {
 	cdName := SliceComputeDomainName(ds, slice, revision)
 	labels := map[string]string{
 		disaggregatedsetv1.SetNameLabelKey:  ds.Name,
@@ -125,7 +141,11 @@ func EnsureSliceComputeDomain(ctx context.Context, c client.Client, ds *disaggre
 		disaggregatedsetv1.RevisionLabelKey: revision,
 	}
 	ownerRef := *metav1.NewControllerRef(ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet"))
-	return ensureComputeDomain(ctx, c, ds.Namespace, cdName, labels, ownerRef)
+	err := ensureComputeDomain(ctx, c, ds.Namespace, cdName, labels, ownerRef)
+	if errors.Is(err, ErrComputeDomainTerminating) && hasChildren {
+		return nil
+	}
+	return err
 }
 
 func ensureComputeDomain(ctx context.Context, c client.Client, namespace, cdName string, labels map[string]string, ownerRef metav1.OwnerReference) error {
@@ -169,7 +189,7 @@ func ensureComputeDomain(ctx context.Context, c client.Client, namespace, cdName
 		return fmt.Errorf("%w: ComputeDomain %s/%s is not controlled by %s %s", ErrUnexpectedComputeDomainOwner, namespace, cdName, ownerRef.Kind, ownerRef.Name)
 	}
 	if !existing.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("%w: %s/%s", errComputeDomainTerminating, namespace, cdName)
+		return fmt.Errorf("%w: %s/%s", ErrComputeDomainTerminating, namespace, cdName)
 	}
 
 	needFinalizer := !controllerutil.ContainsFinalizer(existing, leaderworkersetv1.ComputeDomainProtectionFinalizer)
@@ -205,59 +225,9 @@ func hasLabels(actual, expected map[string]string) bool {
 	return true
 }
 
-// CleanupLWSComputeDomains deletes obsolete LWS-owned ComputeDomains once no
-// active leader Pod claims them and no Pod references their ResourceClaimTemplate.
-func CleanupLWSComputeDomains(ctx context.Context, c client.Client, lws *leaderworkersetv1.LeaderWorkerSet) error {
-	cdList := &ComputeDomainList{}
-	if err := c.List(ctx, cdList, client.InNamespace(lws.Namespace), client.MatchingLabels{
-		leaderworkersetv1.SetNameLabelKey: lws.Name,
-	}); err != nil {
-		return fmt.Errorf("list ComputeDomains for LeaderWorkerSet %s/%s: %w", lws.Namespace, lws.Name, err)
-	}
-	owned := make([]*ComputeDomain, 0, len(cdList.Items))
-	for i := range cdList.Items {
-		if metav1.IsControlledBy(&cdList.Items[i], lws) {
-			owned = append(owned, &cdList.Items[i])
-		}
-	}
-	if len(owned) == 0 {
-		return nil
-	}
-
-	desired := make(map[string]struct{})
-	if lws.DeletionTimestamp.IsZero() {
-		leaders := &corev1.PodList{}
-		if err := c.List(ctx, leaders, client.InNamespace(lws.Namespace), client.MatchingLabels{
-			leaderworkersetv1.SetNameLabelKey:     lws.Name,
-			leaderworkersetv1.WorkerIndexLabelKey: "0",
-		}); err != nil {
-			return fmt.Errorf("list leader Pods before ComputeDomain cleanup: %w", err)
-		}
-		for i := range leaders.Items {
-			pod := &leaders.Items[i]
-			if !pod.DeletionTimestamp.IsZero() {
-				continue
-			}
-			if cdName := LeaderComputeDomainName(lws, pod); cdName != "" {
-				desired[cdName] = struct{}{}
-			}
-		}
-	}
-
-	for _, cd := range owned {
-		if _, keep := desired[cd.Name]; keep {
-			continue
-		}
-		if err := releaseAndDeleteIfUnreferenced(ctx, c, cd); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // CleanupDisaggregatedSetComputeDomains deletes obsolete DisaggregatedSet-owned
-// ComputeDomains once their (slice, revision) has no remaining child LWSs and
-// no Pod references their ResourceClaimTemplate.
+// ComputeDomains once their (slice, revision) has no remaining child LWSs. The
+// protection finalizer holds each one until no Pod references it.
 func CleanupDisaggregatedSetComputeDomains(
 	ctx context.Context,
 	c client.Client,
@@ -297,17 +267,17 @@ func CleanupDisaggregatedSetComputeDomains(
 	}
 
 	for _, cd := range owned {
-		if _, keep := desired[cd.Name]; keep {
+		if _, keep := desired[cd.Name]; keep || !cd.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if err := releaseAndDeleteIfUnreferenced(ctx, c, cd); err != nil {
-			return err
+		if err := c.Delete(ctx, cd); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete unused ComputeDomain %s/%s: %w", cd.Namespace, cd.Name, err)
 		}
 	}
 	return nil
 }
 
-func releaseAndDeleteIfUnreferenced(ctx context.Context, c client.Client, cd *ComputeDomain) error {
+func releaseIfUnreferenced(ctx context.Context, c client.Client, cd *ComputeDomain) error {
 	referencingPods := &corev1.PodList{}
 	if err := c.List(ctx, referencingPods, client.InNamespace(cd.Namespace), client.MatchingFields{
 		PodClaimTemplateIndex: cd.Name,
@@ -328,30 +298,19 @@ func releaseAndDeleteIfUnreferenced(ctx context.Context, c client.Client, cd *Co
 			return fmt.Errorf("remove protection finalizer from ComputeDomain %s/%s: %w", cd.Namespace, cd.Name, err)
 		}
 	}
-
-	if cd.DeletionTimestamp.IsZero() {
-		if err := c.Delete(ctx, cd); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete unused ComputeDomain %s/%s: %w", cd.Namespace, cd.Name, err)
-		}
-	}
 	return nil
 }
 
-// Reconciler releases the LWS ComputeDomain protection finalizer from
-// terminating or orphaned ComputeDomains once zero Pods reference them. This
-// ensures background cascading deletion of a LeaderWorkerSet or
-// DisaggregatedSet never leaks ComputeDomains while still holding them until
-// member pods finish terminating.
+// Reconciler releases the LWS ComputeDomain protection finalizer from a
+// terminating ComputeDomain once no Pod references it. Garbage collection of
+// the owning leader Pod or DisaggregatedSet, or slice cleanup, starts the
+// deletion.
 type Reconciler struct {
 	client.Client
-	// apiReader confirms against the API server that a controller owner is
-	// gone before the finalizer is released, so a stale cache cannot release
-	// it early.
-	apiReader client.Reader
 }
 
-func NewReconciler(c client.Client, apiReader client.Reader) *Reconciler {
-	return &Reconciler{Client: c, apiReader: apiReader}
+func NewReconciler(c client.Client) *Reconciler {
+	return &Reconciler{Client: c}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -359,75 +318,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, cd); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !controllerutil.ContainsFinalizer(cd, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
+	if cd.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(cd, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
 		return ctrl.Result{}, nil
 	}
-
-	shouldRelease := !cd.DeletionTimestamp.IsZero()
-	if !shouldRelease {
-		ownerGone, err := r.controllerOwnerDeleted(ctx, cd)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		shouldRelease = ownerGone
-	}
-	if !shouldRelease {
-		return ctrl.Result{}, nil
-	}
-
-	return ctrl.Result{}, releaseAndDeleteIfUnreferenced(ctx, r.Client, cd)
-}
-
-// controllerOwnerDeleted reports whether cd's controller owner no longer
-// exists, was recreated with a different UID, or is being deleted. A positive
-// cache result is confirmed with apiReader.
-func (r *Reconciler) controllerOwnerDeleted(ctx context.Context, cd *ComputeDomain) (bool, error) {
-	owner := metav1.GetControllerOf(cd)
-	if owner == nil {
-		return false, nil
-	}
-	var obj client.Object
-	switch {
-	case owner.Kind == "LeaderWorkerSet" && owner.APIVersion == leaderworkersetv1.GroupVersion.String():
-		obj = &leaderworkersetv1.LeaderWorkerSet{}
-	case owner.Kind == "DisaggregatedSet" && owner.APIVersion == disaggregatedsetv1.GroupVersion.String():
-		obj = &disaggregatedsetv1.DisaggregatedSet{}
-	default:
-		return false, nil
-	}
-	key := types.NamespacedName{Namespace: cd.Namespace, Name: owner.Name}
-	gone, err := ownerGone(ctx, r.Client, key, owner.UID, obj)
-	if err != nil || !gone || r.apiReader == nil {
-		return gone, err
-	}
-	return ownerGone(ctx, r.apiReader, key, owner.UID, obj.DeepCopyObject().(client.Object))
-}
-
-func ownerGone(ctx context.Context, reader client.Reader, key types.NamespacedName, uid types.UID, obj client.Object) (bool, error) {
-	if err := reader.Get(ctx, key, obj); err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, err
-	}
-	return obj.GetUID() != uid || obj.GetDeletionTimestamp() != nil, nil
+	return ctrl.Result{}, releaseIfUnreferenced(ctx, r.Client, cd)
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	terminating := func(obj client.Object) bool {
+		return obj != nil && obj.GetDeletionTimestamp() != nil &&
+			controllerutil.ContainsFinalizer(obj, leaderworkersetv1.ComputeDomainProtectionFinalizer)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("computedomain").
 		For(&ComputeDomain{}, builder.WithPredicates(predicate.Funcs{
-			// Create covers owners deleted while the controller was down.
-			CreateFunc: func(e event.CreateEvent) bool {
-				return e.Object != nil && controllerutil.ContainsFinalizer(e.Object, leaderworkersetv1.ComputeDomainProtectionFinalizer)
-			},
-			// Only deletion matters on update. Owner deletion arrives through the
-			// owner watches below, and status writes by the NVIDIA controller
-			// would otherwise trigger a reconcile each.
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				return e.ObjectNew != nil && e.ObjectNew.GetDeletionTimestamp() != nil &&
-					controllerutil.ContainsFinalizer(e.ObjectNew, leaderworkersetv1.ComputeDomainProtectionFinalizer)
-			},
+			// Create covers ComputeDomains that started terminating while the
+			// controller was down.
+			CreateFunc:  func(e event.CreateEvent) bool { return terminating(e.Object) },
+			UpdateFunc:  func(e event.UpdateEvent) bool { return terminating(e.ObjectNew) },
 			DeleteFunc:  func(event.DeleteEvent) bool { return false },
 			GenericFunc: func(event.GenericEvent) bool { return false },
 		})).
@@ -436,26 +344,6 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 				enqueuePodReferencedComputeDomains(e.Object, q)
 			},
 		}).
-		Watches(&leaderworkersetv1.LeaderWorkerSet{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			return r.enqueueOwnedComputeDomains(ctx, obj, leaderworkersetv1.SetNameLabelKey)
-		}), builder.WithPredicates(predicate.Funcs{
-			CreateFunc: func(event.CreateEvent) bool { return false },
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				return (e.ObjectOld.GetDeletionTimestamp() == nil) != (e.ObjectNew.GetDeletionTimestamp() == nil)
-			},
-			DeleteFunc:  func(event.DeleteEvent) bool { return true },
-			GenericFunc: func(event.GenericEvent) bool { return false },
-		})).
-		Watches(&disaggregatedsetv1.DisaggregatedSet{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			return r.enqueueOwnedComputeDomains(ctx, obj, disaggregatedsetv1.SetNameLabelKey)
-		}), builder.WithPredicates(predicate.Funcs{
-			CreateFunc: func(event.CreateEvent) bool { return false },
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				return (e.ObjectOld.GetDeletionTimestamp() == nil) != (e.ObjectNew.GetDeletionTimestamp() == nil)
-			},
-			DeleteFunc:  func(event.DeleteEvent) bool { return true },
-			GenericFunc: func(event.GenericEvent) bool { return false },
-		})).
 		Complete(r)
 }
 
@@ -474,28 +362,4 @@ func enqueuePodReferencedComputeDomains(obj client.Object, q interface{ Add(reco
 			})
 		}
 	}
-}
-
-func (r *Reconciler) enqueueOwnedComputeDomains(ctx context.Context, owner client.Object, nameLabelKey string) []reconcile.Request {
-	if owner == nil {
-		return nil
-	}
-	cdList := &ComputeDomainList{}
-	if err := r.List(ctx, cdList, client.InNamespace(owner.GetNamespace()), client.MatchingLabels{
-		nameLabelKey: owner.GetName(),
-	}); err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "Failed to list ComputeDomains for owner", "namespace", owner.GetNamespace(), "owner", owner.GetName())
-		return nil
-	}
-	var reqs []reconcile.Request
-	for i := range cdList.Items {
-		cd := &cdList.Items[i]
-		ctrlRef := metav1.GetControllerOf(cd)
-		if ctrlRef != nil && ctrlRef.UID == owner.GetUID() {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: cd.Namespace, Name: cd.Name},
-			})
-		}
-	}
-	return reqs
 }
