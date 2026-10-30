@@ -119,6 +119,9 @@ func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState 
 			residual = max(1, residual)
 		}
 		targets[i] = max(snapshot.Target.SpecReplicas[i], residual)
+		if limit, partitioned := snapshot.partitionedTargetLimit(i); partitioned {
+			targets[i] = max(snapshot.Target.SpecReplicas[i], min(targets[i], limit))
+		}
 	}
 	return targets
 }

@@ -48,6 +48,7 @@ const (
 	EventReasonBootstrapSurge         = "BootstrapSurge"
 	EventReasonAvailabilityFallback   = "AvailabilityFallback"
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
+	EventReasonRollingUpdatePartition = "RollingUpdatePartitioned"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	unschedulablePodGracePeriod       = time.Minute
@@ -220,6 +221,11 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	selectedRevision, selectedState, selectedStep, err := executor.selectNextRolloutStep(ctx, candidates, oldRevisions, targetRevision, inputs)
 	if err != nil {
 		return ctrl.Result{}, false, err
+	}
+	if selectedStep == nil && partitioned(inputs.config) {
+		log.V(1).Info("Rolling update is held by a role partition; waiting for the partition to change")
+		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdatePartition, "Wait", "Holding rolling update to revision %s at the configured role partitions", targetRevision.Revision)
+		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
 	if selectedStep == nil {
 		reason := "no feasible replica change is currently available within the rollout constraints"
@@ -661,10 +667,18 @@ func extractRollingUpdateConfig(
 				// admission, but a percentage can round down to 0 after a scale-down.
 				cfg = defaultRollingUpdateConfig
 			}
+			if rc.Partition != nil && child.Name == "" {
+				// The webhook admits a partition only on a role without sub-roles.
+				cfg.Partition = int(*rc.Partition)
+			}
 			config[roleIndex[name]] = cfg
 		}
 	}
 	return config
+}
+
+func partitioned(config []RollingUpdateConfig) bool {
+	return slices.ContainsFunc(config, func(c RollingUpdateConfig) bool { return c.Partition > 0 })
 }
 
 // defaultRollingUpdateConfig applies to a role without a rollingUpdateConfiguration.

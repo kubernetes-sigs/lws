@@ -127,10 +127,10 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 	})
 
 	Context("Webhook Validation", func() {
-		It("should reject DisaggregatedSet with partition set", func() {
-			By("attempting to create a DisaggregatedSet with partition=1")
+		It("should reject DisaggregatedSet with a negative partition", func() {
+			By("attempting to create a DisaggregatedSet with partition=-1")
 			yaml := fixtures.PrefillDecode("test-invalid-partition",
-				fixtures.Role{Replicas: 1, Partition: fixtures.Ptr(1)},
+				fixtures.Role{Replicas: 1, Partition: fixtures.Ptr(-1)},
 				fixtures.Role{Replicas: 1},
 			).YAML()
 			err := applyYAML(yaml)
@@ -241,6 +241,42 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 						fmt.Sprintf("Revision %s has prefill replicas but no decode (orphaned)", revision))
 				}
 			}
+		})
+
+		It("should hold a rolling update at the role partitions until they are lowered", func() {
+			role := func(partition int, image string) fixtures.Role {
+				return fixtures.Role{Replicas: 3, HasRollout: true, MaxSurge: intstr.FromInt32(1), MaxUnavailable: intstr.FromInt32(0),
+					Partition: fixtures.Ptr(partition), Image: image}
+			}
+			By("creating a DisaggregatedSet with partition=2; it has no effect without a rollout")
+			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, role(2, ""), role(2, "")).YAML())).To(Succeed())
+			kubectl.ForRunningPodCount(deploymentName, 6)
+			oldRevision, err := kubectl.GetRevision(deploymentName)
+			Expect(err).NotTo(HaveOccurred())
+
+			newAndOld := func() (int, int) {
+				newTotal, err := kubectl.GetTotalReplicasNotRevision(deploymentName, oldRevision)
+				Expect(err).NotTo(HaveOccurred())
+				oldTotal, err := kubectl.GetTotalReplicas(deploymentName, oldRevision)
+				Expect(err).NotTo(HaveOccurred())
+				return newTotal, oldTotal
+			}
+			for _, partition := range []int{2, 1} {
+				By(fmt.Sprintf("holding the rollout with partition=%d", partition))
+				image := "registry.k8s.io/pause:3.10"
+				Expect(applyYAML(fixtures.PrefillDecode(deploymentName, role(partition, image), role(partition, image)).YAML())).To(Succeed())
+				held := func(g Gomega) {
+					newTotal, oldTotal := newAndOld()
+					g.Expect(newTotal).To(Equal(2 * (3 - partition)))
+					g.Expect(oldTotal).To(Equal(2 * partition))
+				}
+				Eventually(held, 2*time.Minute, time.Second).Should(Succeed())
+				Consistently(held, 15*time.Second, time.Second).Should(Succeed())
+			}
+
+			By("lowering the partition to 0 to complete the rollout")
+			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, role(0, "registry.k8s.io/pause:3.10"), role(0, "registry.k8s.io/pause:3.10")).YAML())).To(Succeed())
+			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
 		})
 
 		It("should handle percentage-based maxSurge and maxUnavailable", func() {

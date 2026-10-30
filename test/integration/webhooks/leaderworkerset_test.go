@@ -183,7 +183,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 		}),
 		ginkgo.Entry("wouldn't apply default rollout strategy when configured", &testDefaultingCase{
-			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).
 					RolloutStrategy(leaderworkerset.RolloutStrategy{
@@ -590,7 +589,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: true,
 		}),
 		ginkgo.Entry("creation with partition greater than replicas should succeed", &testValidationCase{
-			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(3)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](5)
@@ -599,7 +597,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with partition equal to replicas should succeed", &testValidationCase{
-			dsTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(3)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](3)
@@ -616,7 +613,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("update partition should succeed", &testValidationCase{
-			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -636,7 +632,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: true,
 		}),
 		ginkgo.Entry("update partition to greater than replicas should succeed", &testValidationCase{
-			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
@@ -646,7 +641,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			updateShouldFail: false,
 		}),
 		ginkgo.Entry("update partition to equal replicas should succeed", &testValidationCase{
-			dsUpdatedTemplateError: "partition",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(ns.Name).Replica(5)
 			},
