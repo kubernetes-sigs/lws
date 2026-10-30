@@ -143,6 +143,49 @@ func TestLeaderWorkerSetComputeDomainValidation(t *testing.T) {
 			t.Fatalf("expected warning and nil error for zero-GPU LWS, warnings=%v err=%v", warnings, err)
 		}
 	})
+
+	t.Run("rejects controller-managed ComputeDomain annotations on templates", func(t *testing.T) {
+		features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, true)
+		hook := &LeaderWorkerSetWebhook{RESTMapper: computeDomainRESTMapper()}
+
+		for _, key := range []string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey} {
+			for _, enabled := range []bool{true, false} {
+				lws := buildGPULWS()
+				if enabled {
+					lws.Annotations = map[string]string{v1.AutoComputeDomainAnnotationKey: v1.AutoComputeDomainEnabled}
+				}
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{key: "shared"}
+				if _, err := hook.ValidateCreate(ctx, lws); err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("expected %s on workerTemplate to be rejected (opted in=%t), got %v", key, enabled, err)
+				}
+
+				leaderSet := buildGPULWS()
+				if enabled {
+					leaderSet.Annotations = map[string]string{v1.AutoComputeDomainAnnotationKey: v1.AutoComputeDomainEnabled}
+				}
+				leaderSet.Spec.LeaderWorkerTemplate.LeaderTemplate = leaderSet.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+				leaderSet.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations = map[string]string{key: "shared"}
+				if _, err := hook.ValidateCreate(ctx, leaderSet); err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("expected %s on leaderTemplate to be rejected (opted in=%t), got %v", key, enabled, err)
+				}
+			}
+		}
+
+		// An object that already carries the annotation stays updatable while the
+		// value is unchanged, and changing the value is rejected.
+		existing := buildGPULWS()
+		existing.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ComputeDomainNameAnnotationKey: "shared"}
+		scaled := existing.DeepCopy()
+		scaled.Spec.Replicas = ptr.To[int32](3)
+		if _, err := hook.ValidateUpdate(ctx, existing, scaled); err != nil {
+			t.Fatalf("expected update with an unchanged annotation to succeed, got %v", err)
+		}
+		changed := existing.DeepCopy()
+		changed.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations[v1.ComputeDomainNameAnnotationKey] = "other"
+		if _, err := hook.ValidateUpdate(ctx, existing, changed); err == nil || !strings.Contains(err.Error(), v1.ComputeDomainNameAnnotationKey) {
+			t.Fatalf("expected update changing %s to be rejected, got %v", v1.ComputeDomainNameAnnotationKey, err)
+		}
+	})
 }
 
 func TestPodWebhookComputeDomainInjection(t *testing.T) {

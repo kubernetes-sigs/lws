@@ -1185,7 +1185,10 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 		podAnnotations[leaderworkerset.PodTerminationPolicyAnnotationKey] = string(lws.Spec.PodTerminationPolicy)
 	}
-	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(lws) {
+	// Stamped whether or not the AutoComputeDomain gate is on, so toggling the
+	// gate does not change the StatefulSet template and roll existing groups.
+	// The annotation has no effect while the gate is off.
+	if computedomain.LWSNeedsReplicaDomain(lws) {
 		podAnnotations[leaderworkerset.ComputeDomainPrefixAnnotationKey] = computedomain.UIDPrefix(lws.Name, lws.UID)
 	}
 

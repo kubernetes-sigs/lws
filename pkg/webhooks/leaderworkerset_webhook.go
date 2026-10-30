@@ -665,6 +665,13 @@ func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWor
 
 	allErrs = append(allErrs, ValidateTemplateComputeDomainContainers(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
 	allErrs = append(allErrs, ValidateTemplateComputeDomainContainers(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+	var oldLeaderTpl, oldWorkerTpl *corev1.PodTemplateSpec
+	if oldLws != nil {
+		oldLeaderTpl = oldLws.Spec.LeaderWorkerTemplate.LeaderTemplate
+		oldWorkerTpl = &oldLws.Spec.LeaderWorkerTemplate.WorkerTemplate
+	}
+	allErrs = append(allErrs, ValidateTemplateInternalComputeDomainAnnotations(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLeaderTpl)...)
+	allErrs = append(allErrs, ValidateTemplateInternalComputeDomainAnnotations(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate, oldWorkerTpl)...)
 
 	val, set := lws.Annotations[v1.AutoComputeDomainAnnotationKey]
 	if !set {
@@ -718,6 +725,36 @@ func ValidateTemplateComputeDomainContainers(templatePath *field.Path, tpl *core
 		}
 	}
 	return nil
+}
+
+// ValidateTemplateInternalComputeDomainAnnotations rejects the controller-managed
+// compute-domain-prefix and compute-domain-name annotations on a user
+// PodTemplateSpec. The pod webhook derives ComputeDomain names from them, so a
+// user-set value could put all replicas into one ComputeDomain or reference one
+// that is never created. A value unchanged from oldTpl is allowed so objects
+// that already carry it remain updatable. Exported for DisaggregatedSet webhook
+// reuse.
+func ValidateTemplateInternalComputeDomainAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	if tpl == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	for _, key := range []string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey} {
+		val, exists := tpl.Annotations[key]
+		if !exists {
+			continue
+		}
+		if oldTpl != nil {
+			if oldVal, oldExists := oldTpl.Annotations[key]; oldExists && oldVal == val {
+				continue
+			}
+		}
+		allErrs = append(allErrs, field.Forbidden(
+			templatePath.Child("metadata", "annotations").Key(key),
+			"is managed by the LeaderWorkerSet controller and cannot be set",
+		))
+	}
+	return allErrs
 }
 
 // ValidateReservedComputeDomainClaim rejects user-defined pod.spec.resourceClaims
