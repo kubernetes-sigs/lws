@@ -51,6 +51,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -101,6 +103,9 @@ const (
 
 	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
 	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
+
+	// UnexpectedComputeDomainOwner indicates that ComputeDomain ownership prevents reconciliation.
+	UnexpectedComputeDomainOwner = "UnexpectedComputeDomainOwner"
 
 	// Event actions
 	Create = "Create"
@@ -153,6 +158,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if lws.DeletionTimestamp != nil {
 		if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 			if err := r.deleteWorkerStatefulSets(ctx, lws); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if features.Enabled(features.AutoComputeDomain) {
+			if err := computedomain.CleanupLWSComputeDomains(ctx, r.Client, lws); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -273,6 +283,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, err
 		}
 		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if features.Enabled(features.AutoComputeDomain) {
+		if err := computedomain.CleanupLWSComputeDomains(ctx, r.Client, lws); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -487,6 +502,9 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.Workload{}).
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
+	if features.Enabled(features.AutoComputeDomain) {
+		builder = builder.Owns(&computedomain.ComputeDomain{})
+	}
 	return builder.Complete(r)
 }
 
@@ -502,10 +520,13 @@ func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 			if e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0" {
 				return true
 			}
+			pod, ok := e.Object.(*corev1.Pod)
+			if features.Enabled(features.AutoComputeDomain) && ok && computedomain.PodHasComputeDomainClaim(pod) {
+				return true
+			}
 			if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); !ok {
 				return false
 			}
-			pod, ok := e.Object.(*corev1.Pod)
 			return (ok && pod.Spec.SchedulingGroup != nil && pod.Spec.SchedulingGroup.PodGroupName != nil) ||
 				e.Object.GetAnnotations()[schedulerprovider.WorkloadSchedulingAnnotationKey] != ""
 		},
@@ -1163,6 +1184,9 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	// pod template would change the StatefulSet and roll existing groups on upgrade.
 	if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 		podAnnotations[leaderworkerset.PodTerminationPolicyAnnotationKey] = string(lws.Spec.PodTerminationPolicy)
+	}
+	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(lws) {
+		podAnnotations[leaderworkerset.ComputeDomainPrefixAnnotationKey] = computedomain.UIDPrefix(lws.Name, lws.UID)
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

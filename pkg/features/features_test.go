@@ -28,9 +28,15 @@ func TestWorkloadAwareSchedulingDefaultsOff(t *testing.T) {
 	assert.False(t, Enabled(WorkloadAwareScheduling))
 }
 
+func TestAutoComputeDomainDefaultsOff(t *testing.T) {
+	assert.False(t, Enabled(AutoComputeDomain))
+}
+
 func TestSetFeatureGateDuringTest(t *testing.T) {
 	SetFeatureGateDuringTest(t, WorkloadAwareScheduling, true)
 	assert.True(t, Enabled(WorkloadAwareScheduling))
+	SetFeatureGateDuringTest(t, AutoComputeDomain, true)
+	assert.True(t, Enabled(AutoComputeDomain))
 }
 
 func TestUnknownFeatureGateRejected(t *testing.T) {
@@ -40,5 +46,5 @@ func TestUnknownFeatureGateRejected(t *testing.T) {
 }
 
 func TestKnown(t *testing.T) {
-	assert.Equal(t, []string{string(WorkloadAwareScheduling)}, Known())
+	assert.Equal(t, []string{string(AutoComputeDomain), string(WorkloadAwareScheduling)}, Known())
 }

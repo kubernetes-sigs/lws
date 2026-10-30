@@ -211,3 +211,37 @@ func TestGetRoleNames(t *testing.T) {
 	assert.Equal(t, []string{testUtilsRolePrefill, testUtilsRoleDecode}, GetRoleNames(disaggregatedSet))
 	assert.Empty(t, GetRoleNames(&disaggregatedsetv1.DisaggregatedSet{}))
 }
+
+func TestComputeDisaggregatedSetRevisionAutoComputeDomain(t *testing.T) {
+	base := &disaggregatedsetv1.DisaggregatedSet{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{
+				roleSpec(testUtilsRolePrefill, "image:v1"),
+				roleSpec(testUtilsRoleDecode, "image:v1"),
+			},
+		},
+	}
+	baseRev := ComputeRevision(base.Spec.Roles)
+	assert.Equal(t, baseRev, ComputeDisaggregatedSetRevision(base))
+
+	disabled := base.DeepCopy()
+	disabled.Annotations = map[string]string{
+		disaggregatedsetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainDisabled,
+	}
+	assert.Equal(t, baseRev, ComputeDisaggregatedSetRevision(disabled), "disabled slice auto-compute-domain must preserve base revision hash")
+
+	enabled := base.DeepCopy()
+	enabled.Annotations = map[string]string{
+		disaggregatedsetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainEnabled,
+	}
+	enabledRev := ComputeDisaggregatedSetRevision(enabled)
+	assert.NotEqual(t, baseRev, enabledRev, "enabling slice auto-compute-domain must produce a new revision")
+
+	roleOptOut := enabled.DeepCopy()
+	roleOptOut.Spec.Roles[0].Annotations = map[string]string{
+		disaggregatedsetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainDisabled,
+	}
+	optOutRev := ComputeDisaggregatedSetRevision(roleOptOut)
+	assert.NotEqual(t, enabledRev, optOutRev, "opting out a role must produce a new revision")
+	assert.Nil(t, enabled.Spec.Roles[0].Annotations, "ComputeDisaggregatedSetRevision must not mutate caller roles")
+}

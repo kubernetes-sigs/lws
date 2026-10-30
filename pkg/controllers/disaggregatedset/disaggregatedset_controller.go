@@ -30,15 +30,22 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -185,6 +192,15 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 	reconcileErr := errors.Join(errs...)
+	if features.Enabled(features.AutoComputeDomain) && reconcileErr == nil {
+		remainingLWS, listErr := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
+		if listErr != nil {
+			return ctrl.Result{}, listErr
+		}
+		if cleanErr := computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, disaggregatedSet, remainingLWS, sliceCount, revision); cleanErr != nil {
+			return ctrl.Result{}, cleanErr
+		}
+	}
 
 	// Observe status after workload writes, including slices that failed to
 	// reconcile. DisaggregatedSet and scaler counts come from the same aggregate.
@@ -251,9 +267,9 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 	revisionHashVersion := disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey]
 	switch revisionHashVersion {
 	case disaggregatedsetv1.RevisionHashVersion:
-		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), false, nil
+		return disaggregatedsetutils.ComputeDisaggregatedSetRevision(disaggregatedSet), false, nil
 	case "":
-		if len(existingLWS) > 0 {
+		if len(existingLWS) > 0 && !computedomain.IsDisaggregatedSetSliceAutoComputeDomainEnabled(disaggregatedSet) {
 			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), false, nil
 		}
 
@@ -406,6 +422,15 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 						}
 					}
 				}
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	if features.Enabled(features.AutoComputeDomain) && disaggregatedSet.DeletionTimestamp.IsZero() && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
+		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision); err != nil {
+			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
+				r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, "UnexpectedComputeDomainOwner", "Create", "%s", err.Error())
 			}
 			return ctrl.Result{}, err
 		}
@@ -695,10 +720,28 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// LWS changes arrive through the observer, after its own cache is updated.
 	// A second Owns watch would wake us against a potentially older observation.
-	return ctrl.NewControllerManagedBy(mgr).
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
 		WatchesRawSource(observer.Source(disaggregatedSetRequest)).
-		Named("disaggregatedset").
-		Complete(r)
+		Named("disaggregatedset")
+	if features.Enabled(features.AutoComputeDomain) {
+		ctrlBuilder = ctrlBuilder.
+			Owns(&computedomain.ComputeDomain{}).
+			Watches(&corev1.Pod{}, handler.Funcs{
+				DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					pod, ok := e.Object.(*corev1.Pod)
+					if !ok || pod == nil {
+						return
+					}
+					dsName := pod.Labels[disaggregatedsetv1.SetNameLabelKey]
+					if dsName != "" && computedomain.PodHasComputeDomainClaim(pod) {
+						q.Add(reconcile.Request{
+							NamespacedName: types.NamespacedName{Namespace: pod.Namespace, Name: dsName},
+						})
+					}
+				},
+			})
+	}
+	return ctrlBuilder.Complete(r)
 }

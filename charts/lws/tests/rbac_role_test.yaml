@@ -31,3 +31,42 @@ tests:
               - get
               - list
               - watch
+
+  - it: grants no ComputeDomain permissions by default
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - resource.nvidia.com
+          any: true
+
+  - it: grants access to ComputeDomains with computeDomainManagement.enabled
+    set:
+      computeDomainManagement:
+        enabled: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - resource.nvidia.com
+            resources:
+              - computedomains
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - resource.nvidia.com
+            resources:
+              - computedomains/finalizers
+            verbs:
+              - update
