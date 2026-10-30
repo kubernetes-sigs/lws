@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -216,6 +217,13 @@ func (w *DisaggregatedSetWebhook) validateComputeDomain(
 
 		allErrs = append(allErrs, webhooks.ValidateTemplateComputeDomainContainers(tplPath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
 		allErrs = append(allErrs, webhooks.ValidateTemplateComputeDomainContainers(tplPath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+		var oldLeaderTpl, oldWorkerTpl *corev1.PodTemplateSpec
+		if oldRole != nil {
+			oldLeaderTpl = oldRole.Spec.LeaderWorkerTemplate.LeaderTemplate
+			oldWorkerTpl = &oldRole.Spec.LeaderWorkerTemplate.WorkerTemplate
+		}
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalComputeDomainAnnotations(tplPath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLeaderTpl)...)
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalComputeDomainAnnotations(tplPath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate, oldWorkerTpl)...)
 
 		roleSliceVal, roleSliceSet := role.Annotations[disaggv1.AutoComputeDomainAnnotationKey]
 		if roleSliceSet && roleSliceVal != leaderworkerset.AutoComputeDomainEnabled && roleSliceVal != leaderworkerset.AutoComputeDomainDisabled {

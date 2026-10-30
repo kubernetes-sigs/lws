@@ -603,6 +603,16 @@ func TestAutoComputeDomainRevisionTracking(t *testing.T) {
 		t.Fatalf("SetMatchesRevision must detect disabling auto-compute-domain")
 	}
 
+	// An annotation-only change does not bump the generation, so a cached match
+	// for the same LWS generation and revision must not hide the toggle.
+	cache := lru.New(10)
+	if !SetMatchesRevision(unsetLws, unsetRev, unsetRev, cache) {
+		t.Fatalf("expected the unset LWS to match its own revision")
+	}
+	if SetMatchesRevision(enabledLws, enabledRev, unsetRev, cache) {
+		t.Fatalf("SetMatchesRevision must not reuse a cached match after enabling auto-compute-domain at the same generation")
+	}
+
 	// ApplyRevision restores historical non-MNNVL state onto an MNNVL-enabled live LWS and vice versa.
 	restoredDisabled, err := ApplyRevision(enabledLws, unsetRev)
 	if err != nil {

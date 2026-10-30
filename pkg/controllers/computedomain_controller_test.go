@@ -17,8 +17,10 @@ limitations under the License.
 package controllers
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,15 +84,65 @@ func TestComputeDomainTemplatePropagation(t *testing.T) {
 		}
 	})
 
-	t.Run("omits annotations when AutoComputeDomain feature gate is disabled", func(t *testing.T) {
-		features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, false)
+	t.Run("templates do not change when the AutoComputeDomain feature gate is toggled", func(t *testing.T) {
+		leaderPod := corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "deepseek-0",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.GroupIndexLabelKey:  "0",
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.RevisionKey:         "rev1",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Hostname:  "deepseek-0",
+				Subdomain: "deepseek",
+			},
+		}
+		templates := func(enabled bool) (leader, worker map[string]string) {
+			t.Run(fmt.Sprintf("gate=%t", enabled), func(t *testing.T) {
+				features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, enabled)
+				leaderTpl, err := buildLeaderPodTemplateApplyConfiguration(lws, "rev1")
+				if err != nil {
+					t.Fatalf("buildLeaderPodTemplateApplyConfiguration: %v", err)
+				}
+				workerSts, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
+				if err != nil {
+					t.Fatalf("constructWorkerStatefulSetApplyConfiguration: %v", err)
+				}
+				leader, worker = leaderTpl.Annotations, workerSts.Spec.Template.Annotations
+			})
+			return leader, worker
+		}
+		leaderOn, workerOn := templates(true)
+		leaderOff, workerOff := templates(false)
+		if _, found := leaderOn[leaderworkerset.ComputeDomainPrefixAnnotationKey]; !found {
+			t.Fatalf("expected compute-domain-prefix on the leader template")
+		}
+		if _, found := workerOn[leaderworkerset.ComputeDomainNameAnnotationKey]; !found {
+			t.Fatalf("expected compute-domain-name on the worker template")
+		}
+		if diff := cmp.Diff(leaderOn, leaderOff); diff != "" {
+			t.Fatalf("leader template annotations changed with the gate (-on +off):\n%s", diff)
+		}
+		if diff := cmp.Diff(workerOn, workerOff); diff != "" {
+			t.Fatalf("worker template annotations changed with the gate (-on +off):\n%s", diff)
+		}
+	})
 
-		leaderTpl, err := buildLeaderPodTemplateApplyConfiguration(lws, "rev1")
+	t.Run("omits annotations when the LeaderWorkerSet is not opted in", func(t *testing.T) {
+		features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, true)
+		optedOut := lws.DeepCopy()
+		optedOut.Annotations = nil
+
+		leaderTpl, err := buildLeaderPodTemplateApplyConfiguration(optedOut, "rev1")
 		if err != nil {
 			t.Fatalf("buildLeaderPodTemplateApplyConfiguration: %v", err)
 		}
 		if _, found := leaderTpl.Annotations[leaderworkerset.ComputeDomainPrefixAnnotationKey]; found {
-			t.Fatalf("expected no compute-domain-prefix when gate is disabled")
+			t.Fatalf("expected no compute-domain-prefix when the LeaderWorkerSet is not opted in")
 		}
 	})
 }

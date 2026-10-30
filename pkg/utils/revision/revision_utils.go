@@ -230,11 +230,14 @@ func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevisio
 
 // revisionEqualityCacheKey is the cache key for remembering that a particular
 // revision ResourceVersion is semantically equal to the revision produced from
-// a particular LWS UID at a particular generation.
+// a particular LWS UID at a particular generation. The revision patch also
+// carries the auto-compute-domain annotation, which can change without bumping
+// the generation, so its effective value is part of the key.
 type revisionEqualityCacheKey struct {
-	lwsUID                  types.UID
-	lwsGeneration           int64
-	revisionResourceVersion string
+	lwsUID                   types.UID
+	lwsGeneration            int64
+	revisionResourceVersion  string
+	autoComputeDomainEnabled bool
 }
 
 // SetMatchesRevision returns true if the proposedRevision (generated from the current LWS spec)
@@ -246,9 +249,10 @@ type revisionEqualityCacheKey struct {
 // This function adapts the approach in https://github.com/kubernetes/kubernetes/pull/135017.
 func SetMatchesRevision(lws *leaderworkerset.LeaderWorkerSet, proposedRevision *appsv1.ControllerRevision, existingRevision *appsv1.ControllerRevision, cache *lru.Cache) bool {
 	cacheKey := revisionEqualityCacheKey{
-		lwsUID:                  lws.UID,
-		lwsGeneration:           lws.Generation,
-		revisionResourceVersion: existingRevision.ResourceVersion,
+		lwsUID:                   lws.UID,
+		lwsGeneration:            lws.Generation,
+		revisionResourceVersion:  existingRevision.ResourceVersion,
+		autoComputeDomainEnabled: lws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled,
 	}
 	if _, ok := cache.Get(cacheKey); ok {
 		return true

@@ -164,4 +164,24 @@ func TestDisaggregatedSetComputeDomainValidationMatrix(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, warnings)
 	})
+
+	t.Run("rejects controller-managed ComputeDomain annotations on role templates", func(t *testing.T) {
+		features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, true)
+		hook := &DisaggregatedSetWebhook{RESTMapper: cdRESTMapper()}
+
+		for _, key := range []string{leaderworkerset.ComputeDomainPrefixAnnotationKey, leaderworkerset.ComputeDomainNameAnnotationKey} {
+			ds := baseGPUDisaggregatedSet()
+			ds.Annotations = map[string]string{disaggv1.AutoComputeDomainAnnotationKey: leaderworkerset.AutoComputeDomainEnabled}
+			ds.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{key: "shared"}
+			_, err := hook.ValidateCreate(ctx, ds)
+			require.ErrorContains(t, err, key)
+		}
+
+		existing := baseGPUDisaggregatedSet()
+		existing.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{leaderworkerset.ComputeDomainNameAnnotationKey: "shared"}
+		unchanged := existing.DeepCopy()
+		unchanged.Spec.Slices = ptr.To[int32](3)
+		_, err := hook.ValidateUpdate(ctx, existing, unchanged)
+		require.NoError(t, err)
+	})
 }

@@ -1647,7 +1647,10 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		// Workers join the PodGroups of their leader's group incarnation.
 		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.GroupWorkloadName(&lws, &leaderPod)
 	}
-	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(currentLws) {
+	// Stamped whether or not the AutoComputeDomain gate is on, so toggling the
+	// gate does not change the worker StatefulSet template and restart workers.
+	// The annotation has no effect while the gate is off.
+	if computedomain.LWSNeedsReplicaDomain(currentLws) {
 		if cdName := computedomain.LeaderComputeDomainName(currentLws, &leaderPod); cdName != "" {
 			podAnnotations[leaderworkerset.ComputeDomainNameAnnotationKey] = cdName
 		}
