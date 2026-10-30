@@ -45,10 +45,11 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/cert"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/config"
 	"sigs.k8s.io/lws/pkg/controllers"
 	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
-	_ "sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
@@ -74,6 +75,7 @@ func init() {
 	utilruntime.Must(volcanov1beta1.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1alpha3.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1beta1.AddToScheme(scheme))
+	utilruntime.Must(computedomain.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -195,6 +197,12 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if features.Enabled(features.AutoComputeDomain) {
+		if err := computedomain.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
+			setupLog.Error(err, "unable to setup ComputeDomain field indexes")
+			os.Exit(1)
+		}
+	}
 
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
@@ -232,6 +240,17 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 			os.Exit(1)
 		}
 		setupLog.Info("Gang scheduling enabled", "provider", providerType)
+	}
+	if features.Enabled(features.AutoComputeDomain) {
+		if err := computedomain.VerifyAPI(mgr.GetRESTMapper()); err != nil {
+			setupLog.Error(err, "AutoComputeDomain feature gate requires the NVIDIA ComputeDomain CRD")
+			os.Exit(1)
+		}
+		if err := computedomain.NewReconciler(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ComputeDomain")
+			os.Exit(1)
+		}
+		setupLog.Info("AutoComputeDomain management enabled")
 	}
 
 	lwsController := controllers.NewLeaderWorkerSetReconciler(

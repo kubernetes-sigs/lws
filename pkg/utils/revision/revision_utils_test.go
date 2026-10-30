@@ -550,3 +550,72 @@ func TestGetRevisionAndTruncate(t *testing.T) {
 		}
 	})
 }
+
+func TestAutoComputeDomainRevisionTracking(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	ctx := context.Background()
+
+	unsetLws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	unsetLws.UID = types.UID("lws-uid")
+	unsetLws.Generation = 1
+
+	disabledLws := unsetLws.DeepCopy()
+	disabledLws.Annotations = map[string]string{
+		leaderworkerset.AutoComputeDomainAnnotationKey: leaderworkerset.AutoComputeDomainDisabled,
+	}
+
+	enabledLws := unsetLws.DeepCopy()
+	enabledLws.Annotations = map[string]string{
+		leaderworkerset.AutoComputeDomainAnnotationKey: leaderworkerset.AutoComputeDomainEnabled,
+	}
+
+	unsetRev, err := NewRevision(ctx, client, unsetLws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledRev, err := NewRevision(ctx, client, disabledLws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabledRev, err := NewRevision(ctx, client, enabledLws, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unset and "disabled" must produce byte-identical revision patches for upgrade safety.
+	if !bytes.Equal(unsetRev.Data.Raw, disabledRev.Data.Raw) {
+		t.Fatalf("unset and disabled auto-compute-domain must produce identical patches:\nunset=%s\ndisabled=%s", unsetRev.Data.Raw, disabledRev.Data.Raw)
+	}
+	if bytes.Contains(unsetRev.Data.Raw, []byte(leaderworkerset.AutoComputeDomainAnnotationKey)) {
+		t.Fatalf("unset revision unexpectedly contains auto-compute-domain metadata: %s", unsetRev.Data.Raw)
+	}
+
+	// Enabling auto-compute-domain produces a new revision and SetMatchesRevision detects the change.
+	if EqualRevision(unsetRev, enabledRev) {
+		t.Fatalf("enabling auto-compute-domain must produce a new revision")
+	}
+	unsetRev.ResourceVersion = "1"
+	enabledRev.ResourceVersion = "2"
+	if SetMatchesRevision(enabledLws, enabledRev, unsetRev, lru.New(10)) {
+		t.Fatalf("SetMatchesRevision must detect enabling auto-compute-domain")
+	}
+	if SetMatchesRevision(disabledLws, disabledRev, enabledRev, lru.New(10)) {
+		t.Fatalf("SetMatchesRevision must detect disabling auto-compute-domain")
+	}
+
+	// ApplyRevision restores historical non-MNNVL state onto an MNNVL-enabled live LWS and vice versa.
+	restoredDisabled, err := ApplyRevision(enabledLws, unsetRev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restoredDisabled.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey]; ok {
+		t.Fatalf("expected ApplyRevision with non-MNNVL revision to clear auto-compute-domain, got %v", restoredDisabled.Annotations)
+	}
+	restoredEnabled, err := ApplyRevision(disabledLws, enabledRev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restoredEnabled.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey]; got != leaderworkerset.AutoComputeDomainEnabled {
+		t.Fatalf("expected ApplyRevision with MNNVL revision to restore auto-compute-domain=enabled, got %q", got)
+	}
+}

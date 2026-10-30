@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -34,17 +35,28 @@ import (
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
 
 // DisaggregatedSetWebhook handles validation for DisaggregatedSet resources.
-type DisaggregatedSetWebhook struct{}
+type DisaggregatedSetWebhook struct {
+	RESTMapper meta.RESTMapper
+}
 
 // SetupDisaggregatedSetWebhook registers the webhook with the manager.
-func SetupDisaggregatedSetWebhook(mgr ctrl.Manager) error {
+func SetupDisaggregatedSetWebhook(mgr ctrl.Manager, options ...DisaggregatedSetWebhook) error {
+	hook := &DisaggregatedSetWebhook{}
+	if len(options) > 0 {
+		hook = &options[0]
+	}
+	if hook.RESTMapper == nil {
+		hook.RESTMapper = mgr.GetRESTMapper()
+	}
 	return ctrl.NewWebhookManagedBy(mgr, &disaggv1.DisaggregatedSet{}).
-		WithValidator(&DisaggregatedSetWebhook{}).
+		WithValidator(hook).
 		Complete()
 }
 
@@ -168,8 +180,110 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 		}
 	}
 	allErrs = append(allErrs, w.validateGeneratedNames(obj)...)
+	cdWarnings, cdErrs := w.validateComputeDomain(obj, oldObj, oldRoles)
+	warnings = append(warnings, cdWarnings...)
+	allErrs = append(allErrs, cdErrs...)
 
 	return warnings, allErrs
+}
+
+func (w *DisaggregatedSetWebhook) validateComputeDomain(
+	obj, oldObj *disaggv1.DisaggregatedSet,
+	oldRoles map[string]*disaggv1.DisaggregatedRoleSpec,
+) (admission.Warnings, field.ErrorList) {
+	var allErrs field.ErrorList
+	var warnings admission.Warnings
+
+	dsAnnPath := field.NewPath("metadata", "annotations").Key(disaggv1.AutoComputeDomainAnnotationKey)
+	dsVal, dsSet := obj.Annotations[disaggv1.AutoComputeDomainAnnotationKey]
+	if dsSet && dsVal != leaderworkerset.AutoComputeDomainEnabled && dsVal != leaderworkerset.AutoComputeDomainDisabled {
+		allErrs = append(allErrs, field.NotSupported(dsAnnPath, dsVal, []string{leaderworkerset.AutoComputeDomainEnabled, leaderworkerset.AutoComputeDomainDisabled}))
+	}
+
+	sliceEnabled := dsVal == leaderworkerset.AutoComputeDomainEnabled
+	oldSliceEnabled := oldObj != nil && oldObj.Annotations[disaggv1.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled
+	if sliceEnabled && !oldSliceEnabled {
+		allErrs = append(allErrs, w.validateComputeDomainSupport(dsAnnPath)...)
+	}
+
+	rolesPath := field.NewPath("spec", "roles")
+	for i := range obj.Spec.Roles {
+		role := &obj.Spec.Roles[i]
+		rolePath := rolesPath.Index(i)
+		roleAnnPath := rolePath.Child("metadata", "annotations")
+		tplPath := rolePath.Child("spec", "leaderWorkerTemplate")
+		oldRole := oldRoles[role.Name]
+
+		allErrs = append(allErrs, webhooks.ValidateTemplateComputeDomainContainers(tplPath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+		allErrs = append(allErrs, webhooks.ValidateTemplateComputeDomainContainers(tplPath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+
+		roleSliceVal, roleSliceSet := role.Annotations[disaggv1.AutoComputeDomainAnnotationKey]
+		if roleSliceSet && roleSliceVal != leaderworkerset.AutoComputeDomainEnabled && roleSliceVal != leaderworkerset.AutoComputeDomainDisabled {
+			allErrs = append(allErrs, field.NotSupported(roleAnnPath.Key(disaggv1.AutoComputeDomainAnnotationKey), roleSliceVal, []string{leaderworkerset.AutoComputeDomainEnabled, leaderworkerset.AutoComputeDomainDisabled}))
+		}
+		if roleSliceVal == leaderworkerset.AutoComputeDomainEnabled && !sliceEnabled {
+			allErrs = append(allErrs, field.Forbidden(
+				roleAnnPath.Key(disaggv1.AutoComputeDomainAnnotationKey),
+				fmt.Sprintf("requires %s=%q on DisaggregatedSet metadata.annotations", disaggv1.AutoComputeDomainAnnotationKey, leaderworkerset.AutoComputeDomainEnabled),
+			))
+		}
+
+		roleReplicaVal, roleReplicaSet := role.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey]
+		if roleReplicaSet && roleReplicaVal != leaderworkerset.AutoComputeDomainEnabled && roleReplicaVal != leaderworkerset.AutoComputeDomainDisabled {
+			allErrs = append(allErrs, field.NotSupported(roleAnnPath.Key(leaderworkerset.AutoComputeDomainAnnotationKey), roleReplicaVal, []string{leaderworkerset.AutoComputeDomainEnabled, leaderworkerset.AutoComputeDomainDisabled}))
+		}
+
+		roleUsesSlice := sliceEnabled && roleSliceVal != leaderworkerset.AutoComputeDomainDisabled
+		roleUsesReplica := roleReplicaVal == leaderworkerset.AutoComputeDomainEnabled
+		if roleUsesSlice && roleUsesReplica {
+			allErrs = append(allErrs, field.Forbidden(
+				roleAnnPath.Key(leaderworkerset.AutoComputeDomainAnnotationKey),
+				fmt.Sprintf("cannot enable replica-scoped ComputeDomain on role %q while enrolled in slice-scoped ComputeDomain; set %s=%q on the role to opt out of the slice domain", role.Name, disaggv1.AutoComputeDomainAnnotationKey, leaderworkerset.AutoComputeDomainDisabled),
+			))
+		}
+
+		if roleUsesReplica && (oldRole == nil || oldRole.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] != leaderworkerset.AutoComputeDomainEnabled) {
+			allErrs = append(allErrs, w.validateComputeDomainSupport(roleAnnPath.Key(leaderworkerset.AutoComputeDomainAnnotationKey))...)
+		} else if roleUsesSlice && oldSliceEnabled && (oldRole == nil || oldRole.Annotations[disaggv1.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainDisabled) {
+			allErrs = append(allErrs, w.validateComputeDomainSupport(roleAnnPath.Key(disaggv1.AutoComputeDomainAnnotationKey))...)
+		}
+
+		if roleUsesSlice || roleUsesReplica {
+			allErrs = append(allErrs, webhooks.ValidateReservedComputeDomainClaim(tplPath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+			allErrs = append(allErrs, webhooks.ValidateReservedComputeDomainClaim(tplPath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+		}
+
+		if roleUsesReplica && !computedomain.TemplateHasTargetedContainers(role.Spec.LeaderWorkerTemplate.LeaderTemplate) && !computedomain.TemplateHasTargetedContainers(&role.Spec.LeaderWorkerTemplate.WorkerTemplate) {
+			warnings = append(warnings, fmt.Sprintf(
+				"role %q enables %s, but neither leaderTemplate nor workerTemplate has containers requesting %s or listed in %s",
+				role.Name,
+				leaderworkerset.AutoComputeDomainAnnotationKey,
+				computedomain.NvidiaGPUResourceName,
+				leaderworkerset.ComputeDomainContainersAnnotationKey,
+			))
+		}
+	}
+
+	if sliceEnabled && len(allErrs) == 0 && !computedomain.DisaggregatedSetNeedsSliceDomain(obj) {
+		warnings = append(warnings, fmt.Sprintf(
+			"%s is enabled, but no enrolled role has containers requesting %s or listed in %s",
+			disaggv1.AutoComputeDomainAnnotationKey,
+			computedomain.NvidiaGPUResourceName,
+			leaderworkerset.ComputeDomainContainersAnnotationKey,
+		))
+	}
+
+	return warnings, allErrs
+}
+
+func (w *DisaggregatedSetWebhook) validateComputeDomainSupport(path *field.Path) field.ErrorList {
+	if !features.Enabled(features.AutoComputeDomain) {
+		return field.ErrorList{field.Forbidden(path, "requires the AutoComputeDomain feature gate")}
+	}
+	if err := computedomain.VerifyAPI(w.RESTMapper); err != nil {
+		return field.ErrorList{field.Forbidden(path, err.Error())}
+	}
+	return nil
 }
 
 // unchangedRoleTemplate preserves legacy templates during unrelated updates and

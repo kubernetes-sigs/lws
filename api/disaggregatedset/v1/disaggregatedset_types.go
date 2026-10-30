@@ -77,6 +77,11 @@ const (
 	// InitialSubRoleReplicasAnnotationKey records the revision's intended
 	// sub-role counts as a JSON object, frozen while the revision is old.
 	InitialSubRoleReplicasAnnotationKey string = "disaggregatedset.x-k8s.io/initial-subrole-replicas"
+
+	// AutoComputeDomainAnnotationKey opts a DisaggregatedSet into per-(slice, revision)
+	// NVIDIA DRA ComputeDomain management when set to "enabled", and allows
+	// individual roles to opt out when set to "disabled" on role metadata.
+	AutoComputeDomainAnnotationKey string = "disaggregatedset.x-k8s.io/auto-compute-domain"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.

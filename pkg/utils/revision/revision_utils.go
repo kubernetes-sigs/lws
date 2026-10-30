@@ -192,7 +192,30 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	if restartBackoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff; restartBackoff != nil {
 		restoredLws.Spec.LeaderWorkerTemplate.RestartBackoff = restartBackoff.DeepCopy()
 	}
+	if revisionHasAutoComputeDomainEnabled(revision.Data.Raw) {
+		if restoredLws.Annotations == nil {
+			restoredLws.Annotations = make(map[string]string)
+		}
+		restoredLws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] = leaderworkerset.AutoComputeDomainEnabled
+	} else if restoredLws.Annotations != nil {
+		delete(restoredLws.Annotations, leaderworkerset.AutoComputeDomainAnnotationKey)
+	}
 	return restoredLws, nil
+}
+
+func revisionHasAutoComputeDomainEnabled(raw []byte) bool {
+	if !bytes.Contains(raw, []byte(leaderworkerset.AutoComputeDomainAnnotationKey)) {
+		return false
+	}
+	var patchMeta struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &patchMeta); err != nil {
+		return false
+	}
+	return patchMeta.Metadata.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled
 }
 
 // EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
@@ -309,6 +332,13 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	delete(template, "maxGroupRestarts")
 	delete(template, "restartBackoff")
 	objCopy["spec"] = specCopy
+	if lws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled {
+		objCopy["metadata"] = map[string]interface{}{
+			"annotations": map[string]interface{}{
+				leaderworkerset.AutoComputeDomainAnnotationKey: leaderworkerset.AutoComputeDomainEnabled,
+			},
+		}
+	}
 	return json.Marshal(objCopy)
 }
 

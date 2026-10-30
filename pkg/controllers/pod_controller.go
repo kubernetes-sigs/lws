@@ -52,6 +52,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -312,6 +314,15 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, schedulerprovider.ReasonUnsupportedProviderCapability, Create,
 			"spec.scheduling requires a configured scheduler provider")
 		return ctrl.Result{}, nil
+	}
+
+	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(groupLws) {
+		if err := computedomain.EnsureReplicaComputeDomain(ctx, r.Client, groupLws, &pod); err != nil {
+			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
+				r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, UnexpectedComputeDomainOwner, Create, "%s", err.Error())
+			}
+			return ctrl.Result{}, err
+		}
 	}
 
 	// While the leader is gated, only the group's scheduling prerequisites exist:
@@ -1635,6 +1646,11 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		podAnnotations[schedulerprovider.WorkloadSchedulingAnnotationKey] = schedulerprovider.WorkloadSchedulingValue(currentLws)
 		// Workers join the PodGroups of their leader's group incarnation.
 		podAnnotations[schedulerprovider.WorkloadNameAnnotationKey] = schedulerprovider.GroupWorkloadName(&lws, &leaderPod)
+	}
+	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(currentLws) {
+		if cdName := computedomain.LeaderComputeDomainName(currentLws, &leaderPod); cdName != "" {
+			podAnnotations[leaderworkerset.ComputeDomainNameAnnotationKey] = cdName
+		}
 	}
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)
 	// The service name always matches the leader's subdomain in every mode and

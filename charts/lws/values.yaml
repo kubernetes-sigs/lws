@@ -81,7 +81,12 @@ affinity: {}
 # gangSchedulingManagement:
 #   schedulerProvider: volcano
 gangSchedulingManagement: {}
-# Alpha LWS feature gates. WorkloadAwareScheduling is disabled by default.
+# computeDomainManagement configures RBAC permissions for managing NVIDIA DRA
+# ComputeDomain resources (computedomains.resource.nvidia.com) when using the
+# AutoComputeDomain feature gate.
+computeDomainManagement:
+  enabled: false
+# Alpha LWS feature gates. WorkloadAwareScheduling and AutoComputeDomain are disabled by default.
 featureGates: {}
 # leaderElection overrides the manager's lease timing. Empty keeps the
 # controller defaults (15s lease, 10s renew deadline, 2s retry period).

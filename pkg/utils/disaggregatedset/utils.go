@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -190,6 +191,32 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 	})
 
 	return computeRevision(revisionRoles)
+}
+
+// ComputeDisaggregatedSetRevision returns the current revision hash for
+// disaggregatedSet, incorporating slice-scoped auto-compute-domain enrollment
+// while preserving byte-identical v2 hashes when slice-scoped
+// auto-compute-domain is unset or disabled.
+func ComputeDisaggregatedSetRevision(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet) string {
+	if disaggregatedSet == nil {
+		return ComputeRevision(nil)
+	}
+	if disaggregatedSet.Annotations[disaggregatedsetv1.AutoComputeDomainAnnotationKey] != leaderworkersetv1.AutoComputeDomainEnabled {
+		return ComputeRevision(disaggregatedSet.Spec.Roles)
+	}
+	roles := slices.Clone(disaggregatedSet.Spec.Roles)
+	for i := range roles {
+		if roles[i].Annotations[disaggregatedsetv1.AutoComputeDomainAnnotationKey] == leaderworkersetv1.AutoComputeDomainDisabled {
+			continue
+		}
+		annotations := maps.Clone(roles[i].Annotations)
+		if annotations == nil {
+			annotations = make(map[string]string, 1)
+		}
+		annotations[disaggregatedsetv1.AutoComputeDomainAnnotationKey] = leaderworkersetv1.AutoComputeDomainEnabled
+		roles[i].Annotations = annotations
+	}
+	return ComputeRevision(roles)
 }
 
 func computeRevision(value any) string {
