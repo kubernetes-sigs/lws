@@ -57,16 +57,11 @@ func BoundedName(raw string) string {
 	return prefix + "-" + digest
 }
 
-// ReplicaComputeDomainName returns the deterministic ComputeDomain name for a
-// single LeaderWorkerSet replica.
-func ReplicaComputeDomainName(prefix, groupIndex, revisionKey, incarnation string, hashIdentity bool) string {
-	if hashIdentity {
-		return BoundedName(fmt.Sprintf("%s-%s", prefix, groupIndex))
-	}
-	if incarnation != "" {
-		return BoundedName(fmt.Sprintf("%s-%s-%s-%s", prefix, revisionKey, groupIndex, incarnation))
-	}
-	return BoundedName(fmt.Sprintf("%s-%s-%s", prefix, revisionKey, groupIndex))
+// ReplicaComputeDomainName returns the ComputeDomain name for one leader
+// incarnation of a LeaderWorkerSet replica. incarnation is a random token drawn
+// at leader admission, so every leader Pod gets its own ComputeDomain.
+func ReplicaComputeDomainName(prefix, groupIndex, revisionKey, incarnation string) string {
+	return BoundedName(fmt.Sprintf("%s-%s-%s-%s", prefix, revisionKey, groupIndex, incarnation))
 }
 
 // SliceComputeDomainName returns the deterministic ComputeDomain name for a
@@ -75,27 +70,8 @@ func SliceComputeDomainName(ds *disaggregatedsetv1.DisaggregatedSet, slice int, 
 	return BoundedName(fmt.Sprintf("%s-s%d-%s", UIDPrefix(ds.Name, ds.UID), slice, revision))
 }
 
-// LeaderComputeDomainName resolves the ComputeDomain name for the replica led
-// by leaderPod. It prefers the name stamped by PodWebhook (which carries the
-// per-incarnation suffix in Ordinal mode) and falls back to deriving it from
-// lws and leaderPod metadata when the pod was created without webhook mutation.
-func LeaderComputeDomainName(lws *leaderworkersetv1.LeaderWorkerSet, leaderPod *corev1.Pod) string {
-	if cdName := leaderPod.Annotations[leaderworkersetv1.ComputeDomainNameAnnotationKey]; cdName != "" {
-		return cdName
-	}
-	prefix := leaderPod.Annotations[leaderworkersetv1.ComputeDomainPrefixAnnotationKey]
-	if prefix == "" {
-		if !LWSNeedsReplicaDomain(lws) {
-			return ""
-		}
-		prefix = UIDPrefix(lws.Name, lws.UID)
-	}
-	groupIndex := leaderPod.Labels[leaderworkersetv1.GroupIndexLabelKey]
-	revisionKey := leaderPod.Labels[leaderworkersetv1.RevisionKey]
-	if groupIndex == "" || revisionKey == "" {
-		return ""
-	}
-	hashIdentity := (lws != nil && lws.Spec.GroupIdentity == leaderworkersetv1.GroupIdentityHash) ||
-		leaderPod.Annotations[leaderworkersetv1.GroupIdentityAnnotationKey] == string(leaderworkersetv1.GroupIdentityHash)
-	return ReplicaComputeDomainName(prefix, groupIndex, revisionKey, "", hashIdentity)
+// LeaderComputeDomainName returns the ComputeDomain name PodWebhook stamped on
+// leaderPod at admission, or "" when the leader was admitted without one.
+func LeaderComputeDomainName(leaderPod *corev1.Pod) string {
+	return leaderPod.Annotations[leaderworkersetv1.ComputeDomainNameAnnotationKey]
 }

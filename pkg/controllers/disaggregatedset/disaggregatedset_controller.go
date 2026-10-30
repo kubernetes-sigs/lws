@@ -30,19 +30,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -193,16 +188,18 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			result = earliestRequeue(result, sliceResult)
 		}
 	}
-	reconcileErr := errors.Join(errs...)
-	if features.Enabled(features.AutoComputeDomain) && reconcileErr == nil {
-		remainingLWS, listErr := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
-		if listErr != nil {
-			return ctrl.Result{}, listErr
+	// Cleanup keeps every ComputeDomain that a child LWS or a current slice still
+	// needs, so it is safe to run when a slice failed to reconcile.
+	if features.Enabled(features.AutoComputeDomain) {
+		remainingLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
+		if err == nil {
+			err = computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, disaggregatedSet, remainingLWS, sliceCount, revision)
 		}
-		if cleanErr := computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, disaggregatedSet, remainingLWS, sliceCount, revision); cleanErr != nil {
-			return ctrl.Result{}, cleanErr
+		if err != nil {
+			errs = append(errs, fmt.Errorf("clean up ComputeDomains: %w", err))
 		}
 	}
+	reconcileErr := errors.Join(errs...)
 
 	// Observe status after workload writes, including slices that failed to
 	// reconcile. DisaggregatedSet and scaler counts come from the same aggregate.
@@ -430,7 +427,8 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 	}
 
 	if features.Enabled(features.AutoComputeDomain) && disaggregatedSet.DeletionTimestamp.IsZero() && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
-		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision); err != nil {
+		hasChildren := newRevision != nil && len(newRevision.Roles) > 0
+		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision, hasChildren); err != nil {
 			reason := EventReasonFailedCreate
 			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
 				reason = EventReasonUnexpectedComputeDomainOwner
@@ -733,21 +731,7 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		ctrlBuilder = ctrlBuilder.
 			// Recreate a deleted slice ComputeDomain. Status writes by the NVIDIA
 			// controller do not change the generation and are filtered out.
-			Owns(&computedomain.ComputeDomain{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-			Watches(&corev1.Pod{}, handler.Funcs{
-				DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					pod, ok := e.Object.(*corev1.Pod)
-					if !ok || pod == nil {
-						return
-					}
-					dsName := pod.Labels[disaggregatedsetv1.SetNameLabelKey]
-					if dsName != "" && computedomain.PodHasComputeDomainClaim(pod) {
-						q.Add(reconcile.Request{
-							NamespacedName: types.NamespacedName{Namespace: pod.Namespace, Name: dsName},
-						})
-					}
-				},
-			})
+			Owns(&computedomain.ComputeDomain{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 	}
 	return ctrlBuilder.Complete(r)
 }

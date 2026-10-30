@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -266,14 +267,18 @@ func TestPodWebhookComputeDomainInjection(t *testing.T) {
 			t.Fatalf("reinvocation was not idempotent")
 		}
 
-		// Hash leader uses groupUniqueKey.
+		// Hash leaders are named like ordinal leaders, with the group key as the
+		// group index, and get their own incarnation token.
 		hashLeader := makeLeader(true)
 		if err := pw.Default(ctx, hashLeader); err != nil {
 			t.Fatalf("Default on hash leader failed: %v", err)
 		}
-		wantHashCD := computedomain.BoundedName("model-1a2b3-" + hashLeader.Labels[v1.GroupUniqueHashLabelKey])
-		if got := hashLeader.Annotations[v1.ComputeDomainNameAnnotationKey]; got != wantHashCD {
-			t.Fatalf("hash leader ComputeDomain name=%q, want %q", got, wantHashCD)
+		hashCD := hashLeader.Annotations[v1.ComputeDomainNameAnnotationKey]
+		if hashCD == "" || hashCD == cdName || len(hashCD) > validation.DNS1035LabelMaxLength {
+			t.Fatalf("unexpected hash leader ComputeDomain name %q (ordinal leader %q)", hashCD, cdName)
+		}
+		if len(hashLeader.Spec.ResourceClaims) != 1 || *hashLeader.Spec.ResourceClaims[0].ResourceClaimTemplateName != hashCD {
+			t.Fatalf("hash leader claim does not reference its ComputeDomain: %+v", hashLeader.Spec.ResourceClaims)
 		}
 
 		// Worker pod joins leader's ComputeDomain.

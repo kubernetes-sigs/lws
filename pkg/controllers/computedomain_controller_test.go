@@ -95,6 +95,9 @@ func TestComputeDomainTemplatePropagation(t *testing.T) {
 					leaderworkerset.WorkerIndexLabelKey: "0",
 					leaderworkerset.RevisionKey:         "rev1",
 				},
+				Annotations: map[string]string{
+					leaderworkerset.ComputeDomainNameAnnotationKey: "deepseek-uid-rev1-0-inc1",
+				},
 			},
 			Spec: corev1.PodSpec{
 				Hostname:  "deepseek-0",
