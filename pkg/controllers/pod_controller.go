@@ -328,8 +328,13 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 
-	// Once size = 1, no need to create worker statefulSets.
-	if *groupLws.Spec.LeaderWorkerTemplate.Size == 1 {
+	// Once size = 1, no need to create worker statefulSets. Honor the leader's
+	// stamped size when its ControllerRevision has not been observed yet.
+	groupSize := int(*groupLws.Spec.LeaderWorkerTemplate.Size)
+	if revision == nil {
+		groupSize = podGroupSize(&pod, *groupLws.Spec.LeaderWorkerTemplate.Size)
+	}
+	if groupSize == 1 {
 		return backoffResult, nil
 	}
 
@@ -617,10 +622,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
 	if recreateAfterStart && !isRecreatePending {
 		// Old groups keep their original size during a rollout that changes it.
-		groupSize := int(*leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)
-		if size, err := strconv.Atoi(pod.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil {
-			groupSize = size
-		}
+		groupSize := podGroupSize(&pod, int32(podGroupSize(&leader, *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)))
 		startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
 		if err != nil {
 			return false, ctrl.Result{}, err
