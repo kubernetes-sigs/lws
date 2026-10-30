@@ -1423,6 +1423,25 @@ func TestManagerCreate(t *testing.T) {
 		require.Error(t, err, "must not silently no-op when the name is taken by a foreign-owned LWS")
 	})
 
+	t.Run("does not propagate a role partition to the LWS", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		role := testRole.DeepCopy()
+		role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{
+			MaxSurge: intstr.FromInt(1), Partition: ptr.To[int32](2),
+		}
+		manager := NewLeaderWorkerSetManager(fakeClient)
+		require.NoError(t, manager.Create(context.Background(), testDeploy, role, 0, testRevision, 3, nil))
+
+		var lws leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: testLWSName}, &lws))
+		require.Nil(t, lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition)
+		require.Equal(t, intstr.FromInt(1), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge)
+		require.Equal(t, ptr.To[int32](2), role.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition, "the role spec is not modified")
+
+		lws.Spec.Replicas = ptr.To[int32](3)
+		require.False(t, setRolloutStrategy(&lws, &role.Spec.RolloutStrategy), "a role partition is not synced to the LWS later either")
+	})
+
 	t.Run("successfully creates new LWS", func(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).

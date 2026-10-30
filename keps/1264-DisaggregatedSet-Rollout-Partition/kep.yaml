@@ -1,0 +1,18 @@
+title: DisaggregatedSet Rollout Partition
+kep-number: 1264
+authors:
+  - "robertgshaw2-redhat"
+status: provisional
+creation-date: 2026-10-30
+reviewers:
+  - ahg-g
+  - Edwinhr716
+approvers:
+  - ahg-g
+
+see-also:
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/1022-DisaggregatedSet-Scaling-During-Rollout"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha

@@ -24,6 +24,9 @@ type RoleReplicaState = []int
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
+	// Partition holds up to this many of the role's desired groups on older
+	// revisions. Zero imposes no hold.
+	Partition int
 }
 
 // RawReadyReplicas includes pending deletions; ReadyReplicas excludes them.
@@ -199,6 +202,27 @@ func (snapshot rolloutSnapshot) surgeCeiling(role int) int {
 		baseline = max(baseline, snapshot.ActiveOld.InitialReplicas[role])
 	}
 	return baseline + snapshot.Config[role].MaxSurge
+}
+
+// A partition caps target growth at the desired groups it does not hold. It
+// never retracts groups the target already has.
+func (snapshot rolloutSnapshot) partitionedTargetLimit(role int) (int, bool) {
+	partition := snapshot.Config[role].Partition
+	if partition <= 0 {
+		return 0, false
+	}
+	return max(0, snapshot.Target.DesiredReplicas[role]-partition), true
+}
+
+// The active old revision keeps the held groups that parked revisions do not
+// already provide. A partition cannot restore a group that has already drained.
+func (snapshot rolloutSnapshot) partitionedOldFloor(role int) int {
+	partition := min(snapshot.Config[role].Partition, snapshot.Target.DesiredReplicas[role])
+	if partition <= 0 {
+		return 0
+	}
+	parked := snapshot.old.spec[role] - snapshot.ActiveOld.SpecReplicas[role]
+	return min(snapshot.ActiveOld.SpecReplicas[role], max(0, partition-parked))
 }
 
 func (snapshot rolloutSnapshot) availabilityFloor(role int) int {

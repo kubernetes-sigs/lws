@@ -296,6 +296,12 @@ func (manager *LeaderWorkerSetManager) Create(
 	// Copy the spec and override replicas.
 	lwsSpec := role.Spec
 	lwsSpec.Replicas = &replicas
+	// Partition paces the DisaggregatedSet rollout across revisions. Each LWS
+	// holds a single revision, so it never receives one.
+	if config := lwsSpec.RolloutStrategy.RollingUpdateConfiguration; config != nil && config.Partition != nil {
+		lwsSpec.RolloutStrategy.RollingUpdateConfiguration = config.DeepCopy()
+		lwsSpec.RolloutStrategy.RollingUpdateConfiguration.Partition = nil
+	}
 
 	// Inject system labels (role, name, revision, slice) into pod templates.
 	// These don't come from the user's spec — they identify the pod's place in the
@@ -432,6 +438,8 @@ func setRolloutStrategy(lws *leaderworkersetv1.LeaderWorkerSet, desired *leaderw
 	replicas := int(getLWSReplicas(lws))
 	if desired != nil {
 		strategy := defaultedRolloutStrategy(desired)
+		// A role partition paces the DisaggregatedSet rollout and is not propagated.
+		strategy.RollingUpdateConfiguration.Partition = ptr.To[int32](0)
 		if isRolloutStrategyValidForReplicas(strategy, replicas) {
 			if equality.Semantic.DeepEqual(defaultedRolloutStrategy(&lws.Spec.RolloutStrategy), strategy) {
 				return false

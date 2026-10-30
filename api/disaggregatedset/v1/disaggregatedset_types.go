@@ -216,8 +216,7 @@ type DisaggregatedSubRoleSpec struct {
 
 // DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 // This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
-// to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
-// RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
+// to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate).
 type DisaggregatedRoleSpec struct {
 	// Name is the unique identifier for this role.
 	// +kubebuilder:validation:MinLength=1
@@ -242,9 +241,11 @@ type DisaggregatedRoleSpec struct {
 	Scaling *RoleScaling `json:"scaling,omitempty"`
 
 	// LeaderWorkerSetTemplateSpec defines the LWS template for this role.
-	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
-	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
-	// DisaggregatedSet handles rollouts across roles.
+	// Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty).
+	// DisaggregatedSet handles rollouts across roles: it does not propagate
+	// Spec.RolloutStrategy.RollingUpdateConfiguration.Partition to the LWS, but
+	// keeps up to that many of the role's groups on older revisions until it is
+	// lowered. Partition is not supported with SubRoles.
 	leaderworkerset.LeaderWorkerSetTemplateSpec `json:",inline"`
 }
 
