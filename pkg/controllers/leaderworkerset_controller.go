@@ -502,9 +502,6 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Owns(&schedulingv1beta1.Workload{}).
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
-	if features.Enabled(features.AutoComputeDomain) {
-		builder = builder.Owns(&computedomain.ComputeDomain{})
-	}
 	return builder.Complete(r)
 }
 

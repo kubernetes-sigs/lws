@@ -246,7 +246,7 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 			setupLog.Error(err, "AutoComputeDomain feature gate requires the NVIDIA ComputeDomain CRD")
 			os.Exit(1)
 		}
-		if err := computedomain.NewReconciler(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+		if err := computedomain.NewReconciler(mgr.GetClient(), mgr.GetAPIReader()).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ComputeDomain")
 			os.Exit(1)
 		}

@@ -318,9 +318,11 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	if features.Enabled(features.AutoComputeDomain) && computedomain.LWSNeedsReplicaDomain(groupLws) {
 		if err := computedomain.EnsureReplicaComputeDomain(ctx, r.Client, groupLws, &pod); err != nil {
+			reason := FailedCreate
 			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
-				r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, UnexpectedComputeDomainOwner, Create, "%s", err.Error())
+				reason = UnexpectedComputeDomainOwner
 			}
+			r.Record.Eventf(&pod, &leaderWorkerSet, corev1.EventTypeWarning, reason, Create, "%s", err.Error())
 			return ctrl.Result{}, err
 		}
 	}

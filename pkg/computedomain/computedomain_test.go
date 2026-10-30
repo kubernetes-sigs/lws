@@ -65,16 +65,7 @@ func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
-		WithIndex(&corev1.Pod{}, PodClaimTemplateIndex, func(raw client.Object) []string {
-			pod := raw.(*corev1.Pod)
-			var names []string
-			for i := range pod.Spec.ResourceClaims {
-				if tpl := pod.Spec.ResourceClaims[i].ResourceClaimTemplateName; tpl != nil && *tpl != "" {
-					names = append(names, *tpl)
-				}
-			}
-			return names
-		}).
+		WithIndex(&corev1.Pod{}, PodClaimTemplateIndex, PodClaimTemplateNames).
 		Build()
 }
 
@@ -110,7 +101,7 @@ func TestNamingAndBounds(t *testing.T) {
 	if b1 == b2 {
 		t.Fatalf("expected collision-free truncation for distinct suffixes, got %q", b1)
 	}
-	if strings.Contains(b1, "--") && strings.HasSuffix(strings.Split(b1, "-")[0], "-") {
+	if strings.HasSuffix(b1[:len(b1)-overflowHashLength-1], "-") {
 		t.Fatalf("unexpected trailing hyphen before digest in %q", b1)
 	}
 
@@ -483,7 +474,7 @@ func TestEnsureCleanupAndReconcilerLifecycle(t *testing.T) {
 	if err := c.Delete(ctx, ds); err != nil {
 		t.Fatalf("delete DisaggregatedSet: %v", err)
 	}
-	r := NewReconciler(c)
+	r := NewReconciler(c, c)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: sliceCDName}}); err != nil {
 		t.Fatalf("Reconciler.Reconcile while pod active failed: %v", err)
 	}
@@ -556,16 +547,7 @@ func TestComputeDomainEdgeCasesAndHelpers(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	builder := fake.NewClientBuilder().WithScheme(scheme)
-	c := builder.WithIndex(&corev1.Pod{}, PodClaimTemplateIndex, func(raw client.Object) []string {
-		pod := raw.(*corev1.Pod)
-		var out []string
-		for _, cl := range pod.Spec.ResourceClaims {
-			if cl.ResourceClaimTemplateName != nil {
-				out = append(out, *cl.ResourceClaimTemplateName)
-			}
-		}
-		return out
-	}).Build()
+	c := builder.WithIndex(&corev1.Pod{}, PodClaimTemplateIndex, PodClaimTemplateNames).Build()
 
 	lws := &leaderworkersetv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -641,7 +623,7 @@ func TestComputeDomainEdgeCasesAndHelpers(t *testing.T) {
 	}
 
 	// Reconciler no-ops while owner is healthy, then cleans up when LWS is deleted.
-	r := NewReconciler(c)
+	r := NewReconciler(c, c)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: cdName}}); err != nil {
 		t.Fatalf("Reconcile with live owner failed: %v", err)
 	}
@@ -723,5 +705,143 @@ func TestComputeDomainEdgeCasesAndHelpers(t *testing.T) {
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: oldSliceName}, &ComputeDomain{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected drained revision ComputeDomain to be deleted, got %v", err)
+	}
+}
+
+func terminatingTestFixtures() (*leaderworkersetv1.LeaderWorkerSet, *ComputeDomain, *corev1.Pod) {
+	lws := &leaderworkersetv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model",
+			Namespace: "default",
+			UID:       types.UID("lws-uid-1"),
+			Annotations: map[string]string{
+				leaderworkersetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainEnabled,
+			},
+		},
+		Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+			LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+				WorkerTemplate: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "gpu", Resources: gpuResources("2")}},
+					},
+				},
+			},
+		},
+	}
+	cdName := "model-12345-rev1-0-inc01"
+	cd := &ComputeDomain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              cdName,
+			Namespace:         "default",
+			DeletionTimestamp: ptr.To(metav1.Now()),
+			Finalizers:        []string{leaderworkersetv1.ComputeDomainProtectionFinalizer},
+			OwnerReferences:   []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "model-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkersetv1.SetNameLabelKey:     "model",
+				leaderworkersetv1.WorkerIndexLabelKey: "0",
+				leaderworkersetv1.GroupIndexLabelKey:  "0",
+				leaderworkersetv1.RevisionKey:         "rev1",
+			},
+			Annotations: map[string]string{
+				leaderworkersetv1.ComputeDomainNameAnnotationKey: cdName,
+			},
+		},
+		Spec: corev1.PodSpec{
+			ResourceClaims: []corev1.PodResourceClaim{{
+				Name:                      ChannelClaimName,
+				ResourceClaimTemplateName: ptr.To(cdName),
+			}},
+		},
+	}
+	return lws, cd, pod
+}
+
+func TestEnsureReplicaComputeDomainTerminating(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("gated leader waits for the terminating ComputeDomain", func(t *testing.T) {
+		lws, cd, leader := terminatingTestFixtures()
+		leader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkersetv1.GroupReplacementSchedulingGate}}
+		c := newFakeClient(t, lws, cd, leader)
+		if err := EnsureReplicaComputeDomain(ctx, c, lws, leader); !errors.Is(err, errComputeDomainTerminating) {
+			t.Fatalf("expected errComputeDomainTerminating for a gated leader, got %v", err)
+		}
+	})
+
+	t.Run("admitted leader is not blocked by the terminating ComputeDomain", func(t *testing.T) {
+		lws, cd, leader := terminatingTestFixtures()
+		c := newFakeClient(t, lws, cd, leader)
+		if err := EnsureReplicaComputeDomain(ctx, c, lws, leader); err != nil {
+			t.Fatalf("expected no error for an admitted leader, got %v", err)
+		}
+	})
+}
+
+func TestReconcilerReleasesTerminatingComputeDomain(t *testing.T) {
+	ctx := context.Background()
+	lws, cd, pod := terminatingTestFixtures()
+	c := newFakeClient(t, lws, cd, pod)
+	r := NewReconciler(c, c)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cd.Namespace, Name: cd.Name}}
+
+	// The owner is alive. The ComputeDomain was deleted directly (or by GC) while
+	// a pod still references it, so the finalizer must hold.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile while referenced: %v", err)
+	}
+	got := &ComputeDomain{}
+	if err := c.Get(ctx, req.NamespacedName, got); err != nil {
+		t.Fatalf("expected ComputeDomain to remain while a pod references it: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(got, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
+		t.Fatalf("expected protection finalizer to remain while a pod references the ComputeDomain")
+	}
+
+	if err := c.Delete(ctx, pod); err != nil {
+		t.Fatalf("delete pod: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile after pod deletion: %v", err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, got); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected ComputeDomain to be released and removed once unreferenced, got err=%v", err)
+	}
+}
+
+func TestReconcilerConfirmsOwnerDeletionWithAPIReader(t *testing.T) {
+	ctx := context.Background()
+	lws, cd, _ := terminatingTestFixtures()
+	cd.DeletionTimestamp = nil
+
+	// The cache has not observed the owner yet, but the API server has it.
+	cached := newFakeClient(t, cd)
+	api := newFakeClient(t, lws)
+	r := NewReconciler(cached, api)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cd.Namespace, Name: cd.Name}}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got := &ComputeDomain{}
+	if err := cached.Get(ctx, req.NamespacedName, got); err != nil {
+		t.Fatalf("expected ComputeDomain to remain while the API server still has its owner: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(got, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
+		t.Fatalf("expected protection finalizer to remain while the owner exists")
+	}
+
+	// Once the API server also reports the owner gone, the unreferenced
+	// ComputeDomain is released and deleted.
+	r = NewReconciler(cached, cached)
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile after owner deletion: %v", err)
+	}
+	if err := cached.Get(ctx, req.NamespacedName, got); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected orphaned ComputeDomain to be deleted, got err=%v", err)
 	}
 }

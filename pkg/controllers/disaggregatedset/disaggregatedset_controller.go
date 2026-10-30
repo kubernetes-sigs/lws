@@ -36,10 +36,12 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
@@ -429,9 +431,11 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 
 	if features.Enabled(features.AutoComputeDomain) && disaggregatedSet.DeletionTimestamp.IsZero() && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
 		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision); err != nil {
+			reason := EventReasonFailedCreate
 			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
-				r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, "UnexpectedComputeDomainOwner", "Create", "%s", err.Error())
+				reason = EventReasonUnexpectedComputeDomainOwner
 			}
+			r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, reason, "Create", "%s", err.Error())
 			return ctrl.Result{}, err
 		}
 	}
@@ -727,7 +731,9 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("disaggregatedset")
 	if features.Enabled(features.AutoComputeDomain) {
 		ctrlBuilder = ctrlBuilder.
-			Owns(&computedomain.ComputeDomain{}).
+			// Recreate a deleted slice ComputeDomain. Status writes by the NVIDIA
+			// controller do not change the generation and are filtered out.
+			Owns(&computedomain.ComputeDomain{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Watches(&corev1.Pod{}, handler.Funcs{
 				DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 					pod, ok := e.Object.(*corev1.Pod)

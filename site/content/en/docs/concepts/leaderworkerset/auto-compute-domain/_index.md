@@ -16,8 +16,9 @@ creates, isolates across revisions and replica restarts, injects pod DRA claims
 for, and garbage-collects `ComputeDomain` resources at two scopes:
 
 1. **Per `LeaderWorkerSet` replica** (`leaderworkerset.sigs.k8s.io/auto-compute-domain: "enabled"`):
-   one `ComputeDomain` per active replica, shared by the replica's leader and
-   worker GPU containers.
+   one `ComputeDomain` per replica incarnation, shared by the replica's leader
+   and worker GPU containers. In the default `Ordinal` group identity mode, a
+   restarted replica gets a new `ComputeDomain`.
 2. **Per `DisaggregatedSet` slice** (`disaggregatedset.x-k8s.io/auto-compute-domain: "enabled"`):
    one `ComputeDomain` per active `(slice, revision)`, shared across enrolled
    roles (such as `prefill` and `decode`) within the same slice.
@@ -26,26 +27,58 @@ for, and garbage-collects `ComputeDomain` resources at two scopes:
 
 1. **Kubernetes and NVIDIA DRA driver**: A cluster with Dynamic Resource
    Allocation (DRA) enabled and the NVIDIA GPU DRA driver serving
-   `computedomains.resource.nvidia.com/v1beta1`.
-2. **Helm RBAC and Feature Gate**: Enable `computeDomainManagement.enabled=true`
-   and the `AutoComputeDomain` feature gate when installing LWS:
+   `computedomains.resource.nvidia.com/v1beta1`. The controller manager exits at
+   startup if the gate is enabled and this API is not served.
+2. **Helm RBAC and Feature Gate**: Enable the `AutoComputeDomain` feature gate
+   when installing LWS. The chart grants the ComputeDomain RBAC rules when
+   either the gate or `computeDomainManagement.enabled` is set:
 
 ```bash
 helm upgrade --install lws oci://registry.k8s.io/lws/charts/lws \
   --namespace lws-system --create-namespace \
-  --set computeDomainManagement.enabled=true \
   --set featureGates.AutoComputeDomain=true
 ```
 
 When deploying from kustomize manifests instead of Helm, enable `AutoComputeDomain: true`
-in the controller manager `Configuration` and grant RBAC permissions on
-`computedomains` and `computedomains/finalizers` in group `resource.nvidia.com`:
+in the controller manager `Configuration`:
 
 ```yaml
 apiVersion: config.lws.x-k8s.io/v1
 kind: Configuration
 featureGates:
   AutoComputeDomain: true
+```
+
+The kustomize manifests do not grant ComputeDomain permissions. Without them
+the ComputeDomain informer cannot sync and the controller manager fails to
+start. Add a ClusterRole bound to the controller manager's ServiceAccount
+(`lws-controller-manager` in `lws-system` by default):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lws-computedomain-manager
+rules:
+  - apiGroups: ["resource.nvidia.com"]
+    resources: ["computedomains"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["resource.nvidia.com"]
+    resources: ["computedomains/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lws-computedomain-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lws-computedomain-manager
+subjects:
+  - kind: ServiceAccount
+    name: lws-controller-manager
+    namespace: lws-system
 ```
 
 > **Note:** An IMEX channel only connects GPUs within the same physical NVLink
@@ -184,3 +217,45 @@ workerTemplate:
       - name: vllm
         image: nvcr.io/nvidia/vllm:latest
 ```
+
+## Lifecycle and Operational Behavior
+
+- **Rollouts**: Setting or removing either `auto-compute-domain` annotation
+  changes the workload revision, so it triggers a rolling update of all groups.
+  Unset and `"disabled"` produce the same revision, so upgrading LWS does not
+  restart existing workloads.
+- **Protection finalizer**: Each managed `ComputeDomain` carries the
+  `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. LWS removes
+  it, and deletes obsolete `ComputeDomain`s, only once no Pod references the
+  `ComputeDomain`'s `ResourceClaimTemplate`. Old revisions keep their
+  `ComputeDomain` until their Pods finish terminating.
+- **Name collisions**: If a `ComputeDomain` with the generated name exists and
+  is controlled by another object, LWS does not adopt it. It emits an
+  `UnexpectedComputeDomainOwner` Warning event and keeps the leader gated or the
+  slice unscaled.
+- **Reserved names**: The `lws-compute-domain-channel` claim name and the
+  `leaderworkerset.sigs.k8s.io/compute-domain-prefix` and
+  `leaderworkerset.sigs.k8s.io/compute-domain-name` template annotations are
+  managed by LWS. The admission webhook rejects them in user templates.
+- **Admission**: Opting in is rejected while the feature gate is disabled or
+  while the `ComputeDomain` API is not served. Objects that opted in earlier
+  remain updatable.
+
+### Disabling the Feature Gate
+
+With the gate disabled, LWS stops creating `ComputeDomain`s and injecting
+claims, and it no longer releases the protection finalizer. Pod templates do
+not change when the gate is toggled, so running groups are not restarted.
+
+- New Pods of opted-in `LeaderWorkerSet`s start without a `ComputeDomain` claim.
+- A `DisaggregatedSet` enrolled in slice `ComputeDomain`s does not create new
+  child `LeaderWorkerSet`s for enrolled roles (for example on scale-up or a new
+  revision), because they would lack the claim that existing slices carry.
+  Reconciliation reports an error until the gate is re-enabled or the
+  annotation is removed.
+
+Before disabling the gate, remove the `auto-compute-domain` annotations and wait
+for the managed `ComputeDomain`s to be deleted. A `ComputeDomain` that is deleted
+while the gate is disabled stays in `Terminating` until the
+`leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer is removed by
+re-enabling the gate or by hand, after its Pods are gone.

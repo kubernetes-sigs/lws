@@ -153,4 +153,19 @@ func TestLWSManagerCreateInjectsSliceComputeDomainClaims(t *testing.T) {
 	// Opted-out encoder receives zero ComputeDomain claims.
 	require.Empty(t, encoderSlice0.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.ResourceClaims)
 	require.Empty(t, encoderSlice0.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Resources.Claims)
+
+	t.Run("gate disabled refuses to create enrolled children without claims", func(t *testing.T) {
+		features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, false)
+
+		err := manager.Create(ctx, ds, &ds.Spec.Roles[0], 1, "rev-gate-off", 1, nil)
+		require.ErrorContains(t, err, "AutoComputeDomain feature gate is disabled")
+		var missing leaderworkersetv1.LeaderWorkerSet
+		require.Error(t, c.Get(ctx, types.NamespacedName{
+			Namespace: "default",
+			Name:      disaggregatedsetutils.GenerateName("serving", 1, "rev-gate-off", "prefill"),
+		}, &missing))
+
+		// A role opted out of the slice ComputeDomain is unaffected.
+		require.NoError(t, manager.Create(ctx, ds, &ds.Spec.Roles[1], 1, "rev-gate-off", 1, nil))
+	})
 }
