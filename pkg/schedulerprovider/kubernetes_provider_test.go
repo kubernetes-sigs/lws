@@ -40,10 +40,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 func init() {
+	_ = disaggregatedsetv1.AddToScheme(scheme)
 	_ = schedulingv1alpha3.AddToScheme(scheme)
 	_ = schedulingv1beta1.AddToScheme(scheme)
 }
@@ -1174,6 +1176,228 @@ func TestKubernetesProviderDelegatedWorkloadToleratesOwnerAPIVersionChange(t *te
 	got, err := NewKubernetesProvider(fakeClient).findDelegatedWorkload(ctx, lws)
 	require.NoError(t, err)
 	assert.Equal(t, "parent-workload", got.Name, "a Workload owned through another API group must not match")
+}
+
+func TestKubernetesProviderDelegatedWorkloadDoesNotGetUncachedParent(t *testing.T) {
+	ctx := context.Background()
+	controller := true
+	for name, owner := range map[string]metav1.OwnerReference{
+		"external CRD owner": {
+			APIVersion: "example.test/v1",
+			Kind:       "ParentJob",
+			Name:       "parent",
+			UID:        types.UID("parent-uid"),
+			Controller: &controller,
+		},
+		"non-cached built-in owner": {
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+			Name:       "parent-cm",
+			UID:        types.UID("parent-cm-uid"),
+			Controller: &controller,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lws := testScheduledLWS()
+			lws.OwnerReferences = []metav1.OwnerReference{owner}
+			lws.Annotations = map[string]string{GroupTemplateNameAnnotation: "child-template"}
+
+			gets := 0
+			fakeClient := newKubernetesFakeClientBuilder().
+				WithInterceptorFuncs(interceptor.Funcs{
+					Create: createWithGeneratedUID,
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						gets++
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).Build()
+			provider := NewKubernetesProvider(fakeClient)
+
+			err := provider.ReconcileScheduling(ctx, lws, 2, "revision-1")
+			require.Error(t, err)
+			assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+			assert.ErrorContains(t, err, "no parent Workload matches")
+			assert.Zero(t, gets, "must not GET external or non-cached controller owners when the parent Workload is not yet in cache")
+
+			gatedLeader := ordinalLeaderPod(lws, "0")
+			gatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+			err = provider.CreatePodGroupIfNotExists(ctx, lws, gatedLeader)
+			require.Error(t, err)
+			assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+			assert.Zero(t, gets, "leader PodGroup reconciliation must not GET external or non-cached controller owners")
+		})
+	}
+}
+
+func TestKubernetesProviderDelegatedWorkloadWalksCachedDisaggregatedSet(t *testing.T) {
+	ctx := context.Background()
+	controller := true
+	externalOwner := metav1.OwnerReference{
+		APIVersion: "example.test/v1",
+		Kind:       "ParentJob",
+		Name:       "root-parent",
+		UID:        types.UID("root-parent-uid"),
+		Controller: &controller,
+	}
+	newDisaggregatedSet := func(name string, uid types.UID, owners ...metav1.OwnerReference) *disaggregatedsetv1.DisaggregatedSet {
+		return &disaggregatedsetv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            name,
+				Namespace:       "default",
+				UID:             uid,
+				OwnerReferences: owners,
+			},
+		}
+	}
+	dsOwnerRef := func(name string, uid types.UID, apiVersion string) metav1.OwnerReference {
+		return metav1.OwnerReference{
+			APIVersion: apiVersion,
+			Kind:       "DisaggregatedSet",
+			Name:       name,
+			UID:        uid,
+			Controller: &controller,
+		}
+	}
+	newDelegatedLWS := func(owner metav1.OwnerReference) *leaderworkerset.LeaderWorkerSet {
+		lws := testScheduledLWS()
+		lws.OwnerReferences = []metav1.OwnerReference{owner}
+		lws.Annotations = map[string]string{GroupTemplateNameAnnotation: "child-template"}
+		return lws
+	}
+	newParentWorkload := func(owner metav1.OwnerReference) *schedulingv1beta1.Workload {
+		return &schedulingv1beta1.Workload{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "root-workload",
+				Namespace:       "default",
+				OwnerReferences: []metav1.OwnerReference{owner},
+			},
+			Spec: schedulingv1beta1.WorkloadSpec{
+				ControllerRef: &schedulingv1beta1.TypedLocalObjectReference{
+					APIGroup: "example.test",
+					Kind:     owner.Kind,
+					Name:     owner.Name,
+				},
+				PodGroupTemplates: []schedulingv1beta1.PodGroupTemplate{{
+					Name: "child-template",
+					SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+						Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					},
+				}},
+			},
+		}
+	}
+
+	t.Run("resolves grandparent Workload via typed DisaggregatedSet Get without unstructured Gets", func(t *testing.T) {
+		ds := newDisaggregatedSet("mid-ds", "mid-ds-uid", externalOwner)
+		// Use a different version in the ownerRef to ensure resolution uses the cached typed DisaggregatedSet regardless of version skew.
+		lws := newDelegatedLWS(dsOwnerRef(ds.Name, ds.UID, disaggregatedsetv1.GroupVersion.Group+"/v1alpha2"))
+		workload := newParentWorkload(externalOwner)
+
+		unstructuredGets := 0
+		disaggregatedSetGets := 0
+		otherGets := 0
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(ds, workload).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: createWithGeneratedUID,
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					switch obj.(type) {
+					case *unstructured.Unstructured:
+						unstructuredGets++
+					case *disaggregatedsetv1.DisaggregatedSet:
+						disaggregatedSetGets++
+					case *schedulingv1beta1.PodGroup, *schedulingv1beta1.Workload:
+					default:
+						otherGets++
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		provider := NewKubernetesProvider(fakeClient)
+
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+		assert.Equal(t, 1, disaggregatedSetGets)
+		assert.Zero(t, unstructuredGets, "must never issue uncached unstructured GETs")
+		assert.Zero(t, otherGets, "must never GET the external grandparent")
+
+		for i := 0; i < 2; i++ {
+			gatedLeader := ordinalLeaderPod(lws, fmt.Sprint(i))
+			gatedLeader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+			require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, gatedLeader))
+		}
+		assert.Equal(t, 3, disaggregatedSetGets)
+		assert.Zero(t, unstructuredGets)
+		assert.Zero(t, otherGets)
+
+		pg := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: KubernetesPodGroupName(lws, "0", "revision-1")}, pg))
+		require.NotNil(t, pg.Spec.WorkloadRef)
+		assert.Equal(t, workload.Name, pg.Spec.WorkloadRef.WorkloadName)
+		assert.Equal(t, "child-template", pg.Spec.WorkloadRef.TemplateName)
+	})
+
+	t.Run("stops at external grandparent when Workload is not created yet", func(t *testing.T) {
+		ds := newDisaggregatedSet("mid-ds", "mid-ds-uid", externalOwner)
+		lws := newDelegatedLWS(dsOwnerRef(ds.Name, ds.UID, disaggregatedsetv1.GroupVersion.String()))
+
+		unstructuredGets := 0
+		disaggregatedSetGets := 0
+		otherGets := 0
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(ds).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					switch obj.(type) {
+					case *unstructured.Unstructured:
+						unstructuredGets++
+					case *disaggregatedsetv1.DisaggregatedSet:
+						disaggregatedSetGets++
+					default:
+						otherGets++
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+
+		err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
+		require.Error(t, err)
+		assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+		assert.ErrorContains(t, err, "no parent Workload matches")
+		assert.Equal(t, 1, disaggregatedSetGets)
+		assert.Zero(t, unstructuredGets)
+		assert.Zero(t, otherGets, "must stop at external grandparent without GET")
+	})
+
+	t.Run("returns ParentWorkloadNotReady when intermediate DisaggregatedSet is missing", func(t *testing.T) {
+		lws := newDelegatedLWS(dsOwnerRef("missing-ds", "missing-ds-uid", disaggregatedsetv1.GroupVersion.String()))
+		fakeClient := newKubernetesFakeClientBuilder().Build()
+
+		err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
+		require.Error(t, err)
+		assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+		assert.True(t, apierrors.IsNotFound(err))
+	})
+
+	t.Run("returns ParentWorkloadNotReady when intermediate DisaggregatedSet UID changed", func(t *testing.T) {
+		ds := newDisaggregatedSet("mid-ds", "replacement-ds-uid", externalOwner)
+		lws := newDelegatedLWS(dsOwnerRef(ds.Name, "original-ds-uid", disaggregatedsetv1.GroupVersion.String()))
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(ds).Build()
+
+		err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
+		require.Error(t, err)
+		assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+		assert.ErrorContains(t, err, "UID changed")
+	})
+
+	t.Run("detects cycle in controller-owner chain", func(t *testing.T) {
+		dsA := newDisaggregatedSet("ds-a", "ds-a-uid", dsOwnerRef("ds-b", "ds-b-uid", disaggregatedsetv1.GroupVersion.String()))
+		dsB := newDisaggregatedSet("ds-b", "ds-b-uid", dsOwnerRef("ds-a", "ds-a-uid", disaggregatedsetv1.GroupVersion.String()))
+		lws := newDelegatedLWS(dsOwnerRef(dsA.Name, dsA.UID, disaggregatedsetv1.GroupVersion.String()))
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(dsA, dsB).Build()
+
+		err := NewKubernetesProvider(fakeClient).ReconcileScheduling(ctx, lws, 1, "revision-1")
+		require.Error(t, err)
+		assert.Equal(t, ReasonParentWorkloadNotReady, ReconcileErrorReason(err))
+		assert.ErrorContains(t, err, "possibly a cycle")
+	})
 }
 
 // A size change creates a new revision and moves the Workload templates to the

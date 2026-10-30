@@ -30,7 +30,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
@@ -42,6 +41,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
@@ -691,19 +691,25 @@ func sameControllerOwner(a, b *metav1.OwnerReference) bool {
 }
 
 // findDelegatedWorkload walks the LWS controller-owner chain until it finds the
-// parent-owned Workload that contains the annotated group template. Stop at the
-// first matching hop so we do not GET third-party parents after the Workload
-// is already known (ClusterRole does not cover those kinds).
+// parent-owned Workload that contains the annotated group template. Only cached
+// in-tree intermediate owners (DisaggregatedSet) are followed when no Workload
+// matches the current hop: unstructured GETs bypass the controller-runtime
+// cache on every reconcile, and manager-role has no RBAC for third-party kinds.
 func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*schedulingv1beta1.Workload, error) {
 	owner := metav1.GetControllerOf(lws)
 	if owner == nil {
 		return nil, fmt.Errorf("%s requires a controller owner", GroupTemplateNameAnnotation)
 	}
 
-	for owner != nil {
+	for hops := 0; owner != nil; hops++ {
+		// Bounds the walk without per-call allocation; this also stops cycles.
+		if hops == maxControllerOwnerHops {
+			return nil, fmt.Errorf("controller-owner chain exceeds %d hops at %s %s/%s, possibly a cycle", maxControllerOwnerHops, owner.Kind, lws.Namespace, owner.Name)
+		}
 		if owner.UID == "" {
 			return nil, fmt.Errorf("controller owner %s %s/%s has no UID", owner.Kind, lws.Namespace, owner.Name)
 		}
+
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
 		if err != nil {
 			return nil, fmt.Errorf("parse owner apiVersion %q: %w", owner.APIVersion, err)
@@ -730,8 +736,10 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 			return selected, nil
 		}
 
-		parent := &unstructured.Unstructured{}
-		parent.SetGroupVersionKind(schema.GroupVersionKind{Group: gv.Group, Version: gv.Version, Kind: owner.Kind})
+		parent := cachedControllerOwnerObject(gv.Group, owner.Kind)
+		if parent == nil {
+			break
+		}
 		if err := p.client.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: owner.Name}, parent); err != nil {
 			return nil, fmt.Errorf("follow controller owner %s %s/%s: %w", owner.Kind, lws.Namespace, owner.Name, err)
 		}
@@ -741,6 +749,21 @@ func (p *KubernetesProvider) findDelegatedWorkload(ctx context.Context, lws *lea
 		owner = metav1.GetControllerOf(parent)
 	}
 	return nil, fmt.Errorf("no parent Workload matches the LWS controller-owner chain")
+}
+
+// maxControllerOwnerHops caps the delegated Workload owner walk. Only cached
+// DisaggregatedSet hops can repeat, so real chains stay far below it.
+const maxControllerOwnerHops = 8
+
+// cachedControllerOwnerObject returns a typed object for intermediate
+// controller owners that the manager caches and has RBAC to list and watch, or
+// nil for external kinds. Starting an informer via a typed Get for arbitrary
+// registered kinds (such as batch/v1 Job) would fail cache sync without RBAC.
+func cachedControllerOwnerObject(group, kind string) client.Object {
+	if group == disaggregatedsetv1.GroupVersion.Group && kind == "DisaggregatedSet" {
+		return &disaggregatedsetv1.DisaggregatedSet{}
+	}
+	return nil
 }
 
 // updateMutableWorkloadFields applies gang minCount (for example whole-LWS scale)
