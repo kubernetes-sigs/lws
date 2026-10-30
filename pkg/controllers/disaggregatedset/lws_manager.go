@@ -317,6 +317,13 @@ func (manager *LeaderWorkerSetManager) Create(
 		disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Spec, disaggregatedSet.Name, slice, disaggregatedSet.Spec.PlacementPolicy)
 	}
 
+	if computedomain.RoleUsesSliceComputeDomain(disaggregatedSet, role) && !features.Enabled(features.AutoComputeDomain) &&
+		(computedomain.TemplateHasTargetedContainers(&lwsSpec.LeaderWorkerTemplate.WorkerTemplate) ||
+			computedomain.TemplateHasTargetedContainers(lwsSpec.LeaderWorkerTemplate.LeaderTemplate)) {
+		// Children that already exist under this revision carry the claim, so a
+		// new child without it would silently lack the IMEX channel.
+		return fmt.Errorf("role %s is enrolled in a slice ComputeDomain but the AutoComputeDomain feature gate is disabled; not creating LeaderWorkerSet %s without its ComputeDomain claim", role.Name, lwsName)
+	}
 	if features.Enabled(features.AutoComputeDomain) && computedomain.RoleUsesSliceComputeDomain(disaggregatedSet, role) {
 		cdName := computedomain.SliceComputeDomainName(disaggregatedSet, slice, revision)
 		if _, err := computedomain.InjectPodSpecClaims(

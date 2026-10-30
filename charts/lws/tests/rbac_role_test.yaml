@@ -70,3 +70,24 @@ tests:
               - computedomains/finalizers
             verbs:
               - update
+
+  - it: grants access to ComputeDomains when the AutoComputeDomain feature gate is enabled
+    set:
+      featureGates:
+        AutoComputeDomain: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - resource.nvidia.com
+            resources:
+              - computedomains
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - update
+              - watch

@@ -32,7 +32,7 @@ rules:
       - list
       - watch
   {{- end }}
-  {{- if and .Values.computeDomainManagement .Values.computeDomainManagement.enabled }}
+  {{- if or (and .Values.computeDomainManagement .Values.computeDomainManagement.enabled) (and .Values.featureGates .Values.featureGates.AutoComputeDomain) }}
   - apiGroups:
       - resource.nvidia.com
     resources:

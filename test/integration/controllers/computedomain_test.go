@@ -398,7 +398,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 				child := &lwsList.Items[i]
 				if len(child.Finalizers) > 0 && !child.DeletionTimestamp.IsZero() {
 					child.Finalizers = nil
-					_ = k8sClient.Update(ctx, child)
+					g.Expect(client.IgnoreNotFound(k8sClient.Update(ctx, child))).To(gomega.Succeed())
 				}
 			}
 			var cd1, cd0 computedomain.ComputeDomain
