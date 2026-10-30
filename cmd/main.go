@@ -377,6 +377,9 @@ func apply(configFile string,
 
 	options.Metrics = metricsServerOptions
 	options.LeaderElectionNamespace = namespace
+	if err := controllers.ConfigureCacheOptions(&options.Cache); err != nil {
+		return options, cfg, fmt.Errorf("unable to configure manager cache options: %w", err)
+	}
 
 	//// 5. Inject into Webhook Server
 	//options.WebhookServer = webhook.NewServer(webhook.Options{

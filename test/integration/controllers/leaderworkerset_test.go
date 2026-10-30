@@ -87,6 +87,174 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 		ginkgo.Entry("scaled down to zero", int32(1)),
 	)
 
+	ginkgo.It("deletes owned worker StatefulSets during parallel Hash LWS deletion using a label-scoped ReplicaSet cache", func() {
+		ctx := context.Background()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "hash-parallel-delete-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).
+			Replica(1).
+			Size(2).
+			PodTerminationPolicy(leaderworkerset.ParallelPodTerminationPolicy).
+			Obj()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Finalizers = []string{"lws.test/hold"}
+		workerSpec := *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.DeepCopy()
+
+		// Create an unrelated ReplicaSet without LWS labels and a worker-labeled
+		// StatefulSet whose owner chain runs through it. The manager cache must
+		// exclude unrelated ReplicaSets and leave unverified workers untouched.
+		unrelatedLabels := map[string]string{"app": "unrelated"}
+		unrelatedRS := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-rs",
+				Namespace: ns.Name,
+				Labels:    unrelatedLabels,
+			},
+			Spec: appsv1.ReplicaSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: &metav1.LabelSelector{MatchLabels: unrelatedLabels},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: unrelatedLabels},
+					Spec:       workerSpec,
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, unrelatedRS)).To(gomega.Succeed())
+
+		foreignLeader := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "foreign-leader",
+				Namespace:       ns.Name,
+				Labels:          unrelatedLabels,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(unrelatedRS, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))},
+			},
+			Spec: workerSpec,
+		}
+		gomega.Expect(k8sClient.Create(ctx, foreignLeader)).To(gomega.Succeed())
+
+		foreignWorkerLabels := map[string]string{"app": "foreign-worker"}
+		unownedWorkers := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      foreignLeader.Name,
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: lws.Name,
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleWorker,
+				},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(foreignLeader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				ServiceName: "foreign-svc",
+				Replicas:    ptr.To(int32(1)),
+				Selector:    &metav1.LabelSelector{MatchLabels: foreignWorkerLabels},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: foreignWorkerLabels},
+					Spec:       workerSpec,
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, unownedWorkers)).To(gomega.Succeed())
+
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		var deploy appsv1.Deployment
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &deploy)).To(gomega.Succeed())
+			g.Expect(deploy.Spec.Template.Labels).To(gomega.HaveKeyWithValue(leaderworkerset.SetNameLabelKey, lws.Name))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// DeploymentController does not run in envtest; mirror how it stamps the
+		// Deployment pod template labels onto the ReplicaSet.
+		ownedRS := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            lws.Name + "-rs",
+				Namespace:       ns.Name,
+				Labels:          deploy.Spec.Template.Labels,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(&deploy, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+			},
+			Spec: appsv1.ReplicaSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: deploy.Spec.Selector,
+				Template: deploy.Spec.Template,
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, ownedRS)).To(gomega.Succeed())
+
+		revisionKey := deploy.Labels[leaderworkerset.RevisionKey]
+		ownedLeaderName := lws.Name + "-abcde"
+		ownedLeader := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ownedLeaderName,
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:         lws.Name,
+					leaderworkerset.WorkerIndexLabelKey:     "0",
+					leaderworkerset.GroupIndexLabelKey:      ownedLeaderName,
+					leaderworkerset.GroupUniqueHashLabelKey: ownedLeaderName,
+					leaderworkerset.RevisionKey:             revisionKey,
+				},
+				Annotations: map[string]string{
+					leaderworkerset.SizeAnnotationKey:                 "2",
+					leaderworkerset.GroupIdentityAnnotationKey:        string(leaderworkerset.GroupIdentityHash),
+					leaderworkerset.PodTerminationPolicyAnnotationKey: string(leaderworkerset.ParallelPodTerminationPolicy),
+				},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(ownedRS, appsv1.SchemeGroupVersion.WithKind("ReplicaSet"))},
+			},
+			Spec: workerSpec,
+		}
+		ownedLeader.Spec.Hostname = ownedLeaderName
+		ownedLeader.Spec.Subdomain = lws.Name
+		gomega.Expect(k8sClient.Create(ctx, ownedLeader)).To(gomega.Succeed())
+
+		ownedWorkersKey := types.NamespacedName{Namespace: ns.Name, Name: ownedLeaderName}
+		gomega.Eventually(func() error {
+			var sts appsv1.StatefulSet
+			return k8sClient.Get(ctx, ownedWorkersKey, &sts)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		ginkgo.By("deleting the Hash LWS and verifying owned worker StatefulSet foreground deletion")
+		gomega.Expect(k8sClient.Delete(ctx, lws)).To(gomega.Succeed())
+
+		gomega.Eventually(func() bool {
+			var sts appsv1.StatefulSet
+			err := k8sClient.Get(ctx, ownedWorkersKey, &sts)
+			return apierrors.IsNotFound(err) || (err == nil && sts.DeletionTimestamp != nil)
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		ginkgo.By("verifying the lazy ReplicaSet informer caches only LWS-labeled ReplicaSets and preserves unowned workers")
+		var cachedOwnedRS appsv1.ReplicaSet
+		gomega.Expect(k8sManager.GetCache().Get(ctx, client.ObjectKeyFromObject(ownedRS), &cachedOwnedRS)).To(gomega.Succeed())
+		gomega.Expect(cachedOwnedRS.UID).To(gomega.Equal(ownedRS.UID))
+
+		var cachedUnrelatedRS appsv1.ReplicaSet
+		gomega.Expect(apierrors.IsNotFound(k8sManager.GetCache().Get(ctx, client.ObjectKeyFromObject(unrelatedRS), &cachedUnrelatedRS))).To(gomega.BeTrue())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(unrelatedRS), &cachedUnrelatedRS)).To(gomega.Succeed())
+
+		var currentUnownedWorkers appsv1.StatefulSet
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(unownedWorkers), &currentUnownedWorkers)).To(gomega.Succeed())
+		gomega.Expect(currentUnownedWorkers.DeletionTimestamp).To(gomega.BeNil())
+
+		// Clear test and foregroundDeletion finalizers since garbage collection does not run in envtest.
+		gomega.Eventually(func() error {
+			var sts appsv1.StatefulSet
+			if err := k8sClient.Get(ctx, ownedWorkersKey, &sts); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			sts.Finalizers = nil
+			return k8sClient.Update(ctx, &sts)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		gomega.Eventually(func() error {
+			var currentLWS leaderworkerset.LeaderWorkerSet
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &currentLWS); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			currentLWS.Finalizers = nil
+			return k8sClient.Update(ctx, &currentLWS)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
 	// class representing an update
 	type update struct {
 		lwsUpdateFn       func(*leaderworkerset.LeaderWorkerSet)
