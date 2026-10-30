@@ -35,6 +35,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
+	clientfeatures "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
@@ -964,4 +967,29 @@ func TestObserverNotificationUsesReadOnlyParent(t *testing.T) {
 	require.Equal(t, 3, calls)
 	require.Equal(t, ptr.To(true), c.query.UnsafeDisableDeepCopy, "parent lookup is read-only, like direct LWS notifications")
 	require.Equal(t, before, parent, "notification must not mutate the cached object")
+}
+
+// TestConsistentInitialInformerListsFromStorage checks that the reflector's
+// RV=0 initial list, which may be served from a stale watch cache, is sent as a
+// consistent list, while the watch still resumes from the listed version.
+func TestConsistentInitialInformerListsFromStorage(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	lists, watches := make(chan string, 1), make(chan string, 1)
+	informer := consistentInitialInformer(&toolscache.ListWatch{
+		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			lists <- options.ResourceVersion
+			return &corev1.PodList{ListMeta: metav1.ListMeta{ResourceVersion: "10"}}, nil
+		},
+		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			watches <- options.ResourceVersion
+			return watch.NewFake(), nil
+		},
+	}, &corev1.Pod{}, 0, toolscache.Indexers{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go informer.RunWithContext(ctx)
+	require.True(t, toolscache.WaitForCacheSync(ctx.Done(), informer.HasSynced))
+	assert.Equal(t, "", <-lists, "the initial list must not accept a cached RV=0 read")
+	assert.Equal(t, "10", <-watches, "the watch must start from the listed resource version")
 }
