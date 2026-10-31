@@ -426,7 +426,8 @@ const (
 	// DisaggregatedSetMinimumReplicasAvailable means every role and sub-role has
 	// at least minAvailableReplicas available replicas. Unlike Available, it
 	// stays True during scale-ups and rollouts that remain within each role's
-	// maxUnavailable budget. It is Unknown while any replica target is unknown.
+	// maxUnavailable budget. It is False while any role is below a known floor,
+	// and otherwise Unknown while any replica target is unknown.
 	DisaggregatedSetMinimumReplicasAvailable DisaggregatedSetConditionType = "MinimumReplicasAvailable"
 
 	// DisaggregatedSetSubRolesAssigned means every live group of a partitioned

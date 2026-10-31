@@ -578,11 +578,152 @@ func TestServingCapacityRequiresEveryRoleOfARevision(t *testing.T) {
 			for _, workload := range tc.workloads {
 				capacity.observeWorkload(workload, workload.Labels[disaggregatedsetv1.RoleLabelKey])
 			}
-			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill"}, {Name: "decode"}}
+			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill", ReadyReplicas: 10}, {Name: "decode", ReadyReplicas: 10}}
 			capacity.setAvailableReplicas(statuses)
 			assert.Equal(t, []int32{tc.wantPrefill, tc.wantDecode}, []int32{statuses[0].AvailableReplicas, statuses[1].AvailableReplicas})
 		})
 	}
+}
+
+// TestServingCapacityRequiresTargets checks that the current revision requires
+// every role with a positive target in each slice, even with no workload for it.
+func TestServingCapacityRequiresTargets(t *testing.T) {
+	ds := newDSWithRoles("ds", staticRole("prefill"), staticRole("decode"))
+	ds.Spec.Slices = ptr.To[int32](2)
+	for _, tc := range []struct {
+		name      string
+		workloads []*leaderworkersetv1.LeaderWorkerSet
+		desired   map[string]int
+		want      int32
+	}{
+		{
+			name:      "a missing role stops its peer from serving",
+			workloads: []*leaderworkersetv1.LeaderWorkerSet{servingLWS(ds, "prefill", "0", "current", 2, 2)},
+			desired:   map[string]int{"prefill": 2, "decode": 1},
+		},
+		{
+			name:      "a missing role with a zero target is not required",
+			workloads: []*leaderworkersetv1.LeaderWorkerSet{servingLWS(ds, "prefill", "0", "current", 2, 2)},
+			desired:   map[string]int{"prefill": 2, "decode": 0},
+			want:      2,
+		},
+		{
+			name:      "a missing role with an unknown target is not required",
+			workloads: []*leaderworkersetv1.LeaderWorkerSet{servingLWS(ds, "prefill", "0", "current", 2, 2)},
+			desired:   map[string]int{"prefill": 2},
+			want:      2,
+		},
+		{
+			name: "a slice missing a role does not stop the other slice",
+			workloads: []*leaderworkersetv1.LeaderWorkerSet{
+				servingLWS(ds, "prefill", "0", "current", 2, 2), servingLWS(ds, "decode", "0", "current", 1, 1),
+				servingLWS(ds, "prefill", "1", "current", 2, 2),
+			},
+			desired: map[string]int{"prefill": 2, "decode": 1},
+			want:    2,
+		},
+		{
+			name: "an old revision is not held to the current targets",
+			workloads: []*leaderworkersetv1.LeaderWorkerSet{
+				servingLWS(ds, "prefill", "0", "old", 2, 2, 2),
+			},
+			desired: map[string]int{"prefill": 2, "decode": 1},
+			want:    2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capacity := servingCapacity{}
+			for _, workload := range tc.workloads {
+				capacity.observeWorkload(workload, workload.Labels[disaggregatedsetv1.RoleLabelKey])
+			}
+			capacity.requireTargets(ds, "current", tc.desired)
+			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill", ReadyReplicas: 10}, {Name: "decode", ReadyReplicas: 10}}
+			capacity.setAvailableReplicas(statuses)
+			assert.Equal(t, tc.want, statuses[0].AvailableReplicas)
+		})
+	}
+}
+
+// TestUpdateStatusReportsMissingWorkloadOfCurrentRevision covers a workload that
+// was deleted and cannot be recreated: its peer must not stay available without it.
+func TestUpdateStatusReportsMissingWorkloadOfCurrentRevision(t *testing.T) {
+	ds := newDSWithRoles("ds",
+		withMaxUnavailable(staticRole("prefill"), intstr.FromInt32(1)),
+		withMaxUnavailable(staticRole("decode"), intstr.FromInt32(1)),
+	)
+	c := newTestClient(ds, servingLWS(ds, "prefill", "0", "current", 2, 2))
+	key := client.ObjectKeyFromObject(ds)
+	require.NoError(t, c.Get(t.Context(), key, ds))
+	r := newTestReconciler(c)
+	desired := map[string]int{"prefill": 2, "decode": 1}
+	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil))
+	require.NoError(t, c.Get(t.Context(), key, ds))
+	assert.Zero(t, ds.Status.RoleStatuses[0].AvailableReplicas)
+	condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Contains(t, condition.Message, "prefill (0/1)")
+}
+
+// TestCollectRoleStatusesUsesRecordedLayout covers old partitioned workloads whose
+// role no longer has sub-roles in the spec, or is gone from it: each old child is
+// still required while they drain, as the planner sees them.
+func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
+	setUp := func(t *testing.T, bReady bool) *subRoleFixture {
+		f := newSubRoleFixture(t, 0, "a", "b")
+		for _, group := range f.observe().Groups {
+			if name, _ := groupSubRole(group); name == "b" && !bReady {
+				group.Leader.Status.Conditions = nil
+				require.NoError(t, f.manager.client.Status().Update(t.Context(), group.Leader))
+			}
+		}
+		lws := f.observe().LWS
+		lws.Status.Replicas, lws.Status.ReadyReplicas = 2, 1
+		if bReady {
+			lws.Status.ReadyReplicas = 2
+		}
+		require.NoError(t, f.manager.client.Status().Update(t.Context(), lws))
+		return f
+	}
+	create := func(t *testing.T, f *subRoleFixture, role, revision string, spec, ready int32, initial ...int32) {
+		lws := servingLWS(f.ds, role, "0", revision, spec, ready, initial...)
+		status := lws.Status
+		require.NoError(t, f.manager.client.Create(t.Context(), lws))
+		lws.Status = status
+		require.NoError(t, f.manager.client.Status().Update(t.Context(), lws))
+	}
+
+	t.Run("a parent that dropped its sub-roles needs every old child Ready", func(t *testing.T) {
+		f := setUp(t, false)
+		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{withMaxUnavailable(staticRole("model"), intstr.FromInt32(1))}
+		create(t, f, "model", "new", 2, 0)
+		desired := map[string]int{"model": 2}
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", desired)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
+		assert.Zero(t, statuses[0].AvailableReplicas, "neither revision can serve")
+
+		setMinAvailableReplicas(f.ds, statuses, desired, 1)
+		assert.Equal(t, metav1.ConditionFalse, minimumReplicasAvailableCondition(f.ds, statuses).Status)
+	})
+	t.Run("a parent that dropped its sub-roles serves with every old child Ready", func(t *testing.T) {
+		f := setUp(t, true)
+		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
+		create(t, f, "model", "new", 2, 0)
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", map[string]int{"model": 2})
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, statuses[0].AvailableReplicas)
+	})
+	t.Run("a removed partitioned role still needs every old child Ready", func(t *testing.T) {
+		f := setUp(t, false)
+		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("prefill")}
+		// The fixture's revision label is its workload name.
+		create(t, f, "prefill", "model", 1, 1, 1)
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"prefill"}, "new", map[string]int{"prefill": 1})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
+		assert.Zero(t, statuses[0].AvailableReplicas, "the old revision cannot serve without old child b")
+	})
 }
 
 func TestMinimumReplicasAvailableCondition(t *testing.T) {
@@ -617,9 +758,25 @@ func TestMinimumReplicasAvailableCondition(t *testing.T) {
 		},
 		{
 			name:     "an unknown floor is not reported as met or missed",
-			statuses: []disaggregatedsetv1.RoleStatus{role("prefill", nil, 4), role("decode", ptr.To[int32](3), 0)},
+			statuses: []disaggregatedsetv1.RoleStatus{role("prefill", nil, 4), role("decode", ptr.To[int32](3), 3)},
 			status:   metav1.ConditionUnknown, reason: "ReplicaTargetsUnresolved",
 			message: "Minimum available replicas are unknown for roles: prefill",
+		},
+		{
+			name:     "a known failure is not hidden by an unknown floor",
+			statuses: []disaggregatedsetv1.RoleStatus{role("prefill", nil, 4), role("decode", ptr.To[int32](3), 0)},
+			status:   metav1.ConditionFalse, reason: "MinimumReplicasUnavailable",
+			message: "Roles below their minimum available replicas (available/minimum): decode (0/3); minimum available replicas are unknown for roles: prefill",
+		},
+		{
+			name: "long role lists are capped",
+			statuses: []disaggregatedsetv1.RoleStatus{
+				role("r00", ptr.To[int32](1), 0), role("r01", ptr.To[int32](1), 0), role("r02", ptr.To[int32](1), 0), role("r03", ptr.To[int32](1), 0),
+				role("r04", ptr.To[int32](1), 0), role("r05", ptr.To[int32](1), 0), role("r06", ptr.To[int32](1), 0), role("r07", ptr.To[int32](1), 0),
+				role("r08", ptr.To[int32](1), 0), role("r09", ptr.To[int32](1), 0), role("r10", ptr.To[int32](1), 0), role("r11", ptr.To[int32](1), 0),
+			},
+			status: metav1.ConditionFalse, reason: "MinimumReplicasUnavailable",
+			message: "Roles below their minimum available replicas (available/minimum): r00 (0/1), r01 (0/1), r02 (0/1), r03 (0/1), r04 (0/1), r05 (0/1), r06 (0/1), r07 (0/1), r08 (0/1), r09 (0/1) and 2 more",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

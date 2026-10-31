@@ -64,7 +64,7 @@ The DisaggregatedSet reports two different signals:
 
 Each entry in `status.roleStatuses` (and its `subRoleStatuses`) shows the numbers behind it:
 
-- `minAvailableReplicas` is the floor, `desired - maxUnavailable` per slice, totalled across slices. It is unset while the role's target is unknown, and the condition is then `Unknown`.
+- `minAvailableReplicas` is the floor, `desired - maxUnavailable` per slice, totalled across slices. It is unset while the role's target is unknown, and the condition is then `Unknown`, unless another role is already below its floor, which makes it `False`.
 - `availableReplicas` counts Ready groups that can actually serve: those in a revision of a slice where **every required role** has a Ready group. A Ready Prefill group in the old revision does not count without a Ready old Decode, even when new Decode groups are Ready.
 
 For example, with `maxUnavailable: 1`, a 4-group Decode role being replaced reports `minAvailableReplicas: 3`. While three old groups still serve, `MinimumReplicasAvailable` stays True; if one more is lost before its replacement is Ready, it becomes False and names the role, for example `decode (2/3)`.

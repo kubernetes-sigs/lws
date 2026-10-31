@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +41,7 @@ import (
 // updateStatus publishes cached counts and conditions.
 // Scalers use the same counts as the DisaggregatedSet's nested role status.
 func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
-	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision)
+	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
 	}
@@ -119,7 +120,7 @@ func (r *DisaggregatedSetReconciler) publishStatus(ctx context.Context, ds *disa
 // collectRoleStatuses aggregates all slices and revisions. Only current roles
 // and children are published, in spec order; removed children still count toward
 // their parent's total while their old groups drain.
-func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string) ([]disaggregatedsetv1.RoleStatus, bool, error) {
+func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, error) {
 	all, err := m.ListAll(ctx, ds, "")
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to list LWS for status: %w", err)
@@ -151,20 +152,54 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 				if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
 					status.UpdatedReplicas += lws.Status.UpdatedReplicas
 				}
-				capacity.observeWorkload(lws, role)
+				if err := m.observeServingLayout(ctx, capacity, lws, role); err != nil {
+					return nil, false, err
+				}
 			}
 		}
 		statuses = append(statuses, status)
 	}
 	// Removed roles publish no status, but an old revision cannot serve
-	// without them. Each of their workloads counts as one unit.
+	// without them.
 	for role, workloads := range byRole {
 		for _, lws := range workloads {
-			capacity.observeWorkload(lws, role)
+			if err := m.observeServingLayout(ctx, capacity, lws, role); err != nil {
+				return nil, false, err
+			}
 		}
 	}
+	capacity.requireTargets(ds, revision, desiredReplicasByRole)
 	capacity.setAvailableReplicas(statuses)
 	return statuses, allAssigned, nil
+}
+
+// observeServingLayout counts a workload that the current spec does not partition
+// by the layout recorded on it: the children of an old partitioned workload stay
+// separately required while it drains. As in subRoleStatus, an invalid record does
+// not withhold every other publication, so the workload then counts as one role.
+func (m *LeaderWorkerSetManager) observeServingLayout(ctx context.Context, capacity servingCapacity, lws *leaderworkersetv1.LeaderWorkerSet, role string) error {
+	membership, _ := subRoleCounts(lws, subRoleReplicasAnnotation)
+	initial, _ := subRoleCounts(lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+	if membership == nil && initial == nil {
+		capacity.observeWorkload(lws, role)
+		return nil
+	}
+	s, err := replicagroups.Observe(ctx, m.reader, lws)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		return errReplicaGroupsPending
+	}
+	serving := capacity.revision(s.LWS)
+	serving.requireSubRoles(role, membership, initial)
+	for _, group := range activeSubRoleGroups(s) {
+		name, coherent := groupSubRole(group)
+		if _, known := membership[name]; known && coherent {
+			serving.observe(childRoleKey(role, name), groupReadyReplicas(group), false)
+		}
+	}
+	return nil
 }
 
 // servingCapacity tallies Ready groups by slice and revision. As in the rollout
@@ -180,7 +215,10 @@ type servingRevision struct {
 }
 
 func (capacity servingCapacity) revision(lws *leaderworkersetv1.LeaderWorkerSet) *servingRevision {
-	key := servingRevisionKey{lws.Labels[disaggregatedsetv1.SliceLabelKey], lws.Labels[disaggregatedsetv1.RevisionLabelKey]}
+	return capacity.revisionAt(servingRevisionKey{lws.Labels[disaggregatedsetv1.SliceLabelKey], lws.Labels[disaggregatedsetv1.RevisionLabelKey]})
+}
+
+func (capacity servingCapacity) revisionAt(key servingRevisionKey) *servingRevision {
 	revision := capacity[key]
 	if revision == nil {
 		revision = &servingRevision{ready: map[string]int32{}, required: map[string]bool{}}
@@ -192,6 +230,27 @@ func (capacity servingCapacity) revision(lws *leaderworkersetv1.LeaderWorkerSet)
 func (revision *servingRevision) observe(role string, ready int32, required bool) {
 	revision.ready[role] += ready
 	revision.required[role] = revision.required[role] || required
+}
+
+// requireSubRoles makes each child a separate required role, as it is for the planner.
+func (revision *servingRevision) requireSubRoles(role string, layouts ...map[string]int) {
+	for _, counts := range layouts {
+		for child, count := range counts {
+			revision.observe(childRoleKey(role, child), 0, count > 0)
+		}
+	}
+}
+
+// requireTargets makes the current revision require every role with a positive
+// target in each slice, so a role whose workload is missing still stops its peers
+// from counting as available.
+func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.DisaggregatedSet, revision string, desiredReplicasByRole map[string]int) {
+	for slice := range disaggregatedsetutils.GetSlices(ds) {
+		current := capacity.revisionAt(servingRevisionKey{strconv.Itoa(int(slice)), revision})
+		for _, leaf := range rolloutRoleNames(ds) {
+			current.observe(leaf, 0, desiredReplicasByRole[leaf] > 0)
+		}
+	}
 }
 
 // observeWorkload counts an unpartitioned workload. Like the planner, a role is
@@ -234,7 +293,8 @@ func (capacity servingCapacity) setAvailableReplicas(statuses []disaggregatedset
 	}
 	for i := range statuses {
 		parent := &statuses[i]
-		parent.AvailableReplicas = available[parent.Name]
+		// Recorded child groups and a workload's own count can briefly disagree.
+		parent.AvailableReplicas = min(available[parent.Name], parent.ReadyReplicas)
 		for j := range parent.SubRoleStatuses {
 			child := &parent.SubRoleStatuses[j]
 			child.AvailableReplicas = available[childRoleKey(parent.Name, child.Name)]
@@ -327,17 +387,32 @@ func minimumReplicasAvailableCondition(ds *disaggregatedsetv1.DisaggregatedSet, 
 		Reason:             "MinimumReplicasAvailable",
 		Message:            "Every role has at least its minimum available replicas",
 	}
+	// A known failure outranks an unknown floor, which could only add to it.
 	switch {
-	case len(unknown) > 0:
-		condition.Status = metav1.ConditionUnknown
-		condition.Reason = "ReplicaTargetsUnresolved"
-		condition.Message = fmt.Sprintf("Minimum available replicas are unknown for roles: %s", strings.Join(unknown, ", "))
 	case len(below) > 0:
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "MinimumReplicasUnavailable"
-		condition.Message = fmt.Sprintf("Roles below their minimum available replicas (available/minimum): %s", strings.Join(below, ", "))
+		condition.Message = fmt.Sprintf("Roles below their minimum available replicas (available/minimum): %s", listRoles(below))
+		if len(unknown) > 0 {
+			condition.Message += fmt.Sprintf("; minimum available replicas are unknown for roles: %s", listRoles(unknown))
+		}
+	case len(unknown) > 0:
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = "ReplicaTargetsUnresolved"
+		condition.Message = fmt.Sprintf("Minimum available replicas are unknown for roles: %s", listRoles(unknown))
 	}
 	return condition
+}
+
+// maxConditionRoles bounds a role list so that a condition message stays within
+// the API's length limit, which would otherwise reject the whole status update.
+const maxConditionRoles = 10
+
+func listRoles(names []string) string {
+	if len(names) <= maxConditionRoles {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxConditionRoles], ", "), len(names)-maxConditionRoles)
 }
 
 // summarizeRoleStatuses projects public nested status into scaler keys and
@@ -407,13 +482,8 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 		// The executor reports an invalid frozen baseline; status falls back to
 		// the issued counts rather than withholding every other publication.
 		initial, _ := subRoleCounts(s.LWS, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
-		// Each child is a separate required role, as it is for the planner.
 		serving := capacity.revision(s.LWS)
-		for _, counts := range []map[string]int{membership, initial} {
-			for child, count := range counts {
-				serving.observe(childRoleKey(role.Name, child), 0, count > 0)
-			}
-		}
+		serving.requireSubRoles(role.Name, membership, initial)
 		if membership == nil && initial == nil {
 			serving.observe(role.Name, 0, intendedReplicas(s.LWS) > 0)
 		}
@@ -430,10 +500,7 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 				assigned = false
 				continue
 			}
-			var ready, updated int32
-			if group.Ready && !group.Terminating {
-				ready = 1
-			}
+			ready, updated := groupReadyReplicas(group), int32(0)
 			if current {
 				updated = 1
 			}
@@ -452,6 +519,13 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 	return status, assigned, nil
 }
 
+func groupReadyReplicas(group replicagroups.Group) int32 {
+	if group.Ready && !group.Terminating {
+		return 1
+	}
+	return 0
+}
+
 func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) bool {
 	if equality.Semantic.DeepEqual(disaggregatedSet.Status.RoleStatuses, roleStatuses) {
 		return false
@@ -465,7 +539,7 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
 	if len(unresolvedRoles) > 0 {
 		reason = "ReplicaTargetsUnresolved"
-		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", strings.Join(unresolvedRoles, ", "))
+		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", listRoles(unresolvedRoles))
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
