@@ -272,11 +272,24 @@ var _ = Describe("DisaggregatedSet E2E Tests", Ordered, func() {
 				}
 				Eventually(held, 2*time.Minute, time.Second).Should(Succeed())
 				Consistently(held, 15*time.Second, time.Second).Should(Succeed())
+				By("reporting the hold as Progressing with reason RolloutPartitioned")
+				Eventually(func(g Gomega) {
+					reason, err := kubectl.Get("disaggregatedset/" + deploymentName).
+						JSONPath(`{.status.conditions[?(@.type=="Progressing")].reason}`).RunQuiet()
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(strings.TrimSpace(reason)).To(Equal("RolloutPartitioned"))
+				}, 30*time.Second, time.Second).Should(Succeed())
 			}
 
 			By("lowering the partition to 0 to complete the rollout")
 			Expect(applyYAML(fixtures.PrefillDecode(deploymentName, role(0, "registry.k8s.io/pause:3.10"), role(0, "registry.k8s.io/pause:3.10")).YAML())).To(Succeed())
 			kubectl.ForSingleActiveRevision(deploymentName, oldRevision)
+			Eventually(func(g Gomega) {
+				available, err := kubectl.Get("disaggregatedset/" + deploymentName).
+					JSONPath(`{.status.conditions[?(@.type=="Available")].status}`).RunQuiet()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(available)).To(Equal("True"))
+			}, time.Minute, time.Second).Should(Succeed())
 		})
 
 		It("should handle percentage-based maxSurge and maxUnavailable", func() {

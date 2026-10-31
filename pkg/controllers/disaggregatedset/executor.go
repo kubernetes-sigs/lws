@@ -58,6 +58,9 @@ const (
 type RollingUpdateExecutor struct {
 	Record     events.EventRecorder
 	LWSManager *LeaderWorkerSetManager
+	// PartitionHeld records that a slice's rollout had no step to take
+	// because of a role partition; the status reports the hold from it.
+	PartitionHeld bool
 }
 
 type rolloutInputs struct {
@@ -223,8 +226,10 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 	if selectedStep == nil && partitioned(inputs.config) {
-		log.V(1).Info("Rolling update is held by a role partition; waiting for the partition to change")
-		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdatePartition, "Wait", "Holding rolling update to revision %s at the configured role partitions", targetRevision.Revision)
+		// The status update records the hold (condition reason RolloutPartitioned
+		// and one event) once every role is Ready at its partition.
+		log.V(1).Info("Rolling update is held by a role partition; waiting for the partition to change", "revision", targetRevision.Revision)
+		executor.PartitionHeld = true
 		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
 	if selectedStep == nil {
