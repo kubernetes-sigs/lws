@@ -1,9 +1,9 @@
 ---
-title: "Automatic ComputeDomain Management (MNNVL)"
-linkTitle: "ComputeDomain (MNNVL)"
-weight: 45
+title: "Automatic ComputeDomain Management (NVIDIA MNNVL)"
+linkTitle: "NVIDIA GPU (ComputeDomain)"
+weight: 20
 description: >
-  Automatic NVIDIA DRA ComputeDomain lifecycle and pod claim injection for Multi-Node NVLink (MNNVL) workloads.
+  Automatic NVIDIA DRA ComputeDomain lifecycle and pod claim injection for Multi-Node NVLink (MNNVL) workloads across LeaderWorkerSet and DisaggregatedSet.
 ---
 
 Multi-node GPU systems connected by Multi-Node NVLink (MNNVL), such as NVIDIA
