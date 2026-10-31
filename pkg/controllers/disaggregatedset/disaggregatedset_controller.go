@@ -30,14 +30,19 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -268,7 +273,7 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 	case disaggregatedsetv1.RevisionHashVersion:
 		return disaggregatedsetutils.ComputeDisaggregatedSetRevision(disaggregatedSet), false, nil
 	case "":
-		if len(existingLWS) > 0 && !computedomain.IsDisaggregatedSetSliceAutoComputeDomainEnabled(disaggregatedSet) {
+		if len(existingLWS) > 0 && !computedomain.DisaggregatedSetUsesAutoComputeDomain(disaggregatedSet) {
 			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), false, nil
 		}
 
@@ -731,7 +736,20 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		ctrlBuilder = ctrlBuilder.
 			// Recreate a deleted slice ComputeDomain. Status writes by the NVIDIA
 			// controller do not change the generation and are filtered out.
-			Owns(&computedomain.ComputeDomain{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+			Owns(&computedomain.ComputeDomain{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Pod{}, handler.Funcs{
+				DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					if e.Object == nil {
+						return
+					}
+					dsName := e.Object.GetLabels()[disaggregatedsetv1.SetNameLabelKey]
+					if dsName != "" && len(computedomain.PodClaimTemplateNames(e.Object)) > 0 {
+						q.Add(reconcile.Request{
+							NamespacedName: types.NamespacedName{Namespace: e.Object.GetNamespace(), Name: dsName},
+						})
+					}
+				},
+			})
 	}
 	return ctrlBuilder.Complete(r)
 }

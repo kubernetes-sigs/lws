@@ -371,25 +371,24 @@ func TestEnsureCleanupAndReconcilerLifecycle(t *testing.T) {
 	if !controllerutil.ContainsFinalizer(cd, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
 		t.Fatalf("expected protection finalizer on ComputeDomain")
 	}
-	if !metav1.IsControlledBy(cd, leaderPod) {
-		t.Fatalf("expected ComputeDomain to be controlled by the leader Pod")
-	}
-	if ref := metav1.GetControllerOf(cd); ref.BlockOwnerDeletion == nil || *ref.BlockOwnerDeletion {
-		t.Fatalf("expected the leader Pod owner reference not to block owner deletion: %+v", ref)
+	if !metav1.IsControlledBy(cd, lws) {
+		t.Fatalf("expected ComputeDomain to be controlled by LWS")
 	}
 	// Verify DeepCopy works cleanly.
 	if copyObj := cd.DeepCopyObject(); copyObj == nil {
 		t.Fatalf("expected non-nil DeepCopyObject")
 	}
 
-	// A leader Pod with another UID does not adopt the ComputeDomain.
-	otherLeader := leaderPod.DeepCopy()
-	otherLeader.UID = types.UID("different-uid")
-	if err := EnsureReplicaComputeDomain(ctx, c, lws, otherLeader); !errors.Is(err, ErrUnexpectedComputeDomainOwner) {
+	// Foreign owner collision returns ErrUnexpectedComputeDomainOwner.
+	otherLWS := lws.DeepCopy()
+	otherLWS.UID = types.UID("different-uid")
+	if err := EnsureReplicaComputeDomain(ctx, c, otherLWS, leaderPod); !errors.Is(err, ErrUnexpectedComputeDomainOwner) {
 		t.Fatalf("expected ErrUnexpectedComputeDomainOwner, got %v", err)
 	}
 
-	// Suppose replica 0's leader is replaced by a new incarnation while a worker pod still holds cdName.
+	// Suppose replica 0's leader is deleted while a worker pod still holds cdName:
+	// CleanupLWSComputeDomains must NOT delete cdName (keeping DeletionTimestamp nil
+	// so the NVIDIA IMEX DaemonSet stays alive) until workerHoldingOldCD terminates.
 	workerHoldingOldCD := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "model-0-1",
@@ -409,32 +408,28 @@ func TestEnsureCleanupAndReconcilerLifecycle(t *testing.T) {
 		t.Fatalf("delete old leader pod: %v", err)
 	}
 
-	// Garbage collection deletes the ComputeDomain once its leader Pod is gone.
-	// The finalizer holds it while workerHoldingOldCD still references it.
-	if err := c.Delete(ctx, cd); err != nil {
-		t.Fatalf("delete ComputeDomain as garbage collection would: %v", err)
-	}
-	r := NewReconciler(c)
-	cdReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: cdName}}
-	if _, err := r.Reconcile(ctx, cdReq); err != nil {
-		t.Fatalf("Reconcile while worker references the ComputeDomain: %v", err)
+	if err := CleanupLWSComputeDomains(ctx, c, lws); err != nil {
+		t.Fatalf("CleanupLWSComputeDomains while worker references ComputeDomain: %v", err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: cdName}, cd); err != nil {
 		t.Fatalf("expected ComputeDomain to remain while worker pod references it: %v", err)
 	}
+	if !cd.DeletionTimestamp.IsZero() {
+		t.Fatalf("expected ComputeDomain DeletionTimestamp to stay zero while worker pod references it, got %v", cd.DeletionTimestamp)
+	}
 
-	// Once the worker pod disappears, the finalizer is released.
+	// Once the worker pod disappears, CleanupLWSComputeDomains releases the finalizer and deletes cdName.
 	if err := c.Delete(ctx, workerHoldingOldCD); err != nil {
 		t.Fatalf("delete worker pod: %v", err)
 	}
-	if _, err := r.Reconcile(ctx, cdReq); err != nil {
-		t.Fatalf("Reconcile after worker deletion: %v", err)
+	if err := CleanupLWSComputeDomains(ctx, c, lws); err != nil {
+		t.Fatalf("CleanupLWSComputeDomains after worker deletion: %v", err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: cdName}, cd); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected ComputeDomain to be removed once unreferenced, got err=%v", err)
 	}
 
-	// Test DisaggregatedSet slice lifecycle + Reconciler orphan cleanup when parent DS is deleted.
+	// Test DisaggregatedSet slice lifecycle + Reconciler finalizer hold when parent DS is deleted by GC.
 	ds := &disaggregatedsetv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "disagg",
@@ -482,6 +477,7 @@ func TestEnsureCleanupAndReconcilerLifecycle(t *testing.T) {
 	if err := c.Delete(ctx, sliceCD); err != nil {
 		t.Fatalf("delete slice ComputeDomain as garbage collection would: %v", err)
 	}
+	r := NewReconciler(c)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: sliceCDName}}); err != nil {
 		t.Fatalf("Reconciler.Reconcile while pod active failed: %v", err)
 	}
@@ -602,7 +598,7 @@ func TestComputeDomainEdgeCasesAndHelpers(t *testing.T) {
 	_ = c.Delete(ctx, conflictCD)
 
 	// Owned ComputeDomain missing finalizer & labels is repaired via metadata Patch, and ensure succeeds once ungated.
-	ownerRef := *metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))
+	ownerRef := *metav1.NewControllerRef(lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))
 	bareCD := &ComputeDomain{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            cdName,
@@ -700,27 +696,73 @@ func TestComputeDomainEdgeCasesAndHelpers(t *testing.T) {
 			},
 		},
 	}
+	oldSliceName := SliceComputeDomainName(ds, 0, "oldrev")
+	drainingSlicePod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "serving-0-oldrev-pod", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			ResourceClaims: []corev1.PodResourceClaim{{
+				Name:                      ChannelClaimName,
+				ResourceClaimTemplateName: ptr.To(oldSliceName),
+			}},
+		},
+	}
+	if err := c.Create(ctx, drainingSlicePod); err != nil {
+		t.Fatalf("create drainingSlicePod: %v", err)
+	}
 	if err := CleanupDisaggregatedSetComputeDomains(ctx, c, ds, []*leaderworkersetv1.LeaderWorkerSet{drainingChild}, 1, "newrev"); err != nil {
 		t.Fatalf("CleanupDisaggregatedSetComputeDomains with draining child: %v", err)
 	}
-	oldSliceName := SliceComputeDomainName(ds, 0, "oldrev")
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: oldSliceName}, &ComputeDomain{}); err != nil {
 		t.Fatalf("expected draining revision ComputeDomain to be retained: %v", err)
 	}
+	// Even after child LWSs are gone, oldSliceName must NOT be marked for deletion while drainingSlicePod still exists.
 	if err := CleanupDisaggregatedSetComputeDomains(ctx, c, ds, nil, 1, "newrev"); err != nil {
-		t.Fatalf("CleanupDisaggregatedSetComputeDomains after drain: %v", err)
+		t.Fatalf("CleanupDisaggregatedSetComputeDomains while pod still terminating: %v", err)
 	}
-	drained := &ComputeDomain{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: oldSliceName}, drained); err != nil {
-		t.Fatalf("get drained revision ComputeDomain: %v", err)
+	stillReferenced := &ComputeDomain{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: oldSliceName}, stillReferenced); err != nil {
+		t.Fatalf("expected ComputeDomain to remain while slice pod still exists: %v", err)
 	}
-	if drained.DeletionTimestamp.IsZero() {
-		t.Fatalf("expected drained revision ComputeDomain to be deleted, leaving the finalizer to hold it")
+	if !stillReferenced.DeletionTimestamp.IsZero() {
+		t.Fatalf("expected ComputeDomain DeletionTimestamp to stay zero while slice pod exists, got %v", stillReferenced.DeletionTimestamp)
+	}
+	// Once drainingSlicePod terminates, CleanupDisaggregatedSetComputeDomains releases and deletes oldSliceName.
+	if err := c.Delete(ctx, drainingSlicePod); err != nil {
+		t.Fatalf("delete drainingSlicePod: %v", err)
+	}
+	if err := CleanupDisaggregatedSetComputeDomains(ctx, c, ds, nil, 1, "newrev"); err != nil {
+		t.Fatalf("CleanupDisaggregatedSetComputeDomains after pod deletion: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: oldSliceName}, &ComputeDomain{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected drained revision ComputeDomain to be deleted once unreferenced, got err=%v", err)
 	}
 	newSliceName := SliceComputeDomainName(ds, 0, "newrev")
 	current := &ComputeDomain{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: newSliceName}, current); err != nil || !current.DeletionTimestamp.IsZero() {
 		t.Fatalf("expected current revision ComputeDomain to be kept, err=%v", err)
+	}
+
+	// DisaggregatedSetUsesAutoComputeDomain detects both slice-scoped and role-scoped opt-in.
+	if DisaggregatedSetUsesAutoComputeDomain(nil) {
+		t.Fatalf("expected nil DisaggregatedSet not to use AutoComputeDomain")
+	}
+	roleScopedDS := &disaggregatedsetv1.DisaggregatedSet{
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{Name: "prefill"}},
+		},
+	}
+	if DisaggregatedSetUsesAutoComputeDomain(roleScopedDS) {
+		t.Fatalf("expected unannotated DisaggregatedSet not to use AutoComputeDomain")
+	}
+	roleScopedDS.Spec.Roles[0].Annotations = map[string]string{
+		leaderworkersetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainDisabled,
+	}
+	if DisaggregatedSetUsesAutoComputeDomain(roleScopedDS) {
+		t.Fatalf("expected disabled role annotation not to enable AutoComputeDomain")
+	}
+	roleScopedDS.Spec.Roles[0].Annotations[leaderworkersetv1.AutoComputeDomainAnnotationKey] = leaderworkersetv1.AutoComputeDomainEnabled
+	if !DisaggregatedSetUsesAutoComputeDomain(roleScopedDS) {
+		t.Fatalf("expected role-scoped auto-compute-domain=enabled to be detected")
 	}
 }
 
@@ -752,13 +794,7 @@ func terminatingTestFixtures() (*leaderworkersetv1.LeaderWorkerSet, *ComputeDoma
 			Namespace:         "default",
 			DeletionTimestamp: ptr.To(metav1.Now()),
 			Finalizers:        []string{leaderworkersetv1.ComputeDomainProtectionFinalizer},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "v1",
-				Kind:       "Pod",
-				Name:       "model-0",
-				UID:        leaderUID,
-				Controller: ptr.To(true),
-			}},
+			OwnerReferences:   []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkersetv1.GroupVersion.WithKind("LeaderWorkerSet"))},
 		},
 	}
 	pod := &corev1.Pod{
