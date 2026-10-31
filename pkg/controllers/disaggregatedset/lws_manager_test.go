@@ -776,6 +776,75 @@ func TestTerminatingLWSIsIgnored(t *testing.T) {
 	})
 }
 
+func TestDisaggregatedSetDeletingClearsPerSetCaches(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		notFound bool
+	}{
+		{name: "deleting set with finalizer"},
+		{name: "not found", notFound: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := testManagerDS("target-ds")
+			ds.UID = types.UID("ds-uid")
+			now := metav1.Now()
+			ds.DeletionTimestamp = &now
+			ds.Finalizers = []string{"test/hold"}
+
+			var base client.WithWatch
+			if tc.notFound {
+				base = newTestClient()
+			} else {
+				base = newTestClient(ds)
+			}
+			key := client.ObjectKeyFromObject(ds)
+			otherKey := client.ObjectKey{Namespace: ds.Namespace, Name: "other-ds"}
+
+			r := newTestReconciler(base)
+
+			// Populate staleStatusVersions.
+			r.staleStatusVersions.Add(key, statusVersion{resourceVersion: "1"}, statusVersionTTL)
+			r.staleStatusVersions.Add(otherKey, statusVersion{resourceVersion: "1"}, statusVersionTTL)
+
+			// Populate scaleWindows.
+			r.LWSManager.scaleWindows = map[types.UID]subRoleScaleWindow{
+				types.UID("child-uid"):       {parent: key, deadline: time.Now().Add(time.Minute)},
+				types.UID("other-child-uid"): {parent: otherKey, deadline: time.Now().Add(time.Minute)},
+			}
+
+			// Populate pending writes and initialized entries.
+			o := testPendingWrites(base)
+			o.initialized = make(map[types.UID]client.ObjectKey)
+			o.writes[client.ObjectKey{Namespace: ds.Namespace, Name: "child-lws"}] = &pendingWrite{parent: key}
+			o.writes[client.ObjectKey{Namespace: ds.Namespace, Name: "other-lws"}] = &pendingWrite{parent: otherKey}
+			o.initialized[types.UID("child-uid")] = key
+			o.initialized[types.UID("other-child-uid")] = otherKey
+			r.LWSManager.pending = o
+
+			res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+			require.NoError(t, err)
+			require.Equal(t, ctrl.Result{}, res)
+
+			_, retained := r.staleStatusVersions.Get(key)
+			require.False(t, retained, "staleStatusVersions must be cleared for target DisaggregatedSet")
+			_, retainedOther := r.staleStatusVersions.Get(otherKey)
+			require.True(t, retainedOther, "other DisaggregatedSet staleStatusVersions must be preserved")
+
+			r.LWSManager.scaleMu.Lock()
+			require.Len(t, r.LWSManager.scaleWindows, 1, "scaleWindows must be cleared for target DisaggregatedSet")
+			require.Contains(t, r.LWSManager.scaleWindows, types.UID("other-child-uid"))
+			r.LWSManager.scaleMu.Unlock()
+
+			o.mu.Lock()
+			require.Len(t, o.writes, 1, "pending writes must be cleared for target DisaggregatedSet")
+			require.Contains(t, o.writes, client.ObjectKey{Namespace: ds.Namespace, Name: "other-lws"})
+			require.Len(t, o.initialized, 1, "pending initialized must be cleared for target DisaggregatedSet")
+			require.Contains(t, o.initialized, types.UID("other-child-uid"))
+			o.mu.Unlock()
+		})
+	}
+}
+
 func TestCleanupDrainedLWSRetainsAtMostOneMarker(t *testing.T) {
 	scheme := testSchemeForUnit()
 	ds := testManagerDS("test")

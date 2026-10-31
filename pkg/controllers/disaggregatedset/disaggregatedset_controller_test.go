@@ -34,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -815,4 +816,81 @@ func TestSlicesIncreaseWithRolloutNotBlocked(t *testing.T) {
 	// The sibling slice is reconciled independently while slice 0 is rolling.
 	s1, _ := lwsManager.Get(ctx, disaggregatedSet, disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, targetRevision, testControllerRolePrefill))
 	require.NotNil(t, s1, "slice 1 should be created at the new revision without blocking")
+}
+
+func TestDisaggregatedSetDeletingDoesNotReconcile(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("deleting-ds", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	markCurrentRevisionHash(disaggregatedSet)
+	disaggregatedSet.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+	disaggregatedSet.Finalizers = []string{"test/hold"}
+	now := metav1.Now()
+	disaggregatedSet.DeletionTimestamp = &now
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}, &disaggregatedsetv1.DisaggregatedSetRoleScaler{}).Build()
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
+
+	res, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, res)
+
+	var lwsList leaderworkersetv1.LeaderWorkerSetList
+	require.NoError(t, fakeClient.List(ctx, &lwsList, client.InNamespace(disaggregatedSet.Namespace)))
+	require.Empty(t, lwsList.Items, "no LWS objects should be created for deleting DisaggregatedSet")
+
+	var scalers disaggregatedsetv1.DisaggregatedSetRoleScalerList
+	require.NoError(t, fakeClient.List(ctx, &scalers, client.InNamespace(disaggregatedSet.Namespace)))
+	require.Empty(t, scalers.Items, "no scalers should be created for deleting DisaggregatedSet")
+
+	var stored disaggregatedsetv1.DisaggregatedSet
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &stored))
+	assert.Empty(t, stored.Status.RoleStatuses)
+	assert.Empty(t, stored.Status.Conditions)
+}
+
+func TestCleanupRemovedSlicesSkipsDeletingLWS(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("scale-down-slice", "default").
+		Slices(1).
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		WithRole(testControllerRoleDecode, 2, "nginx:1.0").
+		Obj()
+	markCurrentRevisionHash(disaggregatedSet)
+
+	oldRevision := "testrev1"
+	lwsSlice1 := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision, 2)
+	lwsSlice1.Name = disaggregatedsetutils.GenerateName(disaggregatedSet.Name, 1, oldRevision, testControllerRolePrefill)
+	lwsSlice1.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+	lwsSlice1.Finalizers = []string{"test/hold"}
+	now := metav1.Now()
+	lwsSlice1.DeletionTimestamp = &now
+
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(disaggregatedSet, lwsSlice1).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCalls++
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	recorder := events.NewFakeRecorder(100)
+	reconciler := controller.NewDisaggregatedSetReconciler(fakeClient, scheme, recorder)
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err)
+
+	assert.Zero(t, deleteCalls)
+	for len(recorder.Events) > 0 {
+		event := <-recorder.Events
+		assert.NotContains(t, event, controller.EventReasonLWSDeleted)
+	}
 }

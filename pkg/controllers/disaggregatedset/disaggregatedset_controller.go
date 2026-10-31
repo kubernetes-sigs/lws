@@ -89,16 +89,20 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log := logf.FromContext(ctx)
 
 	disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{}
-	if err := r.Get(ctx, req.NamespacedName, disaggregatedSet); err != nil {
-		if apierrors.IsNotFound(err) {
-			r.staleStatusVersions.Remove(req.NamespacedName)
-			r.LWSManager.pruneSubRoleScaleWindows(req.NamespacedName, nil)
-			if r.LWSManager.pending != nil {
-				r.LWSManager.pending.forget(req.NamespacedName)
-			}
-			return ctrl.Result{}, nil
-		}
+	err := r.Get(ctx, req.NamespacedName, disaggregatedSet)
+	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
+	}
+	if err != nil || !disaggregatedSet.DeletionTimestamp.IsZero() {
+		r.staleStatusVersions.Remove(req.NamespacedName)
+		r.LWSManager.pruneSubRoleScaleWindows(req.NamespacedName, nil)
+		if r.LWSManager.pending != nil {
+			r.LWSManager.pending.forget(req.NamespacedName)
+		}
+		if err == nil {
+			return ctrl.Result{}, r.cleanupComputeDomains(ctx, disaggregatedSet, 0, "")
+		}
+		return ctrl.Result{}, nil
 	}
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
@@ -194,14 +198,8 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	// Cleanup keeps every ComputeDomain that a child LWS or a current slice still
 	// needs, so it is safe to run when a slice failed to reconcile.
-	if features.Enabled(features.AutoComputeDomain) {
-		remainingLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
-		if err == nil {
-			err = computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, disaggregatedSet, remainingLWS, sliceCount, revision)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("clean up ComputeDomains: %w", err))
-		}
+	if err := r.cleanupComputeDomains(ctx, disaggregatedSet, sliceCount, revision); err != nil {
+		errs = append(errs, err)
 	}
 	reconcileErr := errors.Join(errs...)
 
@@ -430,7 +428,7 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 		}
 	}
 
-	if features.Enabled(features.AutoComputeDomain) && disaggregatedSet.DeletionTimestamp.IsZero() && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
+	if features.Enabled(features.AutoComputeDomain) && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
 		hasChildren := newRevision != nil && len(newRevision.Roles) > 0
 		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision, hasChildren); err != nil {
 			reason := EventReasonFailedCreate
@@ -474,6 +472,20 @@ func earliestRequeue(a, b ctrl.Result) ctrl.Result {
 	return a
 }
 
+func (r *DisaggregatedSetReconciler) cleanupComputeDomains(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, sliceCount int, revision string) error {
+	if !features.Enabled(features.AutoComputeDomain) {
+		return nil
+	}
+	remainingLWS, err := r.LWSManager.ListAll(ctx, ds, "")
+	if err != nil {
+		return fmt.Errorf("clean up ComputeDomains: %w", err)
+	}
+	if err := computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, ds, remainingLWS, sliceCount, revision); err != nil {
+		return fmt.Errorf("clean up ComputeDomains: %w", err)
+	}
+	return nil
+}
+
 // cleanupRemovedSlices deletes LWS for slice indices at or above the desired
 // slice count.
 func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, lwsList []*leaderworkersetv1.LeaderWorkerSet, desiredSlices int) error {
@@ -481,7 +493,7 @@ func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, d
 
 	for _, lws := range lwsList {
 		sliceIdx, parseErr := strconv.Atoi(lws.Labels[disaggregatedsetv1.SliceLabelKey])
-		if parseErr != nil || sliceIdx < desiredSlices {
+		if parseErr != nil || sliceIdx < desiredSlices || !lws.DeletionTimestamp.IsZero() {
 			continue
 		}
 		log.Info("Deleting LWS for removed slice", "name", lws.Name, "slice", sliceIdx)
