@@ -1,0 +1,40 @@
+title: DisaggregatedSet Integration with CompositePodGroup
+kep-number: 893
+authors:
+  - "yindia"
+status: provisional
+creation-date: 2026-10-23
+reviewers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+  - pacoxu
+  - aliceco01
+approvers:
+  - ahg-g
+  - Edwinhr716
+  - yankay
+
+see-also:
+  - "/keps/666-gang-scheduling-in-lws"
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+  - "/keps/848-disaggregatedset-placement-policy"
+  - "/keps/849-DisaggregatedSet-HPA"
+  - "/keps/960-DisaggregatedSet-subroles"
+  - "/keps/1022-DisaggregatedSet-Scaling-During-Rollout"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v1.0.0"
+
+# WorkloadAwareScheduling is required. KEP-666 also plans a separate,
+# default-off gate for nested scheduling that has no name yet. Whether this KEP
+# rides that gate or gets its own is open question 4 in the README.
+feature-gates:
+  - name: WorkloadAwareScheduling
+disable-supported: true
