@@ -50,9 +50,11 @@ description:  A reference for all labels, annotations, and environment variables
 | `DISAGGREGATEDSET_ROLE`      | The role of the pod within the DisaggregatedSet.               | prefill                                                                                         | Pod (only if managed by a DisaggregatedSet) |
 | `DISAGGREGATEDSET_SLICE`     | The slice index of the pod within the DisaggregatedSet.        | 0                                                                                               | Pod (only if managed by a DisaggregatedSet) |
 | `DISAGGREGATEDSET_REVISION`  | The revision hash used to identify the DisaggregatedSet rollout. | a1b2c3d4                                                                                      | Pod (only if managed by a DisaggregatedSet) |
-| `TPU_WORKER_HOSTNAMES`       | Hostnames of TPU workers only in the same subgroup.            | test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default | Pod (only if TPU enabled)          |
-| `TPU_WORKER_ID`              | ID of the TPU worker.                                          | 0                                                                                               | Pod (only if TPU enabled)          |
-| `TPU_NAME`                   | Name of the TPU.                                               | test-sample-1                                                                                   | Pod (only if TPU enabled)          |
+| `TPU_WORKER_HOSTNAMES`       | Comma-separated DNS hostnames of TPU workers in the group (or subgroup when `subGroupPolicy` is set). | test-sample-1-5.default,test-sample-1-6.default,test-sample-1-7.default,test-sample-1-8.default | Pod (only if TPU enabled)          |
+| `TPU_PROCESS_ADDRESSES`      | Comma-separated `<hostname>:<port>` coordination endpoints matching `TPU_WORKER_HOSTNAMES`. | test-sample-1-5.default:8476,test-sample-1-6.default:8476,test-sample-1-7.default:8476,test-sample-1-8.default:8476 | Pod (only if TPU enabled)          |
+| `TPU_PROCESS_PORT`           | Coordination port for the TPU container (defaults to `8476`).  | 8476                                                                                            | Pod (only if TPU enabled)          |
+| `TPU_WORKER_ID`              | Zero-based ID of the TPU worker in the group (or subgroup).    | 0                                                                                               | Pod (only if TPU enabled)          |
+| `TPU_NAME`                   | Leader hostname identifying the TPU group.                     | test-sample-1                                                                                   | Pod (only if TPU enabled)          |
 
 Other labels and annotations can be exposed to a container with the
 [Downward API](https://kubernetes.io/docs/concepts/workloads/pods/downward-api/).
