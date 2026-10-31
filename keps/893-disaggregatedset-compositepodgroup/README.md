@@ -10,6 +10,7 @@
     - [Story 1: Admit a slice as a unit](#story-1-admit-a-slice-as-a-unit)
     - [Story 2: Per-role placement](#story-2-per-role-placement)
     - [Story 3: Roll out without deadlocking](#story-3-roll-out-without-deadlocking)
+    - [Story 4: Per-role gang without CompositePodGroup](#story-4-per-role-gang-without-compositepodgroup)
   - [Scheduling Hierarchy](#scheduling-hierarchy)
   - [One Root per Slice and Revision](#one-root-per-slice-and-revision)
   - [Workload and PodGroup Without CompositePodGroup](#workload-and-podgroup-without-compositepodgroup)
@@ -51,6 +52,8 @@ The design is provisional. `CompositePodGroup` is alpha and off by default in Ku
 
 Today a disaggregated deployment gets per-role gang scheduling at best: each child LWS can set `spec.scheduling` and get one PodGroup per replica. Nothing ties the roles of a slice together, so the scheduler can admit prefill while decode waits for capacity, or the reverse. The GPUs held by the admitted role cannot serve anything until the other role lands.
 
+That per-role path is still useful on its own and stays supported (see [Story 4](#story-4-per-role-gang-without-compositepodgroup)). What it cannot do is gang roles together, which is the gap this KEP fills.
+
 A flat PodGroup cannot fix this. A flat gang across a slice would need prefill and decode pods in one group, which two separate LWS objects cannot share, and it would lose the per-replica gang and per-role topology that disaggregated serving needs. `CompositePodGroup` was built for this case. KEP-6012 lists "disaggregated serving under LeaderWorkerSet" as one of its user stories.
 
 ### Goals
@@ -86,6 +89,10 @@ Prefill replicas need their workers inside one NVLink domain, and all prefill re
 #### Story 3: Roll out without deadlocking
 
 The operator changes the pod template. The rollout planner from KEP-766 grows the new revision one replica at a time. The gang settings must let those first new replicas schedule, instead of waiting for a minimum the new revision has not reached yet.
+
+#### Story 4: Per-role gang without CompositePodGroup
+
+An operator runs on a cluster where `CompositePodGroup` is not enabled, or does not need prefill and decode admitted together. They want each multi-node replica gang-scheduled so a replica never holds a partial set of GPUs. They set `roles[].spec.scheduling`, and each child LWS creates its own Workload and PodGroups. This works today with no change from this KEP. See [Workload and PodGroup Without CompositePodGroup](#workload-and-podgroup-without-compositepodgroup).
 
 ### Scheduling Hierarchy
 
