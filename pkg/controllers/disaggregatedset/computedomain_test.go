@@ -275,3 +275,21 @@ func TestLegacyDisaggregatedSetMigratesRevisionOnRoleAutoComputeDomain(t *testin
 	}, &v2Child))
 	require.Equal(t, leaderworkersetv1.AutoComputeDomainEnabled, v2Child.Annotations[leaderworkersetv1.AutoComputeDomainAnnotationKey])
 }
+
+func TestSliceComputeDomainToDisaggregatedSet(t *testing.T) {
+	cd := func(labels map[string]string) *computedomain.ComputeDomain {
+		return &computedomain.ComputeDomain{ObjectMeta: metav1.ObjectMeta{Name: "cd", Namespace: "ns", Labels: labels}}
+	}
+	got := sliceComputeDomainToDisaggregatedSet(t.Context(), cd(map[string]string{
+		disaggregatedsetv1.SetNameLabelKey: "serving",
+		computedomain.OwnerUIDLabelKey:     "ds-uid",
+	}))
+	require.Equal(t, []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "serving"}}}, got)
+
+	// A ComputeDomain LWS does not manage, or a replica ComputeDomain, maps to nothing.
+	require.Empty(t, sliceComputeDomainToDisaggregatedSet(t.Context(), cd(map[string]string{disaggregatedsetv1.SetNameLabelKey: "serving"})))
+	require.Empty(t, sliceComputeDomainToDisaggregatedSet(t.Context(), cd(map[string]string{
+		leaderworkersetv1.SetNameLabelKey: "model",
+		computedomain.OwnerUIDLabelKey:    "lws-uid",
+	})))
+}
