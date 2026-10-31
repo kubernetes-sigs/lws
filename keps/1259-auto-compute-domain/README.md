@@ -17,7 +17,7 @@
   - [Feature Gate, Configuration, and RBAC](#feature-gate-configuration-and-rbac)
   - [Annotations and Precedence](#annotations-and-precedence)
     - [User-Facing Annotations](#user-facing-annotations)
-    - [Controller-Internal Annotations and Finalizer](#controller-internal-annotations-and-finalizer)
+    - [Controller-Internal Metadata (Annotations, Labels, and Finalizer)](#controller-internal-metadata-annotations-labels-and-finalizer)
     - [Effective Scope Resolution Matrix on DisaggregatedSet](#effective-scope-resolution-matrix-on-disaggregatedset)
   - [ComputeDomain Resource Shape and Naming](#computedomain-resource-shape-and-naming)
     - [Generated ComputeDomain Spec](#generated-computedomain-spec)
@@ -25,7 +25,7 @@
   - [Lifecycle Reconciliation and Ordering](#lifecycle-reconciliation-and-ordering)
     - [Option 1: Per-Replica Mode (LeaderWorkerSet)](#option-1-per-replica-mode-leaderworkerset)
     - [Option 2: Per-(slice, revision) Mode (DisaggregatedSet)](#option-2-per-slice-revision-mode-disaggregatedset)
-    - [Garbage Collection and Finalizer Release](#garbage-collection-and-finalizer-release)
+    - [Deferred Deletion, Workload Teardown, and Finalizer Release](#deferred-deletion-workload-teardown-and-finalizer-release)
   - [Pod Claim Injection and GPU Container Detection](#pod-claim-injection-and-gpu-container-detection)
   - [Update and Rollout Semantics](#update-and-rollout-semantics)
   - [Validation](#validation)
@@ -123,9 +123,9 @@ is still in early design and will take multiple Kubernetes releases to replace
 
 ### Goals
 
-1. Automatically create, own, protect (via finalizer while pods reference it),
-   and garbage-collect `ComputeDomain` (`resource.nvidia.com/v1beta1`)
-   resources for opted-in `LeaderWorkerSet` and `DisaggregatedSet` workloads.
+1. Automatically create, manage, protect while pods reference it, and clean up
+   `ComputeDomain` (`resource.nvidia.com/v1beta1`) resources for opted-in
+   `LeaderWorkerSet` and `DisaggregatedSet` workloads.
 2. Support **replica-scoped** `ComputeDomain`s on `LeaderWorkerSet` (including
    individual `DisaggregatedSet` roles) with isolation across replicas,
    revisions, and in-place replica restarts, for both `Ordinal` and `Hash`
@@ -250,48 +250,59 @@ role. Only `prefill` and `decode` enroll in the slice `ComputeDomain`.
 
 ### Risks and Mitigations
 
-**Risk**: Premature `ComputeDomain` deletion during workload teardown or
-rolling updates could tear down the IMEX domain while terminating pods are
-still running `NodeUnprepareResources` on kubelets.
+**Risk**: Premature `ComputeDomain` deletion during scale-down, rolling updates,
+group restarts, or parent workload teardown tears down the IMEX `DaemonSet` and
+`ResourceClaimTemplate` while running or draining pods still need IMEX (in
+`k8s-dra-driver-gpu`, `compute-domain-controller` tears down the IMEX
+`DaemonSet` as soon as `ComputeDomain.metadata.deletionTimestamp` is set, while
+finalizers only hold etcd removal and kubelet directory cleanup).
 
-**Mitigation**: Every LWS-managed `ComputeDomain` carries a protection
-finalizer (`leaderworkerset.sigs.k8s.io/compute-domain-protection`). A
-dedicated `ComputeDomain` cleanup reconciler only removes this finalizer once
-zero `Pod` objects in the namespace reference the `ComputeDomain`'s
-`resourceClaimTemplateName` (tracked via a cached field index), even when the
-parent `LeaderWorkerSet` or `DisaggregatedSet` is deleted with background
-cascading deletion.
+**Mitigation**: LWS never deletes a managed `ComputeDomain` while any `Pod` in
+the namespace references its `resourceClaimTemplateName` (checked in $O(1)$ via
+a cached `Pod` field index). Managed `ComputeDomain`s intentionally carry no
+`ownerReferences` — recording the managing workload's UID in the
+`leaderworkerset.sigs.k8s.io/compute-domain-owner-uid` label instead — so
+deleting a `LeaderWorkerSet` or `DisaggregatedSet` does not let Kubernetes
+garbage collection mark its `ComputeDomain`s terminating while pods drain. Once
+a replica, slice, or parent workload is gone and zero `Pod`s reference the
+`ComputeDomain`, LWS removes the protection finalizer
+(`leaderworkerset.sigs.k8s.io/compute-domain-protection`) and deletes the
+`ComputeDomain`. That finalizer also holds direct `ComputeDomain` deletions
+(by hand or during namespace deletion) until all referencing pods exit.
 
 **Risk**: Using `unstructured.Unstructured` with `controller-runtime`'s default
 cache settings can bypass the informer cache and issue uncached `GET`/`LIST`
 calls to `kube-apiserver` on every reconcile.
 
-**Mitigation**: Register a minimal internal typed `ComputeDomain` object (only
-the `spec.numNodes`, `spec.channel`, and `ObjectMeta` fields needed by LWS, with
-zero external module imports) in the manager's `runtime.Scheme` when
-`AutoComputeDomain` is enabled, or configure `Cache` explicitly to cache the
-`ComputeDomain` GVK. All `GET`/`LIST` operations hit the local informer cache.
+**Mitigation**: Register a minimal internal typed `ComputeDomain` object in
+`pkg/computedomain` (only the `spec.numNodes`, `spec.channel`, and `ObjectMeta`
+fields needed by LWS, with zero external module imports) in the manager's
+`runtime.Scheme`. All `Get`/`List` operations — including workload-deletion
+checks in `computedomain.Reconciler` — hit local informer caches with zero
+uncached API server requests.
 
-**Risk**: Ordinal replica restart (`RecreateGroupOnPodRestart`) recreates a
-leader pod with the same `(groupIndex, revision)` while a previous worker pod
-on an unresponsive node is still terminating and holding the old `ComputeDomain`.
+**Risk**: Replica restart (`RecreateGroupOnPodRestart`) recreates a leader pod
+while a previous worker pod on an unresponsive node is still terminating and
+holding the old `ComputeDomain`.
 
 **Mitigation**: Just as `KubernetesProvider` stamps a per-incarnation token for
 ordinal `PodGroup`s ([KEP-666](/keps/666-gang-scheduling-in-lws)), the pod
-mutating webhook assigns an idempotent incarnation suffix when stamping the
-leader pod's `ComputeDomain` name in `Ordinal` mode. A restarted group receives
-a fresh `ComputeDomain` immediately while the old incarnation's `ComputeDomain`
-drains independently.
+mutating webhook draws an idempotent incarnation suffix when stamping every
+leader pod's `ComputeDomain` name at admission (in both `Ordinal` and `Hash`
+modes). A restarted group receives a fresh `ComputeDomain` immediately while
+the old incarnation's `ComputeDomain` stays alive until its last pod exits.
 
 **Risk**: Core LWS deployments in clusters without NVIDIA GPUs or DRA drivers
 fail to start due to missing CRDs or extra RBAC permissions.
 
 **Mitigation**: `AutoComputeDomain` defaults to `false`, and Helm RBAC rules
-for `resource.nvidia.com` are rendered only when `.Values.computeDomainManagement.enabled`
-is `true` (mirroring `.Values.gangSchedulingManagement`). When enabled, the
-manager verifies via `RESTMapper` at startup that
-`computedomains.resource.nvidia.com` (`v1beta1`) is served and exits with a
-clear error if absent.
+for `resource.nvidia.com` are rendered only when
+`.Values.computeDomainManagement.enabled` or
+`.Values.featureGates.AutoComputeDomain` is `true` (mirroring
+`.Values.gangSchedulingManagement`). When enabled, the manager verifies via
+`RESTMapper` at startup (and on new opt-ins at admission) that
+`computedomains.resource.nvidia.com` (`v1beta1`) is served and fails fast with
+a clear error if absent.
 
 ## Design Details
 
@@ -320,8 +331,9 @@ computeDomainManagement:
   enabled: false
 ```
 
-When `computeDomainManagement.enabled: true`, `hack/processing-plan.yaml`
-appends the following rule to the generated manager `ClusterRole`:
+When `computeDomainManagement.enabled: true` (or
+`featureGates.AutoComputeDomain: true`), `hack/processing-plan.yaml` appends
+the following rules to the generated manager `ClusterRole`:
 
 ```yaml
 - apiGroups:
@@ -347,9 +359,12 @@ appends the following rule to the generated manager `ClusterRole`:
 At manager startup, when `features.Enabled(features.AutoComputeDomain)` is
 `true`, `cmd/main.go` checks `mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: "resource.nvidia.com", Kind: "ComputeDomain"}, "v1beta1")`.
 If no mapping exists, startup fails fast with a descriptive error. When the
-feature gate is `false`, no `ComputeDomain` watches or reconcilers are
-registered, and any workload carrying `auto-compute-domain: "enabled"` is
-rejected (or emits a warning event if pre-existing).
+feature gate is `false`, no `ComputeDomain` watches, field indexes, or
+reconcilers are registered, new opt-ins (`CREATE` or newly enabled on `UPDATE`)
+are rejected at admission while pre-existing opted-in objects remain updatable,
+running pod templates are left unchanged so active groups do not restart, and
+`DisaggregatedSet` refuses to create new enrolled child `LeaderWorkerSet`s
+without claims alongside already-claimed slices.
 
 ### Annotations and Precedence
 
@@ -365,13 +380,14 @@ Using `"enabled"` / `"disabled"` rather than boolean strings follows Kubernetes
 API conventions and preserves forward compatibility if named domain groups
 within a slice are ever introduced later.
 
-#### Controller-Internal Annotations and Finalizer
+#### Controller-Internal Metadata (Annotations, Labels, and Finalizer)
 
 | Key | Target | Purpose |
 | --- | --- | --- |
-| `leaderworkerset.sigs.k8s.io/compute-domain-prefix` | Managed leader `PodTemplateSpec` | Stamped by `LeaderWorkerSetReconciler` when replica-level `auto-compute-domain` is active for the revision; carries `<lwsName>-<uidHash>` so `PodWebhook` can derive collision-free `ComputeDomain` names synchronously without API calls. |
+| `leaderworkerset.sigs.k8s.io/compute-domain-prefix` | Managed leader `PodTemplateSpec` | Stamped by `LeaderWorkerSetReconciler` when replica-level `auto-compute-domain` is active for the revision; carries `<lwsName>-<uid5>` so `PodWebhook` can derive collision-free `ComputeDomain` names synchronously without API calls. |
 | `leaderworkerset.sigs.k8s.io/compute-domain-name` | Leader `Pod` and worker `StatefulSet` `PodTemplateSpec` | Stamped idempotently on the leader `Pod` by `PodWebhook` and copied onto the worker `StatefulSet` `PodTemplateSpec` by `PodReconciler` so all pods of the replica join the exact same `ComputeDomain`. |
-| `leaderworkerset.sigs.k8s.io/compute-domain-protection` | `ComputeDomain.metadata.finalizers` | Prevents `ComputeDomain` deletion until zero `Pod`s in the namespace reference its `resourceClaimTemplateName`. |
+| `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid` | `ComputeDomain.metadata.labels` | Records the `metadata.uid` of the managing `LeaderWorkerSet` or `DisaggregatedSet`. Replaces `ownerReferences` so Kubernetes garbage collection does not mark `ComputeDomain`s terminating while a deleted workload's pods are still draining, and prevents adopting a same-named `ComputeDomain` from another object. |
+| `leaderworkerset.sigs.k8s.io/compute-domain-protection` | `ComputeDomain.metadata.finalizers` | Holds direct `ComputeDomain` deletion (by hand or during namespace deletion) until zero `Pod`s in the namespace reference its `resourceClaimTemplateName`. |
 
 #### Effective Scope Resolution Matrix on DisaggregatedSet
 
@@ -392,7 +408,11 @@ For each role `R` in a `DisaggregatedSet` `D`:
 #### Generated ComputeDomain Spec
 
 All managed `ComputeDomain` resources use `resource.nvidia.com/v1beta1` with
-elastic membership (`numNodes: 0`) and a matching `ResourceClaimTemplate` name:
+elastic membership (`numNodes: 0`), a matching `ResourceClaimTemplate` name,
+and **no `ownerReferences`** (the managing workload's UID is recorded in
+`leaderworkerset.sigs.k8s.io/compute-domain-owner-uid` instead so Kubernetes
+garbage collection cannot set `deletionTimestamp` and tear down the IMEX
+`DaemonSet` while a deleted workload's pods are still draining):
 
 ```yaml
 apiVersion: resource.nvidia.com/v1beta1
@@ -400,16 +420,11 @@ kind: ComputeDomain
 metadata:
   name: <cdName>
   namespace: <namespace>
-  labels: <identifying-labels>
+  labels:
+    leaderworkerset.sigs.k8s.io/compute-domain-owner-uid: <ownerUID>
+    # plus replica or slice identifying labels listed below
   finalizers:
     - leaderworkerset.sigs.k8s.io/compute-domain-protection
-  ownerReferences:
-    - apiVersion: <leaderworkerset.x-k8s.io/v1 | disaggregatedset.x-k8s.io/v1>
-      kind: <LeaderWorkerSet | DisaggregatedSet>
-      name: <ownerName>
-      uid: <ownerUID>
-      controller: true
-      blockOwnerDeletion: true
 spec:
   numNodes: 0
   channel:
@@ -418,44 +433,48 @@ spec:
 ```
 
 Note that `ComputeDomain.spec` is immutable (`self == oldSelf` CEL rule in the
-upstream NVIDIA CRD). LWS never mutates `spec` after creation; any template or
+upstream NVIDIA CRD, which also defaults fields such as `allocationMode`). LWS
+never mutates `spec` after creation — label and finalizer repairs use
+metadata-only optimistic-locked `Patch` requests, and any template or
 configuration transition produces a new revision and a new `<cdName>`.
 
 #### Naming and Length Bounds
 
 Because `<cdName>` is used both as `ComputeDomain.metadata.name`,
 `ResourceClaimTemplate.metadata.name`, and potentially in downstream driver
-labels, `<cdName>` is bounded to **63 characters** (DNS-1123 label limit,
+labels, `<cdName>` is bounded to **63 characters** (DNS-1035 label limit,
 `validation.DNS1035LabelMaxLength`):
 
-- **UID qualification:** A 5-character lowercase alphanumeric hash derived from
-  the owning `LeaderWorkerSet` or `DisaggregatedSet` `metadata.uid` prevents
-  name collisions if a workload is deleted and immediately recreated with the
-  same name while previous pods and `ComputeDomain`s are still terminating.
-- **Option 1 (`LeaderWorkerSet` replica mode):**
-  - `GroupIdentity: Ordinal`:
-    `<lwsName>-<uid5>-<revKey>-<groupIndex>-<inc5>`
-    where `<inc5>` is a 5-character token generated once at leader pod
-    admission and persisted on `pod.Annotations["leaderworkerset.sigs.k8s.io/compute-domain-name"]`.
-  - `GroupIdentity: Hash`:
-    `<lwsName>-<uid5>-<groupUniqueKey>`
-    (`groupUniqueKey` is already drawn uniquely per leader pod at admission and
-    embeds revision isolation via the leader `Deployment` ReplicaSet).
+- **UID qualification:** A 5-character lowercase hex digest (`<uid5>`) of the
+  managing `LeaderWorkerSet` or `DisaggregatedSet` `metadata.uid` (via SHA-256)
+  prevents name collisions if a workload is deleted and immediately recreated
+  with the same name while previous pods and `ComputeDomain`s are still
+  draining.
+- **Option 1 (`LeaderWorkerSet` replica mode — unified across `Ordinal` and `Hash`):**
+  - `<lwsName>-<uid5>-<revKey>-<groupIndex>-<inc5>`
+    where `<groupIndex>` is `pod.Labels["leaderworkerset.sigs.k8s.io/group-index"]`
+    (`0 .. replicas-1` in `Ordinal` mode, or `groupUniqueKey` in `Hash` mode)
+    and `<inc5>` is a 5-character random token drawn once at leader `Pod`
+    admission for every leader and persisted on
+    `pod.Annotations["leaderworkerset.sigs.k8s.io/compute-domain-name"]`.
   - Labels on `ComputeDomain`:
     - `leaderworkerset.sigs.k8s.io/name: <lwsName>`
     - `leaderworkerset.sigs.k8s.io/group-index: <groupIndex>`
     - `leaderworkerset.sigs.k8s.io/template-revision-hash: <revKey>`
+    - `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid: <lwsUID>`
 - **Option 2 (`DisaggregatedSet` `(slice, revision)` mode):**
   - `<dsetName>-<uid5>-s<slice>-<revision>`
   - Labels on `ComputeDomain`:
     - `disaggregatedset.x-k8s.io/name: <dsetName>`
     - `disaggregatedset.x-k8s.io/slice: "<slice>"`
     - `disaggregatedset.x-k8s.io/revision: "<revision>"`
+    - `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid: <dsetUID>`
 - **Overflow truncation:** Whenever the formatted string exceeds 63 characters
   (for example, long child `LeaderWorkerSet` names `<dset>-<slice>-<rev>-<role>`),
-  the prefix is truncated and suffixed with a 10-character SHA-256 hex digest of
-  the full unshortened identifier (`<prefix[:52]>-<sha256[:10]>`), guaranteeing
-  deterministic uniqueness within 63 characters.
+  the prefix is truncated (trimming any trailing `-`) and suffixed with a
+  10-character SHA-256 hex digest of the full unshortened identifier
+  (`<prefix[:52]>-<sha256[:10]>`), guaranteeing deterministic uniqueness within
+  63 characters.
 
 ### Lifecycle Reconciliation and Ordering
 
@@ -481,7 +500,7 @@ sequenceDiagram
     LWS->>STS: Stamp compute-domain-prefix on leader PodTemplate
     STS->>WH: Create Leader Pod
     WH-->>STS: Gate Leader Pod (GroupReplacementSchedulingGate),<br/>stamp compute-domain-name, inject resourceClaims
-    PR->>CD: Create ComputeDomain (owned by LWS, with protection finalizer)
+    PR->>CD: Ensure ComputeDomain (compute-domain-owner-uid label + protection finalizer)
     PR->>PR: Lift GroupReplacementSchedulingGate (when replacement policy allows)
     PR->>WSTS: Create Worker StatefulSet with compute-domain-name annotation
     WSTS->>WH: Create Worker Pods
@@ -489,14 +508,16 @@ sequenceDiagram
 ```
 
 1. **`LeaderWorkerSetReconciler`:** When the revision's effective
-   `leaderworkerset.sigs.k8s.io/auto-compute-domain` is `"enabled"`, stamps
-   `leaderworkerset.sigs.k8s.io/compute-domain-prefix: <lwsName>-<uid5>` onto
-   the leader `PodTemplateSpec`.
+   `leaderworkerset.sigs.k8s.io/auto-compute-domain` is `"enabled"` and at
+   least one container across `leaderTemplate` or `workerTemplate` is targeted,
+   stamps `leaderworkerset.sigs.k8s.io/compute-domain-prefix: <lwsName>-<uid5>`
+   onto the leader `PodTemplateSpec`.
 2. **`PodWebhook` (`Default`):**
    - On a **leader `Pod`** carrying `compute-domain-prefix`: if
      `pod.Annotations["leaderworkerset.sigs.k8s.io/compute-domain-name"]` is
-     not yet set, computes `<cdName>` (generating `<inc5>` in `Ordinal` mode or
-     using `groupUniqueKey` in `Hash` mode) and writes `compute-domain-name`.
+     not yet set, draws `<inc5>`, computes `<cdName>` via
+     `ReplicaComputeDomainName`, and writes `compute-domain-name` (even if the
+     leader itself is CPU-only so GPU workers still join the replica domain).
      Injects `pod.spec.resourceClaims` and `container.resources.claims` into
      targeted GPU containers. Note that every leader `Pod` already starts gated
      behind `leaderworkerset.sigs.k8s.io/group-replacement`
@@ -504,16 +525,17 @@ sequenceDiagram
    - On a **worker `Pod`** carrying `compute-domain-name`: reads `<cdName>` and
      injects the identical `pod.spec.resourceClaims` and
      `container.resources.claims` into targeted GPU containers.
-3. **`PodReconciler`:** While the leader `Pod` is held behind
-   `GroupReplacementSchedulingGate` (right beside
-   `CreateHeadlessServiceIfNotExists` and
-   `SchedulerProvider.CreatePodGroupIfNotExists`, and after
+3. **`PodReconciler`:** Ensures the `<cdName>` `ComputeDomain` exists (after
    `isOutdatedGatedHashLeader` so superseded hash leaders never create orphan
-   domains), ensures the `<cdName>` `ComputeDomain` exists with
-   `OwnerReference` pointing to the `LeaderWorkerSet` and finalizer
-   `leaderworkerset.sigs.k8s.io/compute-domain-protection`. When creating the
-   worker `StatefulSet`, copies `leaderworkerset.sigs.k8s.io/compute-domain-name`
-   from the group's leader `Pod` onto the worker `PodTemplateSpec` annotations.
+   domains), carrying `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid: <lws.UID>`
+   and finalizer `leaderworkerset.sigs.k8s.io/compute-domain-protection`. If a
+   same-named `ComputeDomain` already exists with another owner UID, LWS refuses
+   to adopt it and emits an `UnexpectedComputeDomainOwner` Warning event. A
+   terminating `ComputeDomain` blocks a gated leader, but does not block an
+   already-admitted leader's reconcile so worker `StatefulSet` reconciliation
+   continues. When creating the worker `StatefulSet`, `PodReconciler` copies
+   `leaderworkerset.sigs.k8s.io/compute-domain-name` from the group's leader
+   `Pod` onto the worker `PodTemplateSpec` annotations.
 
 #### Option 2: Per-(slice, revision) Mode (DisaggregatedSet)
 
@@ -522,48 +544,74 @@ all of which are known before child `LeaderWorkerSet`s are created:
 
 1. **`DisaggregatedSetReconciler`:** Before creating or scaling child
    `LeaderWorkerSet`s above `0` replicas for `(slice, currentRevision)`, ensures
-   `ComputeDomain` `<cdName>` exists (controller-owned by the
-   `DisaggregatedSet` with `leaderworkerset.sigs.k8s.io/compute-domain-protection`),
-   provided at least one role in the revision enrolls GPU containers in the
-   slice domain.
+   `ComputeDomain` `<cdName>` exists (carrying
+   `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid: <ds.UID>` and
+   `leaderworkerset.sigs.k8s.io/compute-domain-protection`), provided at least
+   one role in the revision enrolls targeted containers in the slice domain.
+   `DisaggregatedSetReconciler` watches `ComputeDomain`s mapped by
+   `disaggregatedset.x-k8s.io/name` + `compute-domain-owner-uid`
+   (`GenerationChangedPredicate`) so a manually deleted slice `ComputeDomain`
+   is recreated. A terminating slice `ComputeDomain` only blocks a slice that
+   has no child `LeaderWorkerSet`s for that revision yet.
 2. **`lwsManager.Create`:** When constructing the child `LeaderWorkerSet` for
    an enrolled role in `(slice, revision)`, directly injects
    `pod.spec.resourceClaims` and `container.resources.claims` into targeted GPU
    containers of `leaderTemplate` (when non-nil) and `workerTemplate`. Neither
    `LeaderWorkerSetReconciler` nor `PodWebhook` performs any extra mutation for
-   slice-scoped domains.
+   slice-scoped domains. If `AutoComputeDomain` is disabled at runtime while a
+   `DisaggregatedSet` remains enrolled in slice `ComputeDomain`s,
+   `lwsManager.Create` refuses to create new enrolled child `LeaderWorkerSet`s
+   without claims rather than mixing claimed and unclaimed slices.
 
-#### Garbage Collection and Finalizer Release
+#### Deferred Deletion, Workload Teardown, and Finalizer Release
 
-A shared `ComputeDomain` cleanup mechanism handles scale-down, revision drain,
-replica restart cleanup, and parent workload deletion without requiring a
+Because `compute-domain-controller` in `k8s-dra-driver-gpu` tears down the IMEX
+`DaemonSet` and `ResourceClaimTemplate` as soon as
+`ComputeDomain.metadata.deletionTimestamp` is set, LWS defers deleting obsolete
+`ComputeDomain`s until zero `Pod`s reference them, without requiring a
 finalizer on `LeaderWorkerSet` or `DisaggregatedSet` itself:
 
-1. **Field Index:** Register a `controller-runtime` field index on `corev1.Pod`
-   extracting every `pod.Spec.ResourceClaims[i].ResourceClaimTemplateName`
-   (matching the `podSchedulingGroupNameIndex` pattern in `KubernetesProvider`).
-2. **Active Retention Rules:**
-   - An LWS-owned `ComputeDomain` `<cdName>` is **retained** while any
-     non-deleting leader `Pod` of that `LeaderWorkerSet` carries
-     `compute-domain-name == <cdName>`. Once no active leader `Pod` claims it
-     (replica scaled down, old revision drained, or ordinal leader replaced),
-     `LeaderWorkerSetReconciler` issues `Delete(ctx, cd)` (if
-     `cd.DeletionTimestamp == nil`).
-   - A `DisaggregatedSet`-owned `ComputeDomain` for `(slice, revision)` is
-     **retained** while `(slice < spec.slices && revision == currentRevision)`
-     or while any child `LeaderWorkerSet` labeled with `(slice, revision)`
-     still exists. Once all child `LeaderWorkerSet`s for that `(slice, revision)`
-     are gone, `DisaggregatedSetReconciler` issues `Delete(ctx, cd)`.
-   - When a parent `LeaderWorkerSet` or `DisaggregatedSet` is deleted,
-     Kubernetes garbage collection automatically sets `deletionTimestamp` on
-     owned `ComputeDomain`s via `OwnerReferences`.
-3. **Finalizer Removal (`ComputeDomainReconciler`):** Watches `ComputeDomain`
-   objects carrying `leaderworkerset.sigs.k8s.io/compute-domain-protection` and
-   maps `Pod` deletion/claim changes via `resourceClaimTemplateName` to the
-   referenced `ComputeDomain`. Whenever `cd.DeletionTimestamp != nil` (or its
-   controller owner no longer exists in cache and confirmed via API) **and**
-   the indexed `Pod` list for `resourceClaimTemplateName == cd.Name` is empty,
-   the reconciler strips `leaderworkerset.sigs.k8s.io/compute-domain-protection`.
+1. **Field Index (`PodClaimTemplateIndex`):** Register a `controller-runtime`
+   field index on `corev1.Pod` extracting every
+   `pod.Spec.ResourceClaims[i].ResourceClaimTemplateName` (matching the
+   `podSchedulingGroupNameIndex` pattern in `KubernetesProvider`).
+2. **Deferred Obsolete Domain Cleanup:**
+   - **Per-replica (`CleanupLWSComputeDomains`):** A replica `ComputeDomain`
+     managed by `lws` (`leaderworkerset.sigs.k8s.io/name == lws.Name` and
+     `compute-domain-owner-uid == lws.UID`) is retained while `lws` is not
+     terminating and any non-terminating leader `Pod` of `lws` carries
+     `compute-domain-name == cd.Name`. Once no active leader claims it (replica
+     scaled down, old revision drained, or leader replaced) **and** zero `Pod`s
+     match `PodClaimTemplateIndex` (`Limit(1)`), `LeaderWorkerSetReconciler`
+     (woken by `Pod` delete events) removes `compute-domain-protection` and
+     deletes `cd`.
+   - **Per-slice (`CleanupDisaggregatedSetComputeDomains`):** A slice
+     `ComputeDomain` managed by `ds` (`disaggregatedset.x-k8s.io/name == ds.Name`
+     and `compute-domain-owner-uid == ds.UID`) is retained while
+     `(ds.DeletionTimestamp.IsZero() && slice < spec.slices && revision == currentRevision)`
+     (when slice domain is needed) or while any child `LeaderWorkerSet` labeled
+     `(slice, revision)` still exists. Once neither holds **and** zero `Pod`s
+     match `PodClaimTemplateIndex`, `DisaggregatedSetReconciler` (woken by
+     `Pod` delete events, and running cleanup even if another slice failed to
+     reconcile) removes `compute-domain-protection` and deletes `cd`.
+3. **Deleted Workload Cleanup and Direct-Delete Protection (`computedomain.Reconciler`):**
+   - Watches `ComputeDomain` (`Create` for managed or terminating objects;
+     `Update` when terminating with `compute-domain-protection`), `Pod`
+     (`Delete` mapped via `resourceClaimTemplateName`), `LeaderWorkerSet`
+     (`Delete` mapped to managed `ComputeDomain`s by name + UID), and
+     `DisaggregatedSet` (`Delete` mapped to managed `ComputeDomain`s by name +
+     UID).
+   - When `cd.DeletionTimestamp != nil` (deleted directly by hand or during
+     namespace deletion), removes `compute-domain-protection` once
+     `PodClaimTemplateIndex` has zero referencing `Pod`s.
+   - When `cd.DeletionTimestamp == nil` and the managing `LeaderWorkerSet` or
+     `DisaggregatedSet` is absent from the informer cache or has a different
+     UID (`ownerGone`), keeps `cd` unmarked while pods drain and removes
+     `compute-domain-protection` + deletes `cd` once `PodClaimTemplateIndex`
+     has zero referencing `Pod`s. Because `controller-runtime` starts and
+     quorum-lists all watch sources only after leader election is acquired,
+     `ownerGone` reads strictly from local informer caches with zero uncached
+     API server `GET`s.
 
 ### Pod Claim Injection and GPU Container Detection
 
@@ -625,17 +673,24 @@ causing untracked pod restarts or upgrade churn:
     the restored object unless present in the revision patch, so groups on an
     older non-MNNVL revision keep non-MNNVL templates if their worker
     `StatefulSet` is reconstructed during a rollout.
-- **`DisaggregatedSet` (`pkg/utils/disaggregatedset.ComputeRevision`):**
+- **`DisaggregatedSet` (`pkg/utils/disaggregatedset.ComputeDisaggregatedSetRevision` & `resolveRevision`):**
   - When `disaggregatedset.x-k8s.io/auto-compute-domain: "enabled"` is set on
-    the `DisaggregatedSet`, `ComputeRevision` stamps the effective slice-domain
-    enrollment onto each enrolled role's cloned `Annotations` map before
-    hashing.
-  - When unset or `"disabled"` on the `DisaggregatedSet`, `ComputeRevision`
-    inputs are unchanged, preserving exact `v2` revision hashes across
-    upgrades for all existing `DisaggregatedSet`s.
+    the `DisaggregatedSet`, `ComputeDisaggregatedSetRevision` stamps the
+    effective slice-domain enrollment onto each enrolled role's cloned
+    `Annotations` map before calling `ComputeRevision`.
+  - When unset or `"disabled"` on the `DisaggregatedSet`,
+    `ComputeDisaggregatedSetRevision` delegates directly to `ComputeRevision`,
+    preserving exact `v2` revision hashes across upgrades for all existing
+    `DisaggregatedSet`s.
+  - Legacy unversioned `DisaggregatedSet`s (missing
+    `disaggregatedset.x-k8s.io/revision-hash-version`) remain on
+    `ComputeRevisionV1` by default, and migrate to `v2` in `resolveRevision`
+    when either slice-scoped or role-scoped `auto-compute-domain` is enabled so
+    opting in on a legacy workload triggers a rolling update instead of silently
+    ignoring role annotations.
   - Enabling or disabling slice-level or role-level `auto-compute-domain`
-    produces a new `ComputeRevision` and executes a coordinated rolling update
-    under `maxSurge` and `maxUnavailable`.
+    produces a new revision and executes a coordinated rolling update under
+    `maxSurge` and `maxUnavailable`.
 
 ### Validation
 
@@ -643,13 +698,14 @@ Validating webhooks on `LeaderWorkerSet` and `DisaggregatedSet` enforce:
 
 | Condition | Behavior |
 | --- | --- |
-| `AutoComputeDomain` feature gate is disabled and `auto-compute-domain: "enabled"` is set on `CREATE` or newly enabled on `UPDATE` | Reject with error stating `AutoComputeDomain` feature gate is disabled. |
+| `AutoComputeDomain` feature gate is disabled, or `resource.nvidia.com/v1beta1` `ComputeDomain` is not served in `RESTMapper`, and `auto-compute-domain: "enabled"` is set on `CREATE` or newly enabled on `UPDATE` | Reject at admission (already opted-in objects remain updatable). |
 | Invalid value on `leaderworkerset.sigs.k8s.io/auto-compute-domain` or `disaggregatedset.x-k8s.io/auto-compute-domain` (not `"enabled"` or `"disabled"`) | Reject at admission. |
 | `disaggregatedset.x-k8s.io/auto-compute-domain: "enabled"` on a role while parent `DisaggregatedSet` is unset or `"disabled"` | Reject at admission. |
 | Both `disaggregatedset.x-k8s.io/auto-compute-domain` (effective `"enabled"`) and `leaderworkerset.sigs.k8s.io/auto-compute-domain: "enabled"` active on the same role | Reject at admission (single IMEX channel per pod). |
-| `compute-domain-containers` lists a container name that does not exist in `containers` or restartable `initContainers` of that `PodTemplateSpec` | Reject at admission. |
+| `compute-domain-containers` lists a container name that does not exist in `containers` or restartable `initContainers` of that `PodTemplateSpec` (or is empty) | Reject at admission. |
+| User sets controller-managed `leaderworkerset.sigs.k8s.io/compute-domain-prefix` or `leaderworkerset.sigs.k8s.io/compute-domain-name` on `leaderTemplate` or `workerTemplate` (unless unchanged from `oldObject` on `UPDATE`) | Reject at admission. |
 | Workload or role enables `auto-compute-domain`, sets no `compute-domain-containers`, and has zero containers requesting `nvidia.com/gpu` across both `leaderTemplate` and `workerTemplate` | Return an admission warning (allowing DRA GPU users to spot missing `compute-domain-containers`, or CPU-only roles in a slice to opt out cleanly). |
-| User manually defines a `pod.spec.resourceClaims` entry named `lws-compute-domain-channel` | Reject at admission (reserved claim name when `auto-compute-domain` is enabled). |
+| User manually defines a `pod.spec.resourceClaims` entry named `lws-compute-domain-channel` while `auto-compute-domain` is enabled | Reject at admission (reserved claim name). |
 
 ### Caching and API Server Performance
 
@@ -657,18 +713,19 @@ To adhere to LWS performance standards on hot paths (`PodReconciler`,
 `LeaderWorkerSetReconciler`, `DisaggregatedSetReconciler`):
 
 1. **Zero API calls in `PodWebhook`:** `PodWebhook` derives `<cdName>` purely
-   from pod metadata (`compute-domain-prefix`, `groupIndex` / `groupUniqueKey`,
-   `RevisionKey`) stamped by `LeaderWorkerSetReconciler`.
+   from pod metadata (`compute-domain-prefix`, `groupIndex`, `RevisionKey`)
+   stamped by `LeaderWorkerSetReconciler` and `PodWebhook`.
 2. **Cached Informer Reads Only:** Define a minimal internal Go struct in
-   `pkg/internal/computedomain/v1beta1` registering `ComputeDomain` and
-   `ComputeDomainList` in the manager's `runtime.Scheme` when
-   `AutoComputeDomain` is enabled. This avoids importing external NVIDIA driver
+   `pkg/computedomain` registering `ComputeDomain` and `ComputeDomainList` in
+   the manager's `runtime.Scheme` (starting informers and watches only when
+   `AutoComputeDomain` is enabled). This avoids importing external NVIDIA driver
    modules in `go.mod` while guaranteeing `controller-runtime` backs all
-   `Get`/`List` calls with a shared informer cache rather than uncached
-   `unstructured` API server requests.
-3. **O(1) Pod Reference Checks:** `ComputeDomain` finalizer cleanup queries the
-   in-memory `spec.resourceClaims[].resourceClaimTemplateName` field index
-   rather than scanning all pods in the namespace.
+   `Get`/`List` calls — including workload-deletion checks in
+   `computedomain.Reconciler` — with shared informer caches and zero uncached
+   API server requests.
+3. **O(1) Pod Reference Checks:** `ComputeDomain` cleanup and finalizer release
+   query the in-memory `spec.resourceClaims[].resourceClaimTemplateName` field
+   index (`Limit(1)`) rather than scanning all pods in the namespace.
 
 ### Relationship and Migration Path to Upstream PodGroup DRA (KEP-5729)
 
@@ -703,24 +760,29 @@ to implement this enhancement.
 
 Add a minimal test CRD manifest for `computedomains.resource.nvidia.com`
 (`v1beta1`, including the `self == oldSelf` immutability CEL rule on `spec`)
-under `test/crd/` for `envtest` integration suites when testing
-`AutoComputeDomain`.
+under `test/integration/crd/nvidia-computedomain.yaml` for `envtest` integration
+suites when testing `AutoComputeDomain`.
 
 ##### Unit tests
 
 - `pkg/webhooks`: validation matrix for `LeaderWorkerSet` and
-  `DisaggregatedSet` annotations, feature-gate disabled rejection, role
+  `DisaggregatedSet` annotations, feature-gate and `RESTMapper` rejection, role
   conflict detection, `compute-domain-containers` validation, reserved claim
-  name check, and zero-GPU warning; `PodWebhook` claim injection for leader
-  (`Ordinal` and `Hash`), worker, CPU-only leader/sidecar skipping,
-  `compute-domain-containers`, and reinvocation idempotency.
-- `pkg/controllers` & `pkg/controllers/disaggregatedset`: `<cdName>` length
-  truncation (63-char bound), UID hash suffixing, `ComputeDomain` object
-  construction, and child LWS template claim injection per role precedence.
+  name and internal template annotation checks, and zero-GPU warning;
+  `PodWebhook` claim injection for leader (`Ordinal` and `Hash`), worker,
+  CPU-only leader/sidecar skipping, `compute-domain-containers`, and
+  reinvocation idempotency.
+- `pkg/computedomain`, `pkg/controllers`, & `pkg/controllers/disaggregatedset`:
+  `<cdName>` length truncation (63-char bound), UID hash prefixing,
+  `ComputeDomain` creation and metadata repair, deferred deletion while
+  referencing pods exist, `computedomain.Reconciler` cleanup on parent workload
+  deletion and direct `ComputeDomain` deletion, gate-disabled slice child
+  creation guard, and child LWS template claim injection per role precedence.
 - `pkg/utils/revision` & `pkg/utils/disaggregatedset`: byte-identical revisions
-  when `auto-compute-domain` is unset/disabled (upgrade safety), new revision
-  generation when toggled, and `ApplyRevision` restoration across mixed-MNNVL
-  rollouts.
+  when `auto-compute-domain` is unset/disabled (upgrade safety), legacy `v1` ->
+  `v2` `DisaggregatedSet` revision migration on role or slice opt-in, new
+  revision generation when toggled, and `ApplyRevision` restoration across
+  mixed-MNNVL rollouts.
 
 ##### Integration tests
 
@@ -728,28 +790,30 @@ Using `envtest` with the test `ComputeDomain` CRD:
 
 - **Standalone `LeaderWorkerSet` (`Ordinal` and `Hash`):**
   - Creating an LWS with `replicas: 2, size: 2` creates 2 distinct
-    `ComputeDomain`s while leaders are gated, lifts gates, propagates matching
+    `ComputeDomain`s (carrying `compute-domain-owner-uid` and no
+    `ownerReferences`) while leaders are gated, lifts gates, propagates matching
     `<cdName>` to worker `StatefulSet`s, and injects `resourceClaims` only into
     GPU containers (skipping CPU sidecars and CPU-only leader templates).
-  - Scaling `replicas` 2 -> 3 -> 1 creates the 3rd `ComputeDomain` and retains
-    the scaled-down replica's `ComputeDomain` via its protection finalizer
-    until its pods are deleted, then deletes it cleanly.
+  - Scaling `replicas` down keeps the scaled-down replica's `ComputeDomain`
+    unmarked (`deletionTimestamp` zero) while draining pods still reference it,
+    then removes the protection finalizer and deletes it once its pods exit.
   - Rolling update (`maxSurge: 1`) creates isolated new-revision
     `ComputeDomain`s and deletes old-revision `ComputeDomain`s only after old
     pods finish terminating.
   - In-place ordinal restart (`RecreateGroupOnPodRestart`) allocates a fresh
-    incarnation `ComputeDomain` even if an old worker pod still holds a
-    deletion finalizer.
-  - Background deletion of the `LeaderWorkerSet` retains `ComputeDomain`s while
-    pods terminate and removes the protection finalizer as soon as the last pod
-    is removed.
+    incarnation `ComputeDomain` while keeping the previous incarnation's
+    `ComputeDomain` unmarked until its draining worker pod exits.
+  - Deleting the `LeaderWorkerSet` keeps its `ComputeDomain`s unmarked while
+    pods terminate and deletes them once the last referencing pod is removed.
 - **`DisaggregatedSet` (`(slice, revision)` mode and role overrides):**
   - `spec.slices: 2` with `prefill` + `decode` + opted-out `encoder` creates
     1 `ComputeDomain` per slice, injects claims into `prefill` and `decode`
     child LWS templates, and leaves `encoder` untouched.
-  - Coordinated rolling update creates new `(slice, newRev)` `ComputeDomain`s
-    before scaling new child LWSs above 0 and cleans up `(slice, oldRev)`
-    `ComputeDomain`s once old child LWSs and pods drain.
+  - Coordinated rolling update, slice scale-down, and `DisaggregatedSet`
+    deletion create new `(slice, newRev)` `ComputeDomain`s before scaling new
+    child LWSs above 0, keep obsolete slice `ComputeDomain`s unmarked
+    (`deletionTimestamp` zero) while draining slice pods still reference them,
+    and delete them once those pods exit.
   - Role-level `leaderworkerset.sigs.k8s.io/auto-compute-domain: "enabled"`
     (with slice mode disabled or opted out) delegates per-replica
     `ComputeDomain` creation to that role's child `LeaderWorkerSet`.
@@ -802,6 +866,12 @@ Using `envtest` with the test `ComputeDomain` CRD:
 - 2026-10-30: Enhancement issue
   [kubernetes-sigs/lws#1259](https://github.com/kubernetes-sigs/lws/issues/1259)
   opened and initial KEP drafted.
+- 2026-10-31: Alpha implementation opened in
+  [kubernetes-sigs/lws#1263](https://github.com/kubernetes-sigs/lws/pull/1263);
+  KEP updated for label-based workload ownership
+  (`compute-domain-owner-uid`), deferred deletion until zero pods reference a
+  `ComputeDomain`, and unified replica naming across `Ordinal` and `Hash`
+  group identities.
 
 ## Drawbacks
 
@@ -865,7 +935,7 @@ external webhook/controller watching `LeaderWorkerSet`, `DisaggregatedSet`, and
   propagating the leader's incarnation-specific domain name onto worker
   `StatefulSet`s relies directly on internal LWS reconciliation transitions and
   revision hashes (`ControllerRevision` and `DisaggregatedSet`
-  `ComputeRevision`). Duplicating that state machine externally would be
+  `ComputeDisaggregatedSetRevision`). Duplicating that state machine externally would be
   fragile across LWS upgrades and require deploying a second mutating pod
   webhook on the critical pod creation path.
 
