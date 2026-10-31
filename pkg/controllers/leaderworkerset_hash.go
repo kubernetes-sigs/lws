@@ -150,10 +150,10 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 // preserves enough entries to cover pending gated replacements up to replicas + maxSurge,
 // keeping the highest counts and pruning any excess.
 func (r *LeaderWorkerSetReconciler) pruneHashGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, currentRevisionKey string) error {
-	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
+	if lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" && lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] == "" {
 		return nil
 	}
-	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32, _ map[string]types.UID) (bool, error) {
 		var leaderPods corev1.PodList
 		if err := r.List(ctx, &leaderPods, client.InNamespace(lws.Namespace), client.MatchingLabels{
 			leaderworkerset.SetNameLabelKey:     lws.Name,

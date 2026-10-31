@@ -281,10 +281,10 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, activeReplicas int32) error {
-	if lws.Annotations == nil || lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" {
+	if lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] == "" && lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] == "" {
 		return nil
 	}
-	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32, _ map[string]types.UID) (bool, error) {
 		changed := false
 		// activeReplicas includes temporary MaxSurge ordinals. Do not discard
 		// their counters while those groups are still part of the StatefulSet.
@@ -308,7 +308,7 @@ func (r *LeaderWorkerSetReconciler) pruneScaledDownGroupRestartCounts(ctx contex
 }
 
 func (r *LeaderWorkerSetReconciler) cleanupObsoleteGroupRestartCounts(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
-	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32) (bool, error) {
+	return mutateGroupRestartCounts(ctx, r.Client, client.ObjectKeyFromObject(lws), func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32, _ map[string]types.UID) (bool, error) {
 		changed := false
 		for key := range counts {
 			separator := strings.LastIndexByte(key, '/')
