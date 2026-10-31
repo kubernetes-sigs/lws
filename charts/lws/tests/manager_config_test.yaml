@@ -87,3 +87,17 @@ tests:
       - matchRegex:
           path: data["controller_manager_config.yaml"]
           pattern: "(?m)^gangSchedulingManagement:\\n  schedulerProvider: volcano$"
+
+  - it: omits the External group index digits by default
+    asserts:
+      - notMatchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "disaggregatedSetExternalGroupIndexDigits"
+
+  - it: configures the External group index digits
+    set:
+      disaggregatedSetExternalGroupIndexDigits: 6
+    asserts:
+      - matchRegex:
+          path: data["controller_manager_config.yaml"]
+          pattern: "(?m)^disaggregatedSetExternalGroupIndexDigits: 6$"

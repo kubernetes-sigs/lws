@@ -39,7 +39,18 @@ func validate(c *configapi.Configuration) field.ErrorList {
 	allErrs = append(allErrs, validateSchedulerProvider(c)...)
 	allErrs = append(allErrs, validateInternalCertManagement(c)...)
 	allErrs = append(allErrs, validateFeatureGates(c)...)
+	allErrs = append(allErrs, validateDisaggregatedSetExternalGroupIndexDigits(c)...)
 	return allErrs
+}
+
+// validateDisaggregatedSetExternalGroupIndexDigits requires room for at least one
+// digit, and no more than the 10 digits of the largest int32 group index.
+func validateDisaggregatedSetExternalGroupIndexDigits(c *configapi.Configuration) field.ErrorList {
+	digits := c.DisaggregatedSetExternalGroupIndexDigits
+	if digits == nil || (*digits >= 1 && *digits <= 10) {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("disaggregatedSetExternalGroupIndexDigits"), *digits, "must be between 1 and 10")}
 }
 
 func validateFeatureGates(c *configapi.Configuration) field.ErrorList {

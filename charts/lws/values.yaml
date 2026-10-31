@@ -81,6 +81,11 @@ affinity: {}
 # gangSchedulingManagement:
 #   schedulerProvider: volcano
 gangSchedulingManagement: {}
+# disaggregatedSetExternalGroupIndexDigits is how many characters new External
+# DisaggregatedSet roles reserve for the group index in generated names, from 1
+# to 10. Empty keeps the controller default of 8. Lower values allow longer names
+# but fewer groups.
+disaggregatedSetExternalGroupIndexDigits:
 # Alpha LWS feature gates. WorkloadAwareScheduling is disabled by default.
 featureGates: {}
 # leaderElection overrides the manager's lease timing. Empty keeps the

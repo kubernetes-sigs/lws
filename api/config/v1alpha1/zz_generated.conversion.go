@@ -156,6 +156,7 @@ func autoConvert_v1alpha1_Configuration_To_v1_Configuration(in *Configuration, o
 	out.GangSchedulingManagement = (*v1.GangSchedulingManagement)(unsafe.Pointer(in.GangSchedulingManagement))
 	out.FeatureGates = *(*map[string]bool)(unsafe.Pointer(&in.FeatureGates))
 	out.ClientConnection = (*v1.ClientConnection)(unsafe.Pointer(in.ClientConnection))
+	out.DisaggregatedSetExternalGroupIndexDigits = (*int32)(unsafe.Pointer(in.DisaggregatedSetExternalGroupIndexDigits))
 	return nil
 }
 
@@ -172,6 +173,7 @@ func autoConvert_v1_Configuration_To_v1alpha1_Configuration(in *v1.Configuration
 	out.GangSchedulingManagement = (*GangSchedulingManagement)(unsafe.Pointer(in.GangSchedulingManagement))
 	out.FeatureGates = *(*map[string]bool)(unsafe.Pointer(&in.FeatureGates))
 	out.ClientConnection = (*ClientConnection)(unsafe.Pointer(in.ClientConnection))
+	out.DisaggregatedSetExternalGroupIndexDigits = (*int32)(unsafe.Pointer(in.DisaggregatedSetExternalGroupIndexDigits))
 	return nil
 }
 
