@@ -147,6 +147,30 @@ const (
 	// PodTerminationPolicy so that controllers can tell the termination policy
 	// even if the LeaderWorkerSet object is being deleted.
 	PodTerminationPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/pod-termination-policy"
+
+	// AutoComputeDomainAnnotationKey opts a LeaderWorkerSet (or DisaggregatedSet
+	// role) into per-replica NVIDIA DRA ComputeDomain management when set to
+	// AutoComputeDomainEnabled ("enabled").
+	AutoComputeDomainAnnotationKey string = "leaderworkerset.sigs.k8s.io/auto-compute-domain"
+	AutoComputeDomainEnabled       string = "enabled"
+	AutoComputeDomainDisabled      string = "disabled"
+
+	// ComputeDomainContainersAnnotationKey optionally specifies a comma-separated
+	// list of container names on a PodTemplateSpec that should receive the
+	// injected ComputeDomain ResourceClaim instead of auto-detecting nvidia.com/gpu.
+	ComputeDomainContainersAnnotationKey string = "leaderworkerset.sigs.k8s.io/compute-domain-containers"
+
+	// ComputeDomainPrefixAnnotationKey is controller-managed on leader pod
+	// templates when replica-level auto-compute-domain is enabled.
+	ComputeDomainPrefixAnnotationKey string = "leaderworkerset.sigs.k8s.io/compute-domain-prefix"
+
+	// ComputeDomainNameAnnotationKey records the resolved per-replica
+	// ComputeDomain name on a leader Pod and its worker StatefulSet pod template.
+	ComputeDomainNameAnnotationKey string = "leaderworkerset.sigs.k8s.io/compute-domain-name"
+
+	// ComputeDomainProtectionFinalizer prevents a managed ComputeDomain from being
+	// deleted while any Pod still references its ResourceClaimTemplate.
+	ComputeDomainProtectionFinalizer string = "leaderworkerset.sigs.k8s.io/compute-domain-protection"
 )
 
 // GroupReadyConditionType is the pod readiness gate condition set on leader pods when

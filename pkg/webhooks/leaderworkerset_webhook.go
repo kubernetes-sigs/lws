@@ -22,6 +22,7 @@ import (
 	"math"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 )
@@ -134,13 +136,17 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
-	return nil, allErrs.ToAggregate()
+	warnings, cdErrs := r.validateComputeDomain(nil, lws)
+	allErrs = append(allErrs, cdErrs...)
+	return warnings, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
+	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
+	allErrs = append(allErrs, cdErrs...)
 	specPath := field.NewPath("spec")
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
 	newSubGroupPolicy := newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
@@ -167,7 +173,7 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 		allErrs = append(allErrs, field.Invalid(specPath.Child("podTerminationPolicy"), newLws.Spec.PodTerminationPolicy, "podTerminationPolicy is immutable"))
 	}
 
-	return nil, allErrs.ToAggregate()
+	return warnings, allErrs.ToAggregate()
 }
 
 func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
@@ -647,6 +653,125 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 		(*policy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+	}
+	return allErrs
+}
+
+func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWorkerSet) (admission.Warnings, field.ErrorList) {
+	var allErrs field.ErrorList
+	var warnings admission.Warnings
+	annPath := field.NewPath("metadata", "annotations").Key(v1.AutoComputeDomainAnnotationKey)
+	templatePath := field.NewPath("spec", "leaderWorkerTemplate")
+
+	allErrs = append(allErrs, ValidateTemplateComputeDomainContainers(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+	allErrs = append(allErrs, ValidateTemplateComputeDomainContainers(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+	var oldLeaderTpl, oldWorkerTpl *corev1.PodTemplateSpec
+	if oldLws != nil {
+		oldLeaderTpl = oldLws.Spec.LeaderWorkerTemplate.LeaderTemplate
+		oldWorkerTpl = &oldLws.Spec.LeaderWorkerTemplate.WorkerTemplate
+	}
+	allErrs = append(allErrs, ValidateTemplateInternalComputeDomainAnnotations(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLeaderTpl)...)
+	allErrs = append(allErrs, ValidateTemplateInternalComputeDomainAnnotations(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate, oldWorkerTpl)...)
+
+	val, set := lws.Annotations[v1.AutoComputeDomainAnnotationKey]
+	if !set {
+		return nil, allErrs
+	}
+	if val != v1.AutoComputeDomainEnabled && val != v1.AutoComputeDomainDisabled {
+		allErrs = append(allErrs, field.NotSupported(annPath, val, []string{v1.AutoComputeDomainEnabled, v1.AutoComputeDomainDisabled}))
+		return nil, allErrs
+	}
+	if val != v1.AutoComputeDomainEnabled {
+		return nil, allErrs
+	}
+
+	newOptIn := oldLws == nil || oldLws.Annotations[v1.AutoComputeDomainAnnotationKey] != v1.AutoComputeDomainEnabled
+	if newOptIn {
+		if !features.Enabled(features.AutoComputeDomain) {
+			allErrs = append(allErrs, field.Forbidden(annPath, "requires the AutoComputeDomain feature gate"))
+		} else if err := computedomain.VerifyAPI(r.RESTMapper); err != nil {
+			allErrs = append(allErrs, field.Forbidden(annPath, err.Error()))
+		}
+	}
+
+	allErrs = append(allErrs, ValidateReservedComputeDomainClaim(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+	allErrs = append(allErrs, ValidateReservedComputeDomainClaim(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
+
+	if len(allErrs) == 0 && !computedomain.LWSNeedsReplicaDomain(lws) {
+		warnings = append(warnings, fmt.Sprintf(
+			"%s is enabled, but neither leaderTemplate nor workerTemplate has containers requesting %s or listed in %s",
+			v1.AutoComputeDomainAnnotationKey,
+			computedomain.NvidiaGPUResourceName,
+			v1.ComputeDomainContainersAnnotationKey,
+		))
+	}
+	return warnings, allErrs
+}
+
+// ValidateTemplateComputeDomainContainers validates the optional
+// compute-domain-containers annotation on a PodTemplateSpec. Exported for
+// DisaggregatedSet webhook reuse.
+func ValidateTemplateComputeDomainContainers(templatePath *field.Path, tpl *corev1.PodTemplateSpec) field.ErrorList {
+	if tpl == nil {
+		return nil
+	}
+	raw, exists := tpl.Annotations[v1.ComputeDomainContainersAnnotationKey]
+	if !exists {
+		return nil
+	}
+	if _, err := computedomain.TargetedContainerNames(&tpl.Spec, tpl.Annotations); err != nil {
+		return field.ErrorList{
+			field.Invalid(templatePath.Child("metadata", "annotations").Key(v1.ComputeDomainContainersAnnotationKey), raw, err.Error()),
+		}
+	}
+	return nil
+}
+
+// ValidateTemplateInternalComputeDomainAnnotations rejects the controller-managed
+// compute-domain-prefix and compute-domain-name annotations on a user
+// PodTemplateSpec. The pod webhook derives ComputeDomain names from them, so a
+// user-set value could put all replicas into one ComputeDomain or reference one
+// that is never created. A value unchanged from oldTpl is allowed so objects
+// that already carry it remain updatable. Exported for DisaggregatedSet webhook
+// reuse.
+func ValidateTemplateInternalComputeDomainAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	if tpl == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	for _, key := range []string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey} {
+		val, exists := tpl.Annotations[key]
+		if !exists {
+			continue
+		}
+		if oldTpl != nil {
+			if oldVal, oldExists := oldTpl.Annotations[key]; oldExists && oldVal == val {
+				continue
+			}
+		}
+		allErrs = append(allErrs, field.Forbidden(
+			templatePath.Child("metadata", "annotations").Key(key),
+			"is managed by the LeaderWorkerSet controller and cannot be set",
+		))
+	}
+	return allErrs
+}
+
+// ValidateReservedComputeDomainClaim rejects user-defined pod.spec.resourceClaims
+// entries using the reserved LWS ComputeDomain channel claim name. Exported for
+// DisaggregatedSet webhook reuse.
+func ValidateReservedComputeDomainClaim(templatePath *field.Path, tpl *corev1.PodTemplateSpec) field.ErrorList {
+	if tpl == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	for i := range tpl.Spec.ResourceClaims {
+		if tpl.Spec.ResourceClaims[i].Name == computedomain.ChannelClaimName {
+			allErrs = append(allErrs, field.Forbidden(
+				templatePath.Child("spec", "resourceClaims").Index(i).Child("name"),
+				fmt.Sprintf("%q is reserved when auto-compute-domain is enabled", computedomain.ChannelClaimName),
+			))
+		}
 	}
 	return allErrs
 }
