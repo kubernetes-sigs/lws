@@ -547,7 +547,7 @@ func ValidateGroupIdentity(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) f
 // of the group key. The worker StatefulSet is named after that host name, and
 // its pods get a controller-revision-hash label that adds another "-" plus up to 10.
 func HashNameSuffixLen(spec *v1.LeaderWorkerSetSpec) int {
-	const hostnameSuffixLen, revisionLabelSuffixLen = 1 + hashDNSPrefixLength, 11
+	const hostnameSuffixLen, revisionLabelSuffixLen = 1 + HashDNSPrefixLength, 11
 	if spec.LeaderWorkerTemplate.Size != nil && *spec.LeaderWorkerTemplate.Size > 1 {
 		return hostnameSuffixLen + revisionLabelSuffixLen
 	}

@@ -167,5 +167,6 @@ The following table lists the configurable parameters of the LWS chart and their
 | `tolerations`                              | Tolerations                                    | `[]`                                                |
 | `affinity`                                 | Affinity                                       | `{}`                                                |
 | `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |
+| `disaggregatedSetExternalGroupIndexDigits` | Characters new External DisaggregatedSet roles reserve for the group index, from 1 to 10; controller default of 8 when empty | `nil` |
 | `featureGates`                             | Alpha LWS feature gates, e.g. `{WorkloadAwareScheduling: true}` | `{}`                               |
 | `leaderElection`                           | Manager lease timing (`leaseDuration`, `renewDeadline`, `retryPeriod`); controller defaults when empty | `{}` |

@@ -39,12 +39,17 @@ import (
 )
 
 // DisaggregatedSetWebhook handles validation for DisaggregatedSet resources.
-type DisaggregatedSetWebhook struct{}
+type DisaggregatedSetWebhook struct {
+	// ExternalGroupIndexDigits is how many characters a new External role reserves
+	// for the group index in generated names. Zero means webhooks.HashDNSPrefixLength,
+	// the room a hash group key takes, which leaves External and Hash roles one limit.
+	ExternalGroupIndexDigits int32
+}
 
 // SetupDisaggregatedSetWebhook registers the webhook with the manager.
-func SetupDisaggregatedSetWebhook(mgr ctrl.Manager) error {
+func SetupDisaggregatedSetWebhook(mgr ctrl.Manager, externalGroupIndexDigits int32) error {
 	return ctrl.NewWebhookManagedBy(mgr, &disaggv1.DisaggregatedSet{}).
-		WithValidator(&DisaggregatedSetWebhook{}).
+		WithValidator(&DisaggregatedSetWebhook{ExternalGroupIndexDigits: externalGroupIndexDigits}).
 		Complete()
 }
 
@@ -167,9 +172,53 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 				"name is used as a prefix for generated LeaderWorkerSets: "+strings.Join(errs, "; ")))
 		}
 	}
-	allErrs = append(allErrs, w.validateGeneratedNames(obj)...)
+	allErrs = append(allErrs, w.validateGeneratedNames(obj, oldRoles)...)
 
 	return warnings, allErrs
+}
+
+func isExternal(scaling *disaggv1.RoleScaling) bool {
+	return scaling != nil && scaling.Mode == disaggv1.RoleScalingExternal
+}
+
+// externalLeaves returns the role's External leaves: "" for an ordinary
+// role, or the names of its External sub-roles.
+func externalLeaves(role *disaggv1.DisaggregatedRoleSpec) map[string]bool {
+	leaves := map[string]bool{}
+	if role == nil {
+		return leaves
+	}
+	if len(role.SubRoles) == 0 {
+		if isExternal(role.Scaling) {
+			leaves[""] = true
+		}
+		return leaves
+	}
+	for _, child := range role.SubRoles {
+		if isExternal(child.Scaling) {
+			leaves[child.Name] = true
+		}
+	}
+	return leaves
+}
+
+// hasNewExternalLeaf reports whether the role has an External leaf that was
+// not External before, or that gains a group index in its names by leaving
+// groupIdentity Hash. Its replica count comes from a scaler, so admission cannot
+// bound it. Existing External leaves keep their earlier budget so unrelated
+// updates of stored DisaggregatedSets are not rejected.
+func hasNewExternalLeaf(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
+	old := externalLeaves(oldRole)
+	if oldRole != nil && oldRole.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash &&
+		role.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash {
+		old = nil
+	}
+	for leaf := range externalLeaves(role) {
+		if !old[leaf] {
+			return true
+		}
+	}
+	return false
 }
 
 // unchangedRoleTemplate preserves legacy templates during unrelated updates and
@@ -280,7 +329,10 @@ func validationReplicasForRole(role disaggv1.DisaggregatedRoleSpec) *int32 {
 // derived names. The generated name format is:
 //
 //	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
-func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet) field.ErrorList {
+//
+// A new External role or sub-role reserves room for a group index as long as a
+// hash group key, since its replicas are not known at admission.
+func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet, oldRoles map[string]*disaggv1.DisaggregatedRoleSpec) field.ErrorList {
 	var allErrs field.ErrorList
 	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
 	slices := int32(1)
@@ -305,6 +357,13 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 		if replicas := validationReplicasForRole(role); replicas != nil && *replicas > 0 {
 			groupIndexDigits = len(strconv.Itoa(int(*replicas - 1)))
 		}
+		newExternal := hasNewExternalLeaf(&role, oldRoles[role.Name])
+		if newExternal {
+			groupIndexDigits = webhooks.HashDNSPrefixLength
+			if w.ExternalGroupIndexDigits != 0 {
+				groupIndexDigits = int(w.ExternalGroupIndexDigits)
+			}
+		}
 
 		// The worker StatefulSet pods get a label "controller-revision-hash" with value:
 		// <lwsName>-<groupIndex>-<hash>
@@ -319,15 +378,15 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 
 		if maxNameLen > dns1035MaxLen {
 			combinedLimit := dns1035MaxLen - separators - sliceDigits - revisionLen - maxSuffixLen
-			allErrs = append(allErrs, field.Invalid(
-				rolesPath.Index(i).Child("name"),
-				role.Name,
-				fmt.Sprintf(
-					"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for StatefulSet revision hash labels); "+
-						"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
-					maxNameLen, dns1035MaxLen, combinedLimit,
-				),
-			))
+			msg := fmt.Sprintf(
+				"the generated names (%d chars) would exceed the DNS-1035 limit of %d characters (accounting for StatefulSet revision hash labels); "+
+					"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
+				maxNameLen, dns1035MaxLen, combinedLimit,
+			)
+			if newExternal {
+				msg += fmt.Sprintf("; scaling.mode External reserves %d characters for the group index (manager option disaggregatedSetExternalGroupIndexDigits)", groupIndexDigits)
+			}
+			allErrs = append(allErrs, field.Invalid(rolesPath.Index(i).Child("name"), role.Name, msg))
 		}
 	}
 	return allErrs

@@ -27,3 +27,6 @@ data:
     gangSchedulingManagement:
 {{ toYaml .Values.gangSchedulingManagement | indent 6 }}
     {{- end }}
+    {{- with .Values.disaggregatedSetExternalGroupIndexDigits }}
+    disaggregatedSetExternalGroupIndexDigits: {{ . }}
+    {{- end }}
