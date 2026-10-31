@@ -153,9 +153,10 @@ owns only that field. See [Integration with Argo CD](#integration-with-argo-cd).
   rollback. Reverting the template during a canary makes the old revision the
   target again, and a non-zero partition then holds canary groups. A rollback
   normally sets the partition to 0 in the same update.
-- The hold event is recorded whenever a rollout with a non-zero partition has
-  no step to take, even if another bound (for example readiness) is what
-  currently blocks it.
+- The hold is reported once every role has reached its partition target and
+  is Ready. While a rollout with a non-zero partition is still moving toward
+  that point, or is blocked by another bound (for example readiness), the
+  condition stays `RolloutInProgress`.
 - Scaling (`replicas` or an external scaler) during a hold uses the current
   desired count: the target may have `replicas - partition` groups.
 
@@ -226,13 +227,18 @@ strategy, leaving any LWS-level partition the controller manages unchanged.
 
 ### Observability
 
-- Event `RollingUpdatePartitioned` while the rollout waits on a partition.
+- One `RollingUpdatePartitioned` event each time the rollout reaches a hold
+  (when the condition below changes to `RolloutPartitioned`), not one per
+  reconcile while it lasts.
 - `status.roleStatuses[].updatedReplicas` reports the new revision's groups per
   role, which is what a driver waits on between steps.
 - The `Progressing` condition carries reason `RolloutPartitioned` (instead of
   `RolloutInProgress`) once every role has reached its partition target and is
-  Ready, so a held rollout is distinguishable from one still moving. Tools map
-  it to a paused state (see below).
+  Ready, so a held rollout is distinguishable from one still moving. Its
+  message lists each role's groups on the current revision, for example
+  `Rolling update held at the role partitions; groups on the current revision:
+  prefill 1/3, decode 1/3`. It is computed from `status.roleStatuses` and the
+  partitions (per slice), so it needs no state beyond the object.
 
 ### Integration with Argo CD
 
@@ -249,7 +255,7 @@ Two ways to drive a rollout:
 
 | Commit | Effect after sync |
 |---|---|
-| Change the template, set each role's `partition` to `replicas - 1` (same commit) | New revision with one group per role, held. Health: Suspended |
+| Change the template, set each role's `partition` to `replicas - 1` (same commit) | New revision with one group per role, held. Health: Healthy, "held at the role partitions" |
 | Lower the partitions | The rollout advances to the new targets and holds again |
 | Set the partitions to 0 | The rollout completes. Health: Healthy |
 | Rollback: revert the commits | Old template with partition 0; the controller rolls back to the old revision, reusing its LWS objects |
@@ -292,10 +298,8 @@ resource.customizations.health.disaggregatedset.x-k8s.io_DisaggregatedSet: |
   if obj.status ~= nil and obj.status.conditions ~= nil then
     for _, c in ipairs(obj.status.conditions) do
       if c.status == "True" and c.observedGeneration == obj.metadata.generation then
-        if c.type == "Available" then
+        if c.type == "Available" or (c.type == "Progressing" and c.reason == "RolloutPartitioned") then
           hs.status = "Healthy"
-        elseif c.type == "Progressing" and c.reason == "RolloutPartitioned" then
-          hs.status = "Suspended"
         elseif c.type == "Progressing" then
           hs.status = "Progressing"
         end
@@ -306,8 +310,12 @@ resource.customizations.health.disaggregatedset.x-k8s.io_DisaggregatedSet: |
   return hs
 ```
 
-Suspended is how Argo CD shows a paused Argo Rollouts canary, so a held
-DisaggregatedSet appears the same way in the UI.
+A held rollout is Healthy, with the hold in the message: it is the state the
+partitions ask for, and Argo CD's built-in StatefulSet check treats a
+partitioned rollout that reached its partition the same way. Reporting it as
+Progressing would keep a git-driven Application from settling between steps.
+When an Argo Rollouts Rollout drives the partitions, the Application shows
+Suspended at each pause through the Rollout itself.
 
 ### Test Plan
 
@@ -347,8 +355,10 @@ partitions to 0 before downgrading.
 
 ## Implementation History
 
-- 2026-10-30: KEP and implementation proposed. The `RolloutPartitioned`
-  condition reason is not yet implemented in the initial PR.
+- 2026-10-30: KEP and implementation proposed.
+- 2026-10-31: `RolloutPartitioned` condition reason implemented; the hold event
+  is recorded once per hold. Tested on GKE (B200) with a P/D workload under
+  load, driven by hand and by Argo CD with an Argo Rollouts Rollout.
 
 ## Drawbacks
 

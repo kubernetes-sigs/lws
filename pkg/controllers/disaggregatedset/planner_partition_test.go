@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -142,4 +143,64 @@ func TestPartitionAppliesToRollback(t *testing.T) {
 	settle(t, &state)
 	require.Equal(t, RoleReplicaState{0, 0}, state.ActiveOld.SpecReplicas)
 	require.Equal(t, desired, state.Target.SpecReplicas)
+}
+
+func TestPartitionHoldCondition(t *testing.T) {
+	partitioned := func(name string, partition int32) disaggregatedsetv1.DisaggregatedRoleSpec {
+		role := staticRole(name)
+		role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkersetv1.RollingUpdateConfiguration{Partition: ptr.To(partition)}
+		return role
+	}
+	status := func(name string, desired, replicas, ready, updated int32) disaggregatedsetv1.RoleStatus {
+		return disaggregatedsetv1.RoleStatus{Name: name, DesiredReplicas: ptr.To(desired), Replicas: replicas, ReadyReplicas: ready, UpdatedReplicas: updated}
+	}
+	for _, tc := range []struct {
+		name       string
+		slices     int32
+		partitions []int32 // per role: prefill, decode
+		statuses   []disaggregatedsetv1.RoleStatus
+		reason     string
+		message    string
+	}{
+		{"held at partition", 1, []int32{2, 2},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1), status("decode", 3, 3, 3, 1)},
+			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 1/3, decode 1/3"},
+		{"one role complete, one held", 1, []int32{0, 2},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 3), status("decode", 3, 3, 3, 1)},
+			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 3/3, decode 1/3"},
+		{"surging toward the partition", 1, []int32{2, 2},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 4, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
+		{"new group not ready", 1, []int32{2, 2},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 2, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
+		{"below the partition target", 1, []int32{1, 1},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
+		{"no partition", 1, []int32{0, 0},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
+		{"partition applies per slice", 2, []int32{2, 2},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 6, 6, 6, 2), status("decode", 6, 6, 6, 2)},
+			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 2/6, decode 2/6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newDSWithRoles("ds", partitioned("prefill", tc.partitions[0]), partitioned("decode", tc.partitions[1]))
+			ds.Spec.Slices = ptr.To(tc.slices)
+			condition := disaggregatedSetCondition(ds, tc.statuses, false, nil, true)
+			assert.Equal(t, string(disaggregatedsetv1.DisaggregatedSetProgressing), condition.Type)
+			assert.Equal(t, tc.reason, condition.Reason)
+			if tc.message != "" {
+				assert.Equal(t, tc.message, condition.Message)
+			}
+		})
+	}
+	t.Run("counts alone do not report a hold", func(t *testing.T) {
+		// A new LWS's status can briefly count an updated group before it counts it
+		// as a replica; only the executor knows the rollout has nothing to do.
+		ds := newDSWithRoles("ds", partitioned("prefill", 2))
+		condition := disaggregatedSetCondition(ds, []disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1)}, false, nil, false)
+		assert.Equal(t, "RolloutInProgress", condition.Reason)
+	})
+	t.Run("a complete rollout is Available, whatever the partition", func(t *testing.T) {
+		ds := newDSWithRoles("ds", partitioned("prefill", 3))
+		condition := disaggregatedSetCondition(ds, []disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 3)}, true, nil, true)
+		assert.Equal(t, string(disaggregatedsetv1.DisaggregatedSetAvailable), condition.Type)
+	})
 }
