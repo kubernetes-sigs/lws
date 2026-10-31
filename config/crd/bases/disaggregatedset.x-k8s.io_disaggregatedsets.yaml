@@ -19760,6 +19760,14 @@ spec:
                   description: RoleStatus defines the observed state of a single parent
                     role.
                   properties:
+                    availableReplicas:
+                      description: |-
+                        AvailableReplicas counts the Ready replicas that can serve requests: those
+                        in a revision of a slice in which every role that revision requires has
+                        at least one Ready replica. A Ready Prefill cannot serve without a Ready
+                        Decode of the same revision and slice. It never exceeds ReadyReplicas.
+                      format: int32
+                      type: integer
                     desiredReplicas:
                       description: |-
                         DesiredReplicas is the number of replicas the controller is driving this role
@@ -19768,6 +19776,16 @@ spec:
                         role reports the sum of its sub-role targets. It is unset while any of those
                         targets is unknown, for example before the scaler exists, so it is never
                         mistaken for a requested zero. The Available condition is judged against it.
+                      format: int32
+                      type: integer
+                    minAvailableReplicas:
+                      description: |-
+                        MinAvailableReplicas is the availability floor of this role, totalled
+                        across slices: in each slice, desiredReplicas minus its resolved
+                        maxUnavailable, and never below zero. A partitioned role reports the sum
+                        of its sub-role floors. It is unset while any of those targets is unknown.
+                        The MinimumReplicasAvailable condition is judged against it. During a
+                        Deferred rollout the controller may protect more Ready replicas than this.
                       format: int32
                       type: integer
                     name:
@@ -19793,12 +19811,27 @@ spec:
                         description: SubRoleStatus defines the observed state of a
                           sub-role within its parent.
                         properties:
+                          availableReplicas:
+                            description: |-
+                              AvailableReplicas counts the Ready groups that can serve requests: those
+                              in a revision of a slice in which every role that revision requires has
+                              at least one Ready group. It never exceeds ReadyReplicas.
+                            format: int32
+                            type: integer
                           desiredReplicas:
                             description: |-
                               DesiredReplicas is the number of replica groups the controller is driving
                               this sub-role toward, totalled across slices: its replicas, or the target of
                               its DisaggregatedSetRoleScaler when its scaling mode is External. It is unset
                               while that target is unknown.
+                            format: int32
+                            type: integer
+                          minAvailableReplicas:
+                            description: |-
+                              MinAvailableReplicas is the availability floor of this sub-role, totalled
+                              across slices: in each slice, desiredReplicas minus its resolved
+                              maxUnavailable, and never below zero. It is unset while desiredReplicas is
+                              unknown. The MinimumReplicasAvailable condition is judged against it.
                             format: int32
                             type: integer
                           name:

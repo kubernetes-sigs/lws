@@ -368,6 +368,11 @@ func (in *RoleStatus) DeepCopyInto(out *RoleStatus) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MinAvailableReplicas != nil {
+		in, out := &in.MinAvailableReplicas, &out.MinAvailableReplicas
+		*out = new(int32)
+		**out = **in
+	}
 	if in.SubRoleStatuses != nil {
 		in, out := &in.SubRoleStatuses, &out.SubRoleStatuses
 		*out = make([]SubRoleStatus, len(*in))
@@ -392,6 +397,11 @@ func (in *SubRoleStatus) DeepCopyInto(out *SubRoleStatus) {
 	*out = *in
 	if in.DesiredReplicas != nil {
 		in, out := &in.DesiredReplicas, &out.DesiredReplicas
+		*out = new(int32)
+		**out = **in
+	}
+	if in.MinAvailableReplicas != nil {
+		in, out := &in.MinAvailableReplicas, &out.MinAvailableReplicas
 		*out = new(int32)
 		**out = **in
 	}
