@@ -222,21 +222,25 @@ workerTemplate:
   changes the workload revision, so it triggers a rolling update of all groups.
   Unset and `"disabled"` produce the same revision, so upgrading LWS does not
   restart existing workloads.
-- **Ownership and cleanup**: Each replica `ComputeDomain` is owned by its
-  `LeaderWorkerSet`, which deletes an obsolete replica `ComputeDomain` only once
-  its leader Pod is gone and no Pod references its `ResourceClaimTemplate`
-  (group restart, rolling update, or scale-down). Each slice `ComputeDomain` is
-  owned by the `DisaggregatedSet`, which deletes it only once no child
-  `LeaderWorkerSet` remains for its `(slice, revision)` and no Pod references
-  its `ResourceClaimTemplate`. Deferring deletion until all referencing Pods
-  exit keeps the NVIDIA IMEX `DaemonSet` alive while Pods drain.
+- **Ownership and cleanup**: The NVIDIA `ComputeDomain` controller tears down
+  the IMEX `DaemonSet` as soon as a `ComputeDomain` is marked for deletion, so
+  LWS never deletes one while a Pod references its `ResourceClaimTemplate`.
+  Managed `ComputeDomain`s therefore carry no owner reference, which would let
+  garbage collection delete them while Pods drain. The managing workload's UID
+  is recorded in the `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid`
+  label instead. The `LeaderWorkerSet` deletes an obsolete replica
+  `ComputeDomain` once its leader Pod is gone and no Pod references it (group
+  restart, rolling update, or scale-down). The `DisaggregatedSet` deletes a
+  slice `ComputeDomain` once no child `LeaderWorkerSet` remains for its
+  `(slice, revision)` and no Pod references it. When the `LeaderWorkerSet` or
+  `DisaggregatedSet` itself is deleted, LWS deletes its `ComputeDomain`s once
+  their last Pod exits.
 - **Protection finalizer**: Each managed `ComputeDomain` carries the
-  `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. When the
-  owning `LeaderWorkerSet` or `DisaggregatedSet` is deleted (cascading garbage
-  collection) or a `ComputeDomain` is deleted directly, LWS removes the
-  finalizer only once no Pod references its `ResourceClaimTemplate`.
+  `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. When a
+  `ComputeDomain` is deleted directly, LWS removes the finalizer only once no
+  Pod references its `ResourceClaimTemplate`.
 - **Name collisions**: If a `ComputeDomain` with the generated name exists and
-  is controlled by another object, LWS does not adopt it. It emits an
+  is not managed by the same workload, LWS does not adopt it. It emits an
   `UnexpectedComputeDomainOwner` Warning event and keeps the leader gated or the
   slice unscaled.
 - **Reserved names**: The `lws-compute-domain-channel` claim name and the
@@ -250,8 +254,9 @@ workerTemplate:
 ### Disabling the Feature Gate
 
 With the gate disabled, LWS stops creating `ComputeDomain`s and injecting
-claims, and it no longer releases the protection finalizer. Pod templates do
-not change when the gate is toggled, so running groups are not restarted.
+claims, and it no longer deletes `ComputeDomain`s or releases the protection
+finalizer. Pod templates do not change when the gate is toggled, so running
+groups are not restarted.
 
 - New Pods of opted-in `LeaderWorkerSet`s start without a `ComputeDomain` claim.
 - A `DisaggregatedSet` enrolled in slice `ComputeDomain`s does not create new
@@ -261,7 +266,9 @@ not change when the gate is toggled, so running groups are not restarted.
   annotation is removed.
 
 Before disabling the gate, remove the `auto-compute-domain` annotations and wait
-for the managed `ComputeDomain`s to be deleted. A `ComputeDomain` that is deleted
-while the gate is disabled stays in `Terminating` until the
-`leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer is removed by
-re-enabling the gate or by hand, after its Pods are gone.
+for the managed `ComputeDomain`s to be deleted. Because managed `ComputeDomain`s
+have no owner reference, those of a workload deleted while the gate is disabled
+are not garbage collected; delete them by hand after their Pods are gone. A
+`ComputeDomain` that is deleted while the gate is disabled stays in
+`Terminating` until the `leaderworkerset.sigs.k8s.io/compute-domain-protection`
+finalizer is removed by re-enabling the gate or by hand, after its Pods are gone.

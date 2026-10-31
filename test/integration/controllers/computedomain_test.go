@@ -88,15 +88,6 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		return pod
 	}
 
-	// envtest runs no garbage collector. Delete a ComputeDomain the way garbage
-	// collection does once its owner is gone, and let the protection finalizer
-	// hold it.
-	gcDeleteComputeDomain := func(name string) {
-		var cd computedomain.ComputeDomain
-		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: name}, &cd)).To(gomega.Succeed())
-		gomega.Expect(k8sClient.Delete(ctx, &cd)).To(gomega.Succeed())
-	}
-
 	ginkgo.BeforeEach(func() {
 		features.SetFeatureGateDuringTest(ginkgo.GinkgoTB(), features.AutoComputeDomain, true)
 		pw = webhooks.NewPodWebhook(nil)
@@ -153,8 +144,9 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName1}, &cd1)).To(gomega.Succeed())
 			g.Expect(controllerutil.ContainsFinalizer(&cd0, leaderworkerset.ComputeDomainProtectionFinalizer)).To(gomega.BeTrue())
 			g.Expect(cd0.Spec.Channel.ResourceClaimTemplate.Name).To(gomega.Equal(cdName0))
-			g.Expect(metav1.IsControlledBy(&cd0, lws)).To(gomega.BeTrue())
-			g.Expect(metav1.IsControlledBy(&cd1, lws)).To(gomega.BeTrue())
+			g.Expect(cd0.Labels[computedomain.OwnerUIDLabelKey]).To(gomega.Equal(string(lws.UID)))
+			g.Expect(cd1.Labels[computedomain.OwnerUIDLabelKey]).To(gomega.Equal(string(lws.UID)))
+			g.Expect(cd0.OwnerReferences).To(gomega.BeEmpty())
 
 			var refreshedLeader0 corev1.Pod
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader0), &refreshedLeader0)).To(gomega.Succeed())
@@ -240,7 +232,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	})
 
-	ginkgo.It("owns Hash groupIdentity ComputeDomains by the LeaderWorkerSet and releases the finalizer on cascade delete after Pods exit", func() {
+	ginkgo.It("keeps Hash groupIdentity ComputeDomains live after the LeaderWorkerSet is deleted until its Pods exit", func() {
 		lws = wrappers.BuildLeaderWorkerSet(ns.Name).
 			Name("hash-model").
 			Replica(1).
@@ -282,7 +274,7 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		gomega.Eventually(func(g gomega.Gomega) {
 			var cd computedomain.ComputeDomain
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName}, &cd)).To(gomega.Succeed())
-			g.Expect(metav1.IsControlledBy(&cd, lws)).To(gomega.BeTrue())
+			g.Expect(cd.Labels[computedomain.OwnerUIDLabelKey]).To(gomega.Equal(string(lws.UID)))
 			var workerSts appsv1.StatefulSet
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: leader.Spec.Hostname}, &workerSts)).To(gomega.Succeed())
 			g.Expect(workerSts.Spec.Template.Annotations[leaderworkerset.ComputeDomainNameAnnotationKey]).To(gomega.Equal(cdName))
@@ -291,16 +283,21 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 		// Delete parent LWS and request leader pod deletion while leader pod is held by finalizer.
 		gomega.Expect(k8sClient.Delete(ctx, lws)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Delete(ctx, leader)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			var deleted leaderworkerset.LeaderWorkerSet
+			return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &deleted))
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 
-		// Garbage collection deletes the ComputeDomain while the terminating leader
-		// still references it, and the finalizer holds it.
-		gcDeleteComputeDomain(cdName)
+		// The ComputeDomain has no owner reference, so deleting the LWS does not
+		// mark it terminating (which would tear down the IMEX DaemonSet) while
+		// the terminating leader still references it.
 		gomega.Consistently(func(g gomega.Gomega) {
 			var cd computedomain.ComputeDomain
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdName}, &cd)).To(gomega.Succeed())
+			g.Expect(cd.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
 		}, "2s", testing.Interval).Should(gomega.Succeed())
 
-		// Remove the pod finalizer: the reconciler releases the protection finalizer.
+		// Remove the pod finalizer: the reconciler deletes the ComputeDomain.
 		gomega.Eventually(func(g gomega.Gomega) {
 			var p corev1.Pod
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &p)).To(gomega.Succeed())
@@ -455,5 +452,36 @@ var _ = ginkgo.Describe("AutoComputeDomain controller lifecycle", func() {
 			g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdSlice1Name}, &cd1))).To(gomega.BeTrue())
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdSlice0Name}, &cd0)).To(gomega.Succeed())
 		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		// Deleting the DisaggregatedSet keeps cdSlice0Name live while a slice 0
+		// pod still references it, and deletes it once that pod exits.
+		slice0Pod := slice1Pod.DeepCopy()
+		slice0Pod.ObjectMeta = metav1.ObjectMeta{
+			Name:      "serving-slice0-draining-pod",
+			Namespace: ns.Name,
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: ds.Name,
+				disaggregatedsetv1.SliceLabelKey:   "0",
+			},
+		}
+		slice0Pod.Spec.ResourceClaims[0].ResourceClaimTemplateName = ptr.To(cdSlice0Name)
+		gomega.Expect(k8sClient.Create(ctx, slice0Pod)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, ds)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			var deleted disaggregatedsetv1.DisaggregatedSet
+			return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(ds), &deleted))
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+
+		gomega.Consistently(func(g gomega.Gomega) {
+			var cd0 computedomain.ComputeDomain
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdSlice0Name}, &cd0)).To(gomega.Succeed())
+			g.Expect(cd0.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
+		}, "2s", testing.Interval).Should(gomega.Succeed())
+
+		gomega.Expect(k8sClient.Delete(ctx, slice0Pod)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			var cd0 computedomain.ComputeDomain
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cdSlice0Name}, &cd0))
+		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 	})
 })
