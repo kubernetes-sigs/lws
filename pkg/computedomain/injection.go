@@ -53,6 +53,24 @@ func IsDisaggregatedSetSliceAutoComputeDomainEnabled(ds *disaggregatedsetv1.Disa
 	return ds != nil && ds.Annotations[disaggregatedsetv1.AutoComputeDomainAnnotationKey] == leaderworkersetv1.AutoComputeDomainEnabled
 }
 
+// DisaggregatedSetUsesAutoComputeDomain reports whether ds enables slice-scoped
+// ComputeDomain management or any role enables replica-scoped ComputeDomain
+// management.
+func DisaggregatedSetUsesAutoComputeDomain(ds *disaggregatedsetv1.DisaggregatedSet) bool {
+	if IsDisaggregatedSetSliceAutoComputeDomainEnabled(ds) {
+		return true
+	}
+	if ds == nil {
+		return false
+	}
+	for i := range ds.Spec.Roles {
+		if ds.Spec.Roles[i].Annotations[leaderworkersetv1.AutoComputeDomainAnnotationKey] == leaderworkersetv1.AutoComputeDomainEnabled {
+			return true
+		}
+	}
+	return false
+}
+
 // RoleUsesSliceComputeDomain reports whether role participates in ds's shared
 // (slice, revision) ComputeDomain.
 func RoleUsesSliceComputeDomain(ds *disaggregatedsetv1.DisaggregatedSet, role *disaggregatedsetv1.DisaggregatedRoleSpec) bool {

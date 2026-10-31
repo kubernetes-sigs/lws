@@ -136,9 +136,8 @@ metadata:
 spec:
   slices: 2
   placementPolicy:
-    sliceTopology:
-      topologyKey: nvidia.com/gpu.clique
-      policy: ExclusiveSlice
+    type: ExclusiveSlice
+    topology: nvidia.com/gpu.clique
   roles:
     - name: prefill
       spec:
@@ -224,16 +223,18 @@ workerTemplate:
   Unset and `"disabled"` produce the same revision, so upgrading LWS does not
   restart existing workloads.
 - **Ownership and cleanup**: Each replica `ComputeDomain` is owned by its
-  leader Pod, so Kubernetes garbage collection deletes it once that leader Pod
-  is gone (group restart, rolling update, scale-down, or `LeaderWorkerSet`
-  deletion). Each slice `ComputeDomain` is owned by the `DisaggregatedSet`,
-  which deletes it once no child `LeaderWorkerSet` remains for its
-  `(slice, revision)`.
+  `LeaderWorkerSet`, which deletes an obsolete replica `ComputeDomain` only once
+  its leader Pod is gone and no Pod references its `ResourceClaimTemplate`
+  (group restart, rolling update, or scale-down). Each slice `ComputeDomain` is
+  owned by the `DisaggregatedSet`, which deletes it only once no child
+  `LeaderWorkerSet` remains for its `(slice, revision)` and no Pod references
+  its `ResourceClaimTemplate`. Deferring deletion until all referencing Pods
+  exit keeps the NVIDIA IMEX `DaemonSet` alive while Pods drain.
 - **Protection finalizer**: Each managed `ComputeDomain` carries the
-  `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. LWS removes
-  it from a deleted `ComputeDomain` only once no Pod references the
-  `ComputeDomain`'s `ResourceClaimTemplate`, so worker Pods that are still
-  terminating keep their IMEX domain.
+  `leaderworkerset.sigs.k8s.io/compute-domain-protection` finalizer. When the
+  owning `LeaderWorkerSet` or `DisaggregatedSet` is deleted (cascading garbage
+  collection) or a `ComputeDomain` is deleted directly, LWS removes the
+  finalizer only once no Pod references its `ResourceClaimTemplate`.
 - **Name collisions**: If a `ComputeDomain` with the generated name exists and
   is controlled by another object, LWS does not adopt it. It emits an
   `UnexpectedComputeDomainOwner` Warning event and keeps the leader gated or the
