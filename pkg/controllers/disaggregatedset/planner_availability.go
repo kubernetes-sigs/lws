@@ -146,7 +146,7 @@ func minimumSpecToPreserveReady(spec, ready, required int) int {
 func furthestOldTargets(snapshot rolloutSnapshot) RoleReplicaState {
 	old := snapshot.ActiveOld
 	budget := snapshot.oldDrain()
-	targets := budget.minimumTargets()
+	targets := boundOldTargetsByPartition(snapshot, budget.minimumTargets())
 	targets = boundDrainingSnapshotTargets(snapshot, targets)
 	if !snapshot.allowsRevisionOutage(old.RevisionState) {
 		targets = boundOldTargetsByRevisionCompleteness(old.SpecReplicas, targets, old.RequiredRoles)
@@ -156,6 +156,15 @@ func furthestOldTargets(snapshot rolloutSnapshot) RoleReplicaState {
 		return slicesClone(old.SpecReplicas)
 	}
 	return targets
+}
+
+// A partition keeps its held old groups whatever the drain budget allows.
+func boundOldTargetsByPartition(snapshot rolloutSnapshot, proposed RoleReplicaState) RoleReplicaState {
+	bounded := slicesClone(proposed)
+	for i := range bounded {
+		bounded[i] = max(bounded[i], snapshot.partitionedOldFloor(i))
+	}
+	return bounded
 }
 
 // Surviving required roles retire together. An already absent role cannot be

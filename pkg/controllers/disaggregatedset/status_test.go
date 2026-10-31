@@ -57,7 +57,7 @@ func TestStatusWriteCacheLifecycle(t *testing.T) {
 	r.staleStatusVersions = utilcache.NewLRUExpireCacheWithClock(maxStaleStatusVersions, clock)
 	desired := map[string]int{"prefill": 1}
 	publish := func() error {
-		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil)
+		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil, false)
 	}
 	require.NoError(t, publish())
 	desired["prefill"] = 2

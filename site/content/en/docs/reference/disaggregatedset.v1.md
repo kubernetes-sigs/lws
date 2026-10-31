@@ -60,8 +60,7 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 
 <p>DisaggregatedRoleSpec defines the configuration for a disaggregated role.
 This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
-to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
-RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
+to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate).</p>
 
 
 <table class="table">
@@ -98,9 +97,11 @@ auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.</p>
 </td>
 <td>(Members of <code>LeaderWorkerSetTemplateSpec</code> are embedded into this type.)
    <p>LeaderWorkerSetTemplateSpec defines the LWS template for this role.
-Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
-Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
-DisaggregatedSet handles rollouts across roles.</p>
+Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty).
+DisaggregatedSet handles rollouts across roles: it does not propagate
+Spec.RolloutStrategy.RollingUpdateConfiguration.Partition to the LWS, but
+keeps up to that many of the role's groups on older revisions until it is
+lowered. Partition is not supported with SubRoles.</p>
 </td>
 </tr>
 </tbody>

@@ -41,6 +41,45 @@ rolloutStrategy:
 
 The minimum Ready count is `desired - maxUnavailable`; the maximum requested count is `desired + maxSurge`. Both count across old and new revisions of the role. Terminating Pods can take time to disappear.
 
+## Hold a rollout with a partition
+
+A role's `partition` stops its rollout part of the way through, so a few groups of the new revision can serve real traffic before the rest follow. A role with `partition: p` keeps `p` groups on older revisions: the rollout advances until the role has `replicas - p` new groups, all Ready, and then waits. Lowering the partition advances it; `0` completes it.
+
+For example, to put one new group of each role into service and check it:
+
+```yaml
+roles:
+- name: prefill
+  spec:
+    replicas: 3
+    rolloutStrategy:
+      rollingUpdateConfiguration:
+        maxSurge: 1
+        maxUnavailable: 0
+        partition: 2
+    # ...
+- name: decode
+  spec:
+    replicas: 3
+    rolloutStrategy:
+      rollingUpdateConfiguration:
+        maxSurge: 1
+        maxUnavailable: 0
+        partition: 2
+    # ...
+```
+
+Change the template with the partitions at 2; the rollout stops at one new prefill group and one new decode group. Then set the partitions to 1, and to 0 to finish.
+
+- The partition counts groups **per slice**, and it holds the rollout only: with no template change it does nothing, and the budgets and the fractional window still apply while the rollout advances.
+- While held, the `Progressing` condition has reason `RolloutPartitioned`, its message lists each role's groups on the current revision, and one `RollingUpdatePartitioned` event is recorded for each hold. `status.roleStatuses[].updatedReplicas` is the number of new groups per role.
+- A partition equal to `replicas` holds a template change at zero new groups. A driver such as a progressive-delivery controller can keep it there between releases and lower it step by step.
+- `partition` is not supported on a role with `subRoles`.
+
+### Roll back under a partition
+
+The partition holds a rollback the same way. Reverting the template makes the earlier revision the target again, and the groups of the revision you reverted from become old groups that the partition keeps: with `partition: 2` and one new group out, that group stays until the partition is lowered. **To roll back at once, revert the template and set every partition to 0 in the same update.** To roll back step by step, revert the template and lower the partitions as you would for a rollout.
+
 ## What is the fractional window?
 
 The window limits how far one role can get ahead of the others. Its width is **`1 / smallest non-zero role count`**, calculated automatically.

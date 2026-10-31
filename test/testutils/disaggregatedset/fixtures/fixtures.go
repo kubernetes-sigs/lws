@@ -31,7 +31,7 @@ type Role struct {
 	Image          string
 	MaxSurge       intstr.IntOrString
 	MaxUnavailable intstr.IntOrString
-	Partition      *int // nil = not set, 0 = valid, >0 = invalid (rejected by webhook)
+	Partition      *int // nil = not set; groups held on older revisions during a rollout
 	HasRollout     bool
 	External       bool              // if true, emit scaling.mode: External (controller auto-creates a scaler)
 	Labels         map[string]string // workerTemplate labels (propagate to pods)
