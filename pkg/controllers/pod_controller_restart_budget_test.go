@@ -91,6 +91,7 @@ func TestHandleRestartPolicyChargesBudgetOncePerGroupFailure(t *testing.T) {
 			worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 3)
 			worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
 			worker.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			worker.Status.Phase = corev1.PodRunning
 			worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
 			cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
 			r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
@@ -124,6 +125,7 @@ func TestHandleRestartPolicyRetriesDeletionAfterPersistingCharge(t *testing.T) {
 	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
 	leader.CreationTimestamp = metav1.NewTime(time.Now().Add(-90 * time.Second))
 	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+	leader.Status.Phase = corev1.PodRunning
 	leader.Finalizers = []string{"test.lws/retain"}
 	deleteErr := errors.New("temporary delete failure")
 	deleteCalls := 0
@@ -167,6 +169,7 @@ func TestHandleRestartPolicyDeletesOnlyObservedLeader(t *testing.T) {
 			cached.UID = "failed-leader"
 			cached.Labels[leaderworkerset.RevisionKey] = "revision-a"
 			cached.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			cached.Status.Phase = corev1.PodRunning
 			live := cached.DeepCopy()
 			objects := []client.Object{lws}
 			if state == "deleting" {
