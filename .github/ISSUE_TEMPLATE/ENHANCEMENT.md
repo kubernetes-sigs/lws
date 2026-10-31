@@ -1,7 +1,7 @@
 ---
-name: Enhancement Request
+name: ✨ Enhancement Request
 about: Suggest an enhancement to the LWS project
-title: ''
+title: "✨ "
 labels: kind/feature
 assignees: ''
 
