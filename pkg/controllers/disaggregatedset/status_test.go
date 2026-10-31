@@ -585,6 +585,17 @@ func TestServingCapacityRequiresEveryRoleOfARevision(t *testing.T) {
 	}
 }
 
+// TestAvailableReplicasNeverExceedReadyReplicas covers recorded child groups that
+// briefly count more Ready replicas than the workload's own status reports.
+func TestAvailableReplicasNeverExceedReadyReplicas(t *testing.T) {
+	ds := newDSWithRoles("ds", staticRole("prefill"))
+	capacity := servingCapacity{}
+	capacity.observeWorkload(servingLWS(ds, "prefill", "0", "current", 2, 2), "prefill")
+	statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill", ReadyReplicas: 1}}
+	capacity.setAvailableReplicas(statuses)
+	assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
+}
+
 // TestServingCapacityRequiresTargets checks that the current revision requires
 // every role with a positive target in each slice, even with no workload for it.
 func TestServingCapacityRequiresTargets(t *testing.T) {
