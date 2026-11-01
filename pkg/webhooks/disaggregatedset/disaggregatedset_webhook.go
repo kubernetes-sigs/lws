@@ -39,17 +39,12 @@ import (
 )
 
 // DisaggregatedSetWebhook handles validation for DisaggregatedSet resources.
-type DisaggregatedSetWebhook struct {
-	// ExternalGroupIndexDigits is how many characters a new External role reserves
-	// for the group index in generated names. Zero means webhooks.HashDNSPrefixLength,
-	// the room a hash group key takes, which leaves External and Hash roles one limit.
-	ExternalGroupIndexDigits int32
-}
+type DisaggregatedSetWebhook struct{}
 
 // SetupDisaggregatedSetWebhook registers the webhook with the manager.
-func SetupDisaggregatedSetWebhook(mgr ctrl.Manager, externalGroupIndexDigits int32) error {
+func SetupDisaggregatedSetWebhook(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &disaggv1.DisaggregatedSet{}).
-		WithValidator(&DisaggregatedSetWebhook{ExternalGroupIndexDigits: externalGroupIndexDigits}).
+		WithValidator(&DisaggregatedSetWebhook{}).
 		Complete()
 }
 
@@ -357,12 +352,10 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 		if replicas := validationReplicasForRole(role); replicas != nil && *replicas > 0 {
 			groupIndexDigits = len(strconv.Itoa(int(*replicas - 1)))
 		}
-		newExternal := hasNewExternalLeaf(&role, oldRoles[role.Name])
+		newExternal := role.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash &&
+			hasNewExternalLeaf(&role, oldRoles[role.Name])
 		if newExternal {
-			groupIndexDigits = webhooks.HashDNSPrefixLength
-			if w.ExternalGroupIndexDigits != 0 {
-				groupIndexDigits = int(w.ExternalGroupIndexDigits)
-			}
+			groupIndexDigits = max(groupIndexDigits, webhooks.HashDNSPrefixLength)
 		}
 
 		// The worker StatefulSet pods get a label "controller-revision-hash" with value:
@@ -384,7 +377,7 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 				maxNameLen, dns1035MaxLen, combinedLimit,
 			)
 			if newExternal {
-				msg += fmt.Sprintf("; scaling.mode External reserves %d characters for the group index (manager option disaggregatedSetExternalGroupIndexDigits)", groupIndexDigits)
+				msg += fmt.Sprintf("; scaling.mode External reserves %d characters for the group index", groupIndexDigits)
 			}
 			allErrs = append(allErrs, field.Invalid(rolesPath.Index(i).Child("name"), role.Name, msg))
 		}

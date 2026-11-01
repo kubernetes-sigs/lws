@@ -131,30 +131,6 @@ func TestValidate(t *testing.T) {
 				FeatureGates: map[string]bool{"WorkloadAwareScheduling": true},
 			},
 		},
-		"disaggregatedSetExternalGroupIndexDigits below the minimum": {
-			cfg: &configapi.Configuration{DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](0)},
-			wantErr: field.ErrorList{
-				&field.Error{
-					Type:  field.ErrorTypeInvalid,
-					Field: "disaggregatedSetExternalGroupIndexDigits",
-				},
-			},
-		},
-		"disaggregatedSetExternalGroupIndexDigits at the minimum": {
-			cfg: &configapi.Configuration{DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](1)},
-		},
-		"disaggregatedSetExternalGroupIndexDigits at the maximum": {
-			cfg: &configapi.Configuration{DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](10)},
-		},
-		"disaggregatedSetExternalGroupIndexDigits above the maximum": {
-			cfg: &configapi.Configuration{DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](11)},
-			wantErr: field.ErrorList{
-				&field.Error{
-					Type:  field.ErrorTypeInvalid,
-					Field: "disaggregatedSetExternalGroupIndexDigits",
-				},
-			},
-		},
 	}
 
 	for name, tc := range testCases {

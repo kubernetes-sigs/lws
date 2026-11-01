@@ -142,7 +142,7 @@ var _ = BeforeSuite(func() {
 	err = webhooks.SetupLeaderWorkerSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = disaggregatedsetwebhook.SetupDisaggregatedSetWebhook(mgr, 0)
+	err = disaggregatedsetwebhook.SetupDisaggregatedSetWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	pw = webhooks.NewPodWebhook(nil)

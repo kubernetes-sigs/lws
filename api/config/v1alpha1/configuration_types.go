@@ -45,14 +45,6 @@ type Configuration struct {
 
 	// ClientConnection is configuration of the client while connecting to API Server
 	ClientConnection *ClientConnection `json:"clientConnection,omitempty"`
-
-	// DisaggregatedSetExternalGroupIndexDigits is how many characters admission
-	// reserves for the group index in the generated names of a new External
-	// DisaggregatedSet role, whose group count comes from a scaler. Lower values
-	// allow longer names but fewer groups before new Pods cannot be created.
-	// Must be between 1 and 10. Defaults to 8.
-	// +optional
-	DisaggregatedSetExternalGroupIndexDigits *int32 `json:"disaggregatedSetExternalGroupIndexDigits,omitempty"`
 }
 
 type ControllerManager struct {

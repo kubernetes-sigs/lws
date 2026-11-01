@@ -62,28 +62,42 @@ func TestValidateCreateExternalGeneratedNames(t *testing.T) {
 	hash := externalPrefill()
 	hash.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 	hash.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+	// The static count needs 10 digits, more than an External sub-role reserves.
+	largeStatic := func() disaggv1.DisaggregatedRoleSpec {
+		return partitionedPrefill(
+			disaggv1.DisaggregatedSubRoleSpec{Name: "a", Replicas: ptr.To[int32](1_000_000_000)},
+			disaggv1.DisaggregatedSubRoleSpec{Name: "b", Scaling: externalScaling},
+		)
+	}
+	const reserves8 = "scaling.mode External reserves 8 characters for the group index"
 	for _, tc := range []struct {
 		name      string
 		nameLen   int
 		role      disaggv1.DisaggregatedRoleSpec
 		wantError bool
+		// wantReason is the budget the error explains; empty means it names no budget.
+		wantReason string
 	}{
 		{name: "External at the limit", nameLen: 24, role: externalPrefill()},
-		{name: "External over the limit", nameLen: 25, role: externalPrefill(), wantError: true},
-		{name: "External accepted before for one group", nameLen: 31, role: externalPrefill(), wantError: true},
+		{name: "External over the limit", nameLen: 25, role: externalPrefill(), wantError: true, wantReason: reserves8},
+		{name: "External accepted before for one group", nameLen: 31, role: externalPrefill(), wantError: true, wantReason: reserves8},
 		{name: "Static keeps its replica-sized budget", nameLen: 31, role: staticPrefill()},
 		{name: "External sub-role over the limit", nameLen: 25, role: partitionedPrefill(
 			disaggv1.DisaggregatedSubRoleSpec{Name: "a"},
 			disaggv1.DisaggregatedSubRoleSpec{Name: "b", Scaling: externalScaling},
-		), wantError: true},
+		), wantError: true, wantReason: reserves8},
 		{name: "External sub-role at the limit", nameLen: 24, role: partitionedPrefill(
 			disaggv1.DisaggregatedSubRoleSpec{Name: "b", Scaling: externalScaling},
 		)},
 		{name: "Static sub-roles keep their replica-sized budget", nameLen: 31, role: partitionedPrefill(
 			disaggv1.DisaggregatedSubRoleSpec{Name: "a"},
 		)},
+		// Admission also rejects this count, so there is no accepted case at the limit.
+		{name: "Static sub-roles above the reserved digits over the limit", nameLen: 23, role: largeStatic(), wantError: true,
+			wantReason: "scaling.mode External reserves 10 characters for the group index"},
 		// Hash names do not contain a group index.
 		{name: "External with groupIdentity Hash", nameLen: 24, role: hash},
+		{name: "External with groupIdentity Hash over the limit", nameLen: 25, role: hash, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), generatedNamesDS(tc.nameLen, tc.role))
@@ -93,33 +107,11 @@ func TestValidateCreateExternalGeneratedNames(t *testing.T) {
 			}
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "would exceed the DNS-1035 limit")
-			require.Contains(t, err.Error(), "scaling.mode External reserves 8 characters for the group index")
-		})
-	}
-}
-
-// The manager option changes the reserved digits: the DS name can have at most
-// 63 - 19 - 1 - digits - 11 characters, and the error names the option.
-func TestValidateCreateExternalGroupIndexDigitsOption(t *testing.T) {
-	for _, tc := range []struct {
-		digits, maxNameLen int32
-		wantInError        string
-	}{
-		{digits: 1, maxNameLen: 31, wantInError: "reserves 1 characters"},
-		{digits: 6, maxNameLen: 26, wantInError: "reserves 6 characters"},
-		{digits: 10, maxNameLen: 22, wantInError: "reserves 10 characters"},
-		// Zero is what the manager passes when the option is not set.
-		{digits: 0, maxNameLen: 24, wantInError: "reserves 8 characters"},
-	} {
-		t.Run(tc.wantInError, func(t *testing.T) {
-			hook := &DisaggregatedSetWebhook{ExternalGroupIndexDigits: tc.digits}
-			_, err := hook.ValidateCreate(t.Context(), generatedNamesDS(int(tc.maxNameLen), externalPrefill()))
-			require.NoError(t, err)
-
-			_, err = hook.ValidateCreate(t.Context(), generatedNamesDS(int(tc.maxNameLen)+1, externalPrefill()))
-			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.wantInError)
-			require.Contains(t, err.Error(), "disaggregatedSetExternalGroupIndexDigits")
+			if tc.wantReason == "" {
+				require.NotContains(t, err.Error(), "scaling.mode External reserves")
+				return
+			}
+			require.Contains(t, err.Error(), tc.wantReason)
 		})
 	}
 }

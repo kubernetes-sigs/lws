@@ -79,7 +79,6 @@ func newFullV1alpha1Config() *Configuration {
 			QPS:   ptr.To[float32](100),
 			Burst: ptr.To[int32](200),
 		},
-		DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](6),
 	}
 }
 
@@ -132,7 +131,6 @@ func newFullV1Config() *configv1.Configuration {
 			QPS:   ptr.To[float32](100),
 			Burst: ptr.To[int32](200),
 		},
-		DisaggregatedSetExternalGroupIndexDigits: ptr.To[int32](6),
 	}
 }
 
