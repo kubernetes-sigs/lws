@@ -1,0 +1,33 @@
+title: Automatic ComputeDomain Lifecycle Management for MNNVL
+kep-number: 1259
+authors:
+  - "ahg-g"
+status: provisional
+creation-date: 2026-10-30
+reviewers:
+  - edwinhr716
+  - kerthcet
+  - yankay
+approvers:
+  - edwinhr716
+  - kerthcet
+
+see-also:
+  - "/keps/666-gang-scheduling-in-lws"
+  - "/keps/766-DisaggregatedSet"
+  - "/keps/846-disaggregatedset-slices"
+  - "/keps/848-disaggregatedset-placement-policy"
+  - "/keps/898-group-identity"
+  - "/keps/1064-lws-placement-policy"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
+
+latest-milestone: "v0.12"
+
+milestone:
+  alpha: "v0.12"
+
+feature-gates:
+  - name: AutoComputeDomain
+disable-supported: true
