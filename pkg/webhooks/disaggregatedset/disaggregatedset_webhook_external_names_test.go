@@ -116,6 +116,52 @@ func TestValidateCreateExternalGeneratedNames(t *testing.T) {
 	}
 }
 
+// An existing External role or sub-role keeps its earlier budget, and each update
+// says how many groups its names allow when that is below the reserved 8 digits.
+func TestValidateUpdateExternalGeneratedNamesWarning(t *testing.T) {
+	externalSubRole := func() disaggv1.DisaggregatedRoleSpec {
+		return partitionedPrefill(disaggv1.DisaggregatedSubRoleSpec{Name: "a", Scaling: externalScaling})
+	}
+	withHash := func(role disaggv1.DisaggregatedRoleSpec) disaggv1.DisaggregatedRoleSpec {
+		role.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		role.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+		return role
+	}
+	const supports = "scaling.mode External with these names supports at most"
+	for _, tc := range []struct {
+		name        string
+		nameLen     int
+		role        disaggv1.DisaggregatedRoleSpec
+		wantWarning string
+	}{
+		// The reproduction from the issue: group 10's Pods cannot be created.
+		{name: "one digit of room", nameLen: 31, role: externalPrefill(), wantWarning: supports + " 10 groups"},
+		{name: "one digit short of the reserved room", nameLen: 25, role: externalPrefill(), wantWarning: supports + " 10000000 groups"},
+		{name: "room for the reserved digits", nameLen: 24, role: externalPrefill()},
+		{name: "sub-role with one digit of room", nameLen: 31, role: externalSubRole(), wantWarning: supports + " 10 groups"},
+		{name: "Static role", nameLen: 31, role: staticPrefill()},
+		// Hash names do not contain a group index.
+		{name: "External with groupIdentity Hash", nameLen: 31, role: withHash(externalPrefill())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := generatedNamesDS(tc.nameLen, tc.role)
+			warnings, err := (&DisaggregatedSetWebhook{}).ValidateUpdate(t.Context(), ds, ds)
+			require.NoError(t, err)
+			if tc.wantWarning == "" {
+				require.Empty(t, warnings)
+				return
+			}
+			require.Len(t, warnings, 1)
+			require.Contains(t, warnings[0], tc.wantWarning)
+		})
+	}
+
+	// A new External role is rejected for its budget instead of warned about.
+	warnings, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), generatedNamesDS(31, externalPrefill()))
+	require.Error(t, err)
+	require.Empty(t, warnings)
+}
+
 // Only a role or sub-role that becomes External, or an External one that leaves
 // groupIdentity Hash and so gains a group index in its names, is held to the
 // External budget, so stored DisaggregatedSets accepted earlier stay updatable.

@@ -167,7 +167,9 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 				"name is used as a prefix for generated LeaderWorkerSets: "+strings.Join(errs, "; ")))
 		}
 	}
-	allErrs = append(allErrs, w.validateGeneratedNames(obj, oldRoles)...)
+	nameWarnings, nameErrs := w.validateGeneratedNames(obj, oldRoles)
+	warnings = append(warnings, nameWarnings...)
+	allErrs = append(allErrs, nameErrs...)
 
 	return warnings, allErrs
 }
@@ -197,16 +199,19 @@ func externalLeaves(role *disaggv1.DisaggregatedRoleSpec) map[string]bool {
 	return leaves
 }
 
-// hasNewExternalLeaf reports whether the role has an External leaf that was
-// not External before, or that gains a group index in its names by leaving
-// groupIdentity Hash. Its replica count comes from a scaler, so admission cannot
-// bound it. Existing External leaves keep their earlier budget so unrelated
-// updates of stored DisaggregatedSets are not rejected.
-func hasNewExternalLeaf(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
+// needsExternalIndexBudget reports whether the role's names must reserve room
+// for a group index whose size admission cannot bound: the role has an External
+// leaf that was not External before, or that gains a group index in its names by
+// leaving groupIdentity Hash. Hash names contain no group index. Existing External
+// leaves keep their earlier budget so unrelated updates of stored
+// DisaggregatedSets are not rejected.
+func needsExternalIndexBudget(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
+	if role.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		return false
+	}
 	old := externalLeaves(oldRole)
-	if oldRole != nil && oldRole.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash &&
-		role.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash {
-		old = nil
+	if oldRole != nil && oldRole.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		old = nil // leaving Hash adds a group index to the names
 	}
 	for leaf := range externalLeaves(role) {
 		if !old[leaf] {
@@ -326,9 +331,11 @@ func validationReplicasForRole(role disaggv1.DisaggregatedRoleSpec) *int32 {
 //	<dsName>-<sliceIndex>-<revision 8 chars>-<roleName>
 //
 // A new External role or sub-role reserves room for a group index as long as a
-// hash group key, since its replicas are not known at admission.
-func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet, oldRoles map[string]*disaggv1.DisaggregatedRoleSpec) field.ErrorList {
+// hash group key, since its replicas are not known at admission. An existing one
+// that keeps a smaller budget gets a warning with the group count its names allow.
+func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.DisaggregatedSet, oldRoles map[string]*disaggv1.DisaggregatedRoleSpec) (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
+	var warnings admission.Warnings
 	// Worst-case slice index string length: slices can be 1-100 → index 0-99 → up to 2 digits.
 	slices := int32(1)
 	if obj.Spec.Slices != nil {
@@ -352,9 +359,8 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 		if replicas := validationReplicasForRole(role); replicas != nil && *replicas > 0 {
 			groupIndexDigits = len(strconv.Itoa(int(*replicas - 1)))
 		}
-		newExternal := role.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash &&
-			hasNewExternalLeaf(&role, oldRoles[role.Name])
-		if newExternal {
+		needsBudget := needsExternalIndexBudget(&role, oldRoles[role.Name])
+		if needsBudget {
 			groupIndexDigits = max(groupIndexDigits, webhooks.HashDNSPrefixLength)
 		}
 
@@ -376,13 +382,23 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 					"reduce the DisaggregatedSet name and/or role name (combined limit: %d characters)",
 				maxNameLen, dns1035MaxLen, combinedLimit,
 			)
-			if newExternal {
+			if needsBudget {
 				msg += fmt.Sprintf("; scaling.mode External reserves %d characters for the group index", groupIndexDigits)
 			}
 			allErrs = append(allErrs, field.Invalid(rolesPath.Index(i).Child("name"), role.Name, msg))
+			continue
+		}
+
+		// Names within the limit leave room for at least one digit, so digits >= 1.
+		if !needsBudget && role.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash && len(externalLeaves(&role)) > 0 {
+			if digits := dns1035MaxLen - lwsNameLen - 1 - statefulSetRevisionLabelSuffixLen; digits < webhooks.HashDNSPrefixLength {
+				warnings = append(warnings, fmt.Sprintf(
+					"role %q: scaling.mode External with these names supports at most %d groups; Pods of further groups cannot be created. Shorten the DisaggregatedSet or role name",
+					role.Name, int(math.Pow10(digits))))
+			}
 		}
 	}
-	return allErrs
+	return warnings, allErrs
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy
