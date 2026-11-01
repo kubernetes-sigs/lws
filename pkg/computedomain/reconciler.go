@@ -488,3 +488,47 @@ func enqueuePodReferencedComputeDomains(obj client.Object, q interface{ Add(reco
 		}
 	}
 }
+
+// MapComputeDomainToOwner returns a MapFunc that maps a managed ComputeDomain
+// to its owning workload identified by setNameLabelKey.
+func MapComputeDomainToOwner(setNameLabelKey string) handler.MapFunc {
+	return func(_ context.Context, obj client.Object) []reconcile.Request {
+		if obj == nil {
+			return nil
+		}
+		labels := obj.GetLabels()
+		ownerName := labels[setNameLabelKey]
+		if ownerName == "" || labels[OwnerUIDLabelKey] == "" {
+			return nil
+		}
+		return []reconcile.Request{{
+			NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: ownerName},
+		}}
+	}
+}
+
+// EnqueueOwnerForDeletedPod resolves each ComputeDomain referenced by a deleted
+// Pod from the local informer cache and enqueues the owning workload identified
+// by setNameLabelKey on the ComputeDomain's labels, so unlabeled or relabeled
+// Pods still wake obsolete-domain cleanup.
+func EnqueueOwnerForDeletedPod(ctx context.Context, c client.Client, setNameLabelKey string, obj client.Object, q interface{ Add(reconcile.Request) }) {
+	if obj == nil {
+		return
+	}
+	tplNames := PodClaimTemplateNames(obj)
+	if len(tplNames) == 0 {
+		return
+	}
+	ns := obj.GetNamespace()
+	for _, tplName := range tplNames {
+		cd := &ComputeDomain{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: tplName}, cd); err != nil {
+			continue
+		}
+		if ownerName := cd.Labels[setNameLabelKey]; ownerName != "" && cd.Labels[OwnerUIDLabelKey] != "" {
+			q.Add(reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: ns, Name: ownerName},
+			})
+		}
+	}
+}
