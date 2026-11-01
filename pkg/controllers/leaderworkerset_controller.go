@@ -38,6 +38,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
@@ -51,6 +52,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -101,6 +104,9 @@ const (
 
 	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
 	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
+
+	// UnexpectedComputeDomainOwner indicates that ComputeDomain ownership prevents reconciliation.
+	UnexpectedComputeDomainOwner = "UnexpectedComputeDomainOwner"
 
 	// Event actions
 	Create = "Create"
@@ -153,6 +159,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if lws.DeletionTimestamp != nil {
 		if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 			if err := r.deleteWorkerStatefulSets(ctx, lws); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if features.Enabled(features.AutoComputeDomain) {
+			if err := computedomain.CleanupLWSComputeDomains(ctx, r.Client, lws); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -273,6 +284,11 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, err
 		}
 		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if features.Enabled(features.AutoComputeDomain) {
+		if err := computedomain.CleanupLWSComputeDomains(ctx, r.Client, lws); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -467,7 +483,7 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Conte
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.apiReader = mgr.GetAPIReader()
-	builder := ctrl.NewControllerManagedBy(mgr).
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
@@ -483,11 +499,22 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
 	// Upstream Workload resources are watched only when that provider is active.
 	if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); ok {
-		builder = builder.
+		ctrlBuilder = ctrlBuilder.
 			Owns(&schedulingv1beta1.Workload{}).
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
-	return builder.Complete(r)
+	if features.Enabled(features.AutoComputeDomain) {
+		ctrlBuilder = ctrlBuilder.
+			Watches(&computedomain.ComputeDomain{},
+				handler.EnqueueRequestsFromMapFunc(computedomain.MapComputeDomainToOwner(leaderworkerset.SetNameLabelKey)),
+				builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Pod{}, handler.Funcs{
+				DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					computedomain.EnqueueOwnerForDeletedPod(ctx, r.Client, leaderworkerset.SetNameLabelKey, e.Object, q)
+				},
+			})
+	}
+	return ctrlBuilder.Complete(r)
 }
 
 func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
@@ -1163,6 +1190,12 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	// pod template would change the StatefulSet and roll existing groups on upgrade.
 	if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 		podAnnotations[leaderworkerset.PodTerminationPolicyAnnotationKey] = string(lws.Spec.PodTerminationPolicy)
+	}
+	// Stamped whether or not the AutoComputeDomain gate is on, so toggling the
+	// gate does not change the StatefulSet template and roll existing groups.
+	// The annotation has no effect while the gate is off.
+	if computedomain.LWSNeedsReplicaDomain(lws) {
+		podAnnotations[leaderworkerset.ComputeDomainPrefixAnnotationKey] = computedomain.UIDPrefix(lws.Name, lws.UID)
 	}
 
 	podTemplateApplyConfiguration.WithAnnotations(podAnnotations)

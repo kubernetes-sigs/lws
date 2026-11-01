@@ -50,8 +50,12 @@ const (
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
-	unschedulablePodGracePeriod       = time.Minute
-	idleRolloutRetry                  = 10 * time.Second
+	// EventReasonFailedCreate and EventReasonUnexpectedComputeDomainOwner match
+	// the LeaderWorkerSet controller's reasons for ComputeDomain failures.
+	EventReasonFailedCreate                 = "FailedCreate"
+	EventReasonUnexpectedComputeDomainOwner = "UnexpectedComputeDomainOwner"
+	unschedulablePodGracePeriod             = time.Minute
+	idleRolloutRetry                        = 10 * time.Second
 )
 
 type RollingUpdateExecutor struct {

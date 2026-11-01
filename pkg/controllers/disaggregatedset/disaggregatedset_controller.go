@@ -32,13 +32,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -184,6 +192,17 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			result = earliestRequeue(result, sliceResult)
 		}
 	}
+	// Cleanup keeps every ComputeDomain that a child LWS or a current slice still
+	// needs, so it is safe to run when a slice failed to reconcile.
+	if features.Enabled(features.AutoComputeDomain) {
+		remainingLWS, err := r.LWSManager.ListAll(ctx, disaggregatedSet, "")
+		if err == nil {
+			err = computedomain.CleanupDisaggregatedSetComputeDomains(ctx, r.Client, disaggregatedSet, remainingLWS, sliceCount, revision)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("clean up ComputeDomains: %w", err))
+		}
+	}
 	reconcileErr := errors.Join(errs...)
 
 	// Observe status after workload writes, including slices that failed to
@@ -251,9 +270,9 @@ func (r *DisaggregatedSetReconciler) resolveRevision(
 	revisionHashVersion := disaggregatedSet.Annotations[disaggregatedsetv1.RevisionHashVersionAnnotationKey]
 	switch revisionHashVersion {
 	case disaggregatedsetv1.RevisionHashVersion:
-		return disaggregatedsetutils.ComputeRevision(disaggregatedSet.Spec.Roles), false, nil
+		return disaggregatedsetutils.ComputeDisaggregatedSetRevision(disaggregatedSet), false, nil
 	case "":
-		if len(existingLWS) > 0 {
+		if len(existingLWS) > 0 && !computedomain.DisaggregatedSetUsesAutoComputeDomain(disaggregatedSet) {
 			return disaggregatedsetutils.ComputeRevisionV1(disaggregatedSet.Spec.Roles), false, nil
 		}
 
@@ -407,6 +426,18 @@ func (r *DisaggregatedSetReconciler) reconcileSlice(
 					}
 				}
 			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	if features.Enabled(features.AutoComputeDomain) && disaggregatedSet.DeletionTimestamp.IsZero() && computedomain.DisaggregatedSetNeedsSliceDomain(disaggregatedSet) {
+		hasChildren := newRevision != nil && len(newRevision.Roles) > 0
+		if err := computedomain.EnsureSliceComputeDomain(ctx, r.Client, disaggregatedSet, slice, revision, hasChildren); err != nil {
+			reason := EventReasonFailedCreate
+			if errors.Is(err, computedomain.ErrUnexpectedComputeDomainOwner) {
+				reason = EventReasonUnexpectedComputeDomainOwner
+			}
+			r.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, reason, "Create", "%s", err.Error())
 			return ctrl.Result{}, err
 		}
 	}
@@ -695,10 +726,25 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// LWS changes arrive through the observer, after its own cache is updated.
 	// A second Owns watch would wake us against a potentially older observation.
-	return ctrl.NewControllerManagedBy(mgr).
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&disaggregatedsetv1.DisaggregatedSet{}).
 		Owns(&disaggregatedsetv1.DisaggregatedSetRoleScaler{}).
 		WatchesRawSource(observer.Source(disaggregatedSetRequest)).
-		Named("disaggregatedset").
-		Complete(r)
+		Named("disaggregatedset")
+	if features.Enabled(features.AutoComputeDomain) {
+		ctrlBuilder = ctrlBuilder.
+			// Recreate a deleted slice ComputeDomain. Status writes by the NVIDIA
+			// controller do not change the generation and are filtered out. Slice
+			// ComputeDomains carry no owner reference (see
+			// computedomain.OwnerUIDLabelKey), so map them by label.
+			Watches(&computedomain.ComputeDomain{},
+				handler.EnqueueRequestsFromMapFunc(computedomain.MapComputeDomainToOwner(disaggregatedsetv1.SetNameLabelKey)),
+				builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Pod{}, handler.Funcs{
+				DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					computedomain.EnqueueOwnerForDeletedPod(ctx, r.Client, disaggregatedsetv1.SetNameLabelKey, e.Object, q)
+				},
+			})
+	}
+	return ctrlBuilder.Complete(r)
 }

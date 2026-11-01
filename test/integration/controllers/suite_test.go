@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,7 +40,10 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/controllers"
+	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	//+kubebuilder:scaffold:imports
 )
@@ -101,6 +105,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = disaggregatedsetv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = computedomain.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 
 	err = volcanov1beta1.AddToScheme(scheme.Scheme)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -117,6 +123,13 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register AutoComputeDomain watches and field index in the shared manager,
+	// then restore the default (false) so existing suites run with the gate off
+	// while AutoComputeDomain specs flip it on via SetFeatureGateDuringTest.
+	Expect(utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
+		string(features.AutoComputeDomain): true,
+	})).To(Succeed())
+
 	kubernetesProvider := schedulerprovider.NewKubernetesProvider(k8sManager.GetClient())
 	lwsController := controllers.NewLeaderWorkerSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("leaderworkerset"), kubernetesProvider)
 
@@ -124,12 +137,25 @@ var _ = BeforeSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 	err = schedulerprovider.SetupKubernetesIndexes(k8sManager.GetFieldIndexer())
 	Expect(err).ToNot(HaveOccurred())
+	err = computedomain.SetupIndexes(k8sManager.GetFieldIndexer())
+	Expect(err).ToNot(HaveOccurred())
 	err = lwsController.SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	dsController := disaggregatedsetcontroller.NewDisaggregatedSetReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("disaggregatedset"))
+	err = dsController.SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	err = computedomain.NewReconciler(k8sManager.GetClient()).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	podController = controllers.NewPodReconciler(k8sManager.GetClient(), k8sManager.GetScheme(), k8sManager.GetEventRecorder("pod"), kubernetesProvider)
 	err = podController.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
+
+	Expect(utilfeature.DefaultMutableFeatureGate.SetFromMap(map[string]bool{
+		string(features.AutoComputeDomain): false,
+	})).To(Succeed())
 
 	go func() {
 		defer GinkgoRecover()
