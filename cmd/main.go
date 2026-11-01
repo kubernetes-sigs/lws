@@ -18,8 +18,10 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -196,12 +198,14 @@ func main() {
 		}
 	}
 
+	enableWebhooks := os.Getenv("ENABLE_WEBHOOKS") != "false"
+	webhooksReady := make(chan struct{})
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
-	go setupControllers(mgr, certsReady, cfg)
+	go setupControllers(mgr, certsReady, webhooksReady, cfg, enableWebhooks)
 
-	setupHealthzAndReadyzCheck(mgr)
+	setupHealthzAndReadyzCheck(mgr, webhooksReady, enableWebhooks)
 	setupLog.Info("starting manager")
 
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
@@ -210,7 +214,7 @@ func main() {
 	}
 
 }
-func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.Configuration) {
+func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, webhooksReady chan<- struct{}, cfg configapi.Configuration, enableWebhooks bool) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
 	setupLog.Info("waiting for the cert generation to complete")
@@ -259,7 +263,7 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 		os.Exit(1)
 	}
 	// Set up webhooks
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	if enableWebhooks {
 		if err := webhooks.SetupLeaderWorkerSetWebhook(mgr, webhooks.LeaderWorkerSetWebhook{
 			SchedulerProvider: providerType,
 		}); err != nil {
@@ -275,17 +279,31 @@ func setupControllers(mgr ctrl.Manager, certsReady chan struct{}, cfg configapi.
 			setupLog.Error(err, "unable to create disaggregatedset webhook", "webhook", "DisaggregatedSet")
 			os.Exit(1)
 		}
+		close(webhooksReady)
 	}
 	//+kubebuilder:scaffold:builder
 }
 
-func setupHealthzAndReadyzCheck(mgr ctrl.Manager) {
+func setupHealthzAndReadyzCheck(mgr ctrl.Manager, webhooksReady <-chan struct{}, enableWebhooks bool) {
 	defer setupLog.Info("both healthz and readyz check are finished and configured")
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	readyz := healthz.Ping
+	if enableWebhooks {
+		// The first GetWebhookServer call starts the webhook server, so the
+		// check waits until setupControllers has registered the webhooks.
+		readyz = func(req *http.Request) error {
+			select {
+			case <-webhooksReady:
+				return mgr.GetWebhookServer().StartedChecker()(req)
+			default:
+				return errors.New("webhooks are not registered yet")
+			}
+		}
+	}
+	if err := mgr.AddReadyzCheck("readyz", readyz); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
