@@ -2,7 +2,7 @@ title: LeaderWorkerSet Placement Policy
 kep-number: 1064
 authors:
   - "aliceco01"
-status: provisional
+status: implementable
 creation-date: 2026-10-06
 reviewers:
   - ahg-g

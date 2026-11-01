@@ -497,7 +497,7 @@ domain, once with the field and once with the annotation.
 
 ### Graduation Criteria
 
-**Alpha (v0.12)**
+**Alpha (v1.1)**
 
 - API, validation, propagation, revision handling and the DisaggregatedSet check
   implemented.
@@ -520,6 +520,8 @@ domain, once with the field and once with the annotation.
 - 2026-10-14: Revised after review: top-level `spec.placementPolicy`, effective
   placement in the revision, rule 10 kept at replica level, and the
   DisaggregatedSet check limited to matching topology keys.
+- 2026-11-01: Marked implementable and retargeted alpha to v1.1, since LWS
+  went from v0.11 to v1.0.0. Implementation in kubernetes-sigs/lws#1165.
 
 ## Drawbacks
 
