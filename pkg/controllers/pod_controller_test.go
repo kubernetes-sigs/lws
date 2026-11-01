@@ -471,6 +471,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
 					Namespace: "default",
+					Annotations: map[string]string{
+						leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
+					},
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey:     "0",
 						leaderworkerset.SetNameLabelKey:         "test-sample",
@@ -555,6 +558,9 @@ func TestConstructWorkerStatefulSetApplyConfiguration(t *testing.T) {
 				ObjectMeta: v1.ObjectMeta{
 					Name:      "test-sample",
 					Namespace: "default",
+					Annotations: map[string]string{
+						leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
+					},
 					Labels: map[string]string{
 						leaderworkerset.WorkerIndexLabelKey:     "0",
 						leaderworkerset.SetNameLabelKey:         "test-sample",
@@ -4003,4 +4009,64 @@ func TestPodTerminationPolicyParallelDeletion(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The worker StatefulSet takes its exclusive placement keys from the leader pod,
+// so a group on an old revision keeps them while a rollout changes the
+// LeaderWorkerSet's placementPolicy or annotations.
+func TestWorkerPodTemplateExclusivePlacement(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).
+		SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).Obj()
+	lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+		Type: leaderworkerset.PlacementExclusiveTopology, Topology: "zone",
+		SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack"},
+	}
+
+	tests := []struct {
+		name              string
+		leaderAnnotations map[string]string
+		wantKey           string
+		wantSubGroupKey   string
+	}{
+		{
+			name: "keys of the leader pod are copied",
+			leaderAnnotations: map[string]string{
+				leaderworkerset.ExclusiveKeyAnnotationKey:         "block",
+				leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "host",
+			},
+			wantKey:         "block",
+			wantSubGroupKey: "host",
+		},
+		{
+			name: "a leader pod without keys gets none from the LeaderWorkerSet",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			leaderPod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-sample-0",
+					Namespace:   "default",
+					Annotations: tc.leaderAnnotations,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:         "test-sample",
+						leaderworkerset.GroupIndexLabelKey:      "0",
+						leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+						leaderworkerset.RevisionKey:             "revision",
+					},
+				},
+			}
+			statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
+			if err != nil {
+				t.Fatalf("failed with error %s", err.Error())
+			}
+			annotations := statefulSetConfig.Spec.Template.Annotations
+			if got := annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; got != tc.wantKey {
+				t.Errorf("exclusive-topology annotation = %q, want %q", got, tc.wantKey)
+			}
+			if got := annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; got != tc.wantSubGroupKey {
+				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
+			}
+		})
+	}
 }

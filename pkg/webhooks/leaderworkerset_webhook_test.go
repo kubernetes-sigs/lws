@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
@@ -709,4 +710,257 @@ func TestPodTerminationPolicyDefaultAndValidation(t *testing.T) {
 			t.Errorf("expected empty to Sequential update to be accepted, got: %v", err)
 		}
 	})
+}
+
+func TestValidatePlacementPolicy(t *testing.T) {
+	exclusive := func(topology string) *v1.SubGroupPlacementPolicy {
+		return &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: topology}
+	}
+	tests := []struct {
+		name           string
+		annotations    map[string]string
+		groupPolicy    *v1.SubGroupPlacementPolicy
+		subGroupPolicy *v1.SubGroupPlacementPolicy
+		errSubstr      string
+	}{
+		{
+			name:           "group and subgroup on different topologies",
+			groupPolicy:    exclusive("topology.kubernetes.io/zone"),
+			subGroupPolicy: exclusive("cloud.google.com/gke-nodepool"),
+		},
+		{
+			name:        "invalid group topology",
+			groupPolicy: exclusive("not a label key"),
+			errSubstr:   "spec.placementPolicy.topology",
+		},
+		{
+			name:           "invalid subgroup topology",
+			subGroupPolicy: exclusive("-rack"),
+			errSubstr:      "spec.placementPolicy.subGroup.topology",
+		},
+		{
+			name:           "group and subgroup on the same topology",
+			groupPolicy:    exclusive("rack"),
+			subGroupPolicy: exclusive("rack"),
+			errSubstr:      "spec.placementPolicy.subGroup.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
+		},
+		{
+			name:           "subgroup field on the group annotation's topology",
+			annotations:    map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			subGroupPolicy: exclusive("rack"),
+			errSubstr:      "spec.placementPolicy.subGroup.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
+		},
+		{
+			name:        "group field on the subgroup annotation's topology",
+			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
+			groupPolicy: exclusive("rack"),
+			errSubstr:   "spec.placementPolicy.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
+		},
+		{
+			name:           "subgroup field and group annotation on different topologies",
+			annotations:    map[string]string{v1.ExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone"},
+			subGroupPolicy: exclusive("rack"),
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Annotation(tc.annotations).Obj()
+			lws.Spec.PlacementPolicy = testPlacementPolicy(tc.groupPolicy, tc.subGroupPolicy)
+			err := r.generalValidate(lws).ToAggregate()
+			if tc.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Fatalf("expected error containing %q, got %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
+// placementPolicy is part of the revision, so it can be added, changed and
+// removed on a live LeaderWorkerSet.
+func TestValidateUpdatePlacementPolicyMutable(t *testing.T) {
+	zone := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "topology.kubernetes.io/zone"}
+	rack := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
+	tests := []struct {
+		name                     string
+		oldGroup, newGroup       *v1.SubGroupPlacementPolicy
+		oldSubGroup, newSubGroup *v1.SubGroupPlacementPolicy
+	}{
+		{name: "unchanged", oldGroup: zone, newGroup: zone, oldSubGroup: rack, newSubGroup: rack},
+		{name: "group policy added", newGroup: zone},
+		{name: "group policy changed", oldGroup: zone, newGroup: rack},
+		{name: "group policy removed", oldGroup: zone},
+		{name: "subgroup policy changed", oldSubGroup: rack, newSubGroup: zone},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldLws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Obj()
+			oldLws.Spec.PlacementPolicy = testPlacementPolicy(tc.oldGroup, tc.oldSubGroup)
+			newLws := oldLws.DeepCopy()
+			newLws.Spec.PlacementPolicy = testPlacementPolicy(tc.newGroup, tc.newSubGroup)
+			if _, err := r.ValidateUpdate(context.Background(), oldLws, newLws); err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
+	rack := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
+	none := &v1.SubGroupPlacementPolicy{Type: v1.PlacementNone}
+	tests := []struct {
+		name           string
+		annotations    map[string]string
+		groupPolicy    *v1.SubGroupPlacementPolicy
+		subGroupPolicy *v1.SubGroupPlacementPolicy
+		errSubstr      string
+	}{
+		{name: "matching group annotation", annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"}, groupPolicy: rack},
+		{name: "matching subgroup annotation", annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"}, subGroupPolicy: rack},
+		{
+			name:        "different group annotation",
+			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "zone"},
+			groupPolicy: rack,
+			errSubstr:   "spec.placementPolicy.topology",
+		},
+		{
+			name:           "None falls back to the group annotation",
+			annotations:    map[string]string{v1.ExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone"},
+			groupPolicy:    none,
+			subGroupPolicy: rack,
+		},
+		{
+			name:           "different subgroup annotation",
+			annotations:    map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "zone"},
+			subGroupPolicy: rack,
+			errSubstr:      "spec.placementPolicy.subGroup.topology",
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Annotation(tc.annotations).Obj()
+			lws.Spec.PlacementPolicy = testPlacementPolicy(tc.groupPolicy, tc.subGroupPolicy)
+			_, err := r.ValidateCreate(context.Background(), lws)
+			if tc.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.errSubstr+": Invalid value") || !strings.Contains(err.Error(), "conflicts with annotation") {
+				t.Fatalf("expected a conflict on %s, got %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
+func TestPlacementPolicyWarnings(t *testing.T) {
+	policy := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
+	const (
+		groupDeprecated    = "annotation leaderworkerset.sigs.k8s.io/exclusive-topology is deprecated, use spec.placementPolicy instead"
+		subGroupDeprecated = "annotation leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology is deprecated, use spec.placementPolicy.subGroup instead"
+		kueueCombined      = "exclusive placement is combined with kueue.x-k8s.io/podset-required-topology: Kueue topology-aware scheduling does not account for the affinity that exclusive placement injects, so a group can be assigned a domain it cannot schedule in"
+	)
+	kueue := map[string]string{"kueue.x-k8s.io/podset-required-topology": "rack"}
+	tests := []struct {
+		name                string
+		annotations         map[string]string
+		templateAnnotations map[string]string
+		groupPolicy         *v1.SubGroupPlacementPolicy
+		subGroupPolicy      *v1.SubGroupPlacementPolicy
+		want                admission.Warnings
+	}{
+		{name: "no annotations"},
+		{name: "placementPolicy only", groupPolicy: policy, subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementNone}},
+		{
+			name:        "exclusive-topology annotation",
+			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			want:        admission.Warnings{groupDeprecated},
+		},
+		{
+			name:        "exclusive-topology annotation and matching placementPolicy",
+			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			groupPolicy: policy,
+			want:        admission.Warnings{groupDeprecated},
+		},
+		{
+			name:        "subgroup-exclusive-topology annotation",
+			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
+			want:        admission.Warnings{subGroupDeprecated},
+		},
+		{
+			name:                "placementPolicy with Kueue topology annotation",
+			templateAnnotations: kueue,
+			groupPolicy:         policy,
+			want:                admission.Warnings{kueueCombined},
+		},
+		{
+			name:                "subgroup placementPolicy with Kueue topology annotation",
+			templateAnnotations: kueue,
+			subGroupPolicy:      policy,
+			want:                admission.Warnings{kueueCombined},
+		},
+		{name: "Kueue topology annotation without exclusive placement", templateAnnotations: kueue},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Annotation(tc.annotations).Obj()
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = tc.templateAnnotations
+			lws.Spec.PlacementPolicy = testPlacementPolicy(tc.groupPolicy, tc.subGroupPolicy)
+			warnings, err := r.ValidateCreate(context.Background(), lws)
+			if err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, warnings); diff != "" {
+				t.Errorf("unexpected create warnings (-want +got):\n%s", diff)
+			}
+			warnings, err = r.ValidateUpdate(context.Background(), lws, lws.DeepCopy())
+			if err != nil {
+				t.Fatalf("unexpected validation error on update: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, warnings); diff != "" {
+				t.Errorf("unexpected update warnings (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// testPlacementPolicy builds spec.placementPolicy from optional group and
+// subgroup levels, defaulting the group type as the API server does.
+func testPlacementPolicy(group, subGroup *v1.SubGroupPlacementPolicy) *v1.PlacementPolicy {
+	if group == nil && subGroup == nil {
+		return nil
+	}
+	policy := &v1.PlacementPolicy{Type: v1.PlacementNone, SubGroup: subGroup}
+	if group != nil {
+		policy.Type, policy.Topology = group.Type, group.Topology
+	}
+	return policy
+}
+
+func TestValidateSubGroupPlacementPolicyRequiresSubGroups(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	lws := wrappers.BuildLeaderWorkerSet("default").Size(4).Obj()
+	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"})
+	err := r.generalValidate(lws).ToAggregate()
+	if err == nil || !strings.Contains(err.Error(), "spec.placementPolicy.subGroup") || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
+		t.Fatalf("expected subgroup placement without subGroupPolicy to be rejected, got %v", err)
+	}
+
+	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementNone})
+	if err := r.generalValidate(lws).ToAggregate(); err != nil {
+		t.Fatalf("expected a None subgroup placement to be accepted without subGroupPolicy, got %v", err)
+	}
 }

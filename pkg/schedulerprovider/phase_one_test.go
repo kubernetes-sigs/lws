@@ -210,6 +210,33 @@ func TestValidatePhaseOneWorkload(t *testing.T) {
 			},
 			wantErr: "cannot be combined with exclusive topology",
 		},
+		"gang cannot combine with exclusive placementPolicy": {
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+					Type:     leaderworkerset.PlacementExclusiveTopology,
+					Topology: "topology.kubernetes.io/zone",
+				}
+			},
+			wantErr: "cannot be combined with exclusive topology",
+		},
+		"gang combines with exclusive subgroup placementPolicy": {
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](1)}
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+					Type: leaderworkerset.PlacementNone,
+					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{
+						Type:     leaderworkerset.PlacementExclusiveTopology,
+						Topology: "topology.kubernetes.io/zone",
+					},
+				}
+			},
+		},
+		"gang combines with the subgroup exclusive topology annotation": {
+			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](1)}
+				lws.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone"}
+			},
+		},
 		"managed templates cannot preset schedulingGroup": {
 			mutate: func(lws *leaderworkerset.LeaderWorkerSet) {
 				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulingGroup = &corev1.PodSchedulingGroup{

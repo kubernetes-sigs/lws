@@ -289,7 +289,7 @@ resolver:
 | `type: ExclusiveTopology` at either level | `topology` must be a valid label key. |
 | `type: None` or unset at either level | `topology` must be empty. |
 | `placementPolicy.subGroup` without subgroups defined | Rejected, as the annotation is today without `subGroupSize`. See [Interaction With SubGroup Placement](#interaction-with-subgroup-placement). |
-| Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. |
+| Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. Checked only when `placementPolicy` is set, so an object that sets both levels through the annotations alone is validated as before and an existing one stays updatable. |
 | Field and annotation both set for one level | Rejected if the field is `ExclusiveTopology` with a different key. A level whose `type` is `None` uses the annotation, since the API server defaults `type` to `None` whenever `placementPolicy` is set, including when only `subGroup` is. |
 | Replica-level policy or annotation with WAS gang or topology constraints at the selected level | Rejected, as rule 10 does for the annotation today. Subgroup-level placement stays allowed. See [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling). |
 | Non-`None` policy on a template that carries Kueue topology annotations | Admission warning. See [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling). |
@@ -497,7 +497,7 @@ domain, once with the field and once with the annotation.
 
 ### Graduation Criteria
 
-**Alpha (v0.12)**
+**Alpha (v1.1)**
 
 - API, validation, propagation, revision handling and the DisaggregatedSet check
   implemented.
@@ -520,6 +520,8 @@ domain, once with the field and once with the annotation.
 - 2026-10-14: Revised after review: top-level `spec.placementPolicy`, effective
   placement in the revision, rule 10 kept at replica level, and the
   DisaggregatedSet check limited to matching topology keys.
+- 2026-11-01: Marked implementable and retargeted alpha to v1.1, since LWS
+  went from v0.11 to v1.0.0. Implementation in kubernetes-sigs/lws#1165.
 
 ## Drawbacks
 
