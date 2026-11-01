@@ -93,6 +93,15 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	if !disaggregatedSet.DeletionTimestamp.IsZero() {
+		r.staleStatusVersions.Remove(req.NamespacedName)
+		r.LWSManager.pruneSubRoleScaleWindows(req.NamespacedName, nil)
+		if r.LWSManager.pending != nil {
+			r.LWSManager.pending.forget(req.NamespacedName)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 
 	// Reconcile proceeds in three steps:
@@ -450,7 +459,7 @@ func (r *DisaggregatedSetReconciler) cleanupRemovedSlices(ctx context.Context, d
 
 	for _, lws := range lwsList {
 		sliceIdx, parseErr := strconv.Atoi(lws.Labels[disaggregatedsetv1.SliceLabelKey])
-		if parseErr != nil || sliceIdx < desiredSlices {
+		if parseErr != nil || sliceIdx < desiredSlices || !lws.DeletionTimestamp.IsZero() {
 			continue
 		}
 		log.Info("Deleting LWS for removed slice", "name", lws.Name, "slice", sliceIdx)

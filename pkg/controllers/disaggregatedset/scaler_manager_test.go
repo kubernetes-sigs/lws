@@ -319,7 +319,8 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 					return c.List(ctx, list, opts...)
 				},
 			})
-			m := NewScalerManager(c, events.NewFakeRecorder(10))
+			rec := events.NewFakeRecorder(10)
+			m := NewScalerManager(c, rec)
 			scalers, err := m.Reconcile(t.Context(), f.ds, func(key string) (int32, error) {
 				require.Equal(t, "model/a", key)
 				return 9, nil
@@ -391,6 +392,16 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(scaler), scaler))
 			require.False(t, scaler.DeletionTimestamp.IsZero())
 			require.EqualValues(t, 9, scaler.Spec.Replicas, "retired target must not be adopted or reseeded")
+			for len(rec.Events) > 0 {
+				<-rec.Events
+			}
+			scalers, err = m.Reconcile(t.Context(), f.ds, func(string) (int32, error) { return 3, nil })
+			require.NoError(t, err)
+			require.Empty(t, scalers)
+			for len(rec.Events) > 0 {
+				event := <-rec.Events
+				assert.NotContains(t, event, EventReasonScalerDeleted, "terminating scaler must not emit duplicate delete events")
+			}
 			scaler.Finalizers = nil
 			require.NoError(t, c.Update(t.Context(), scaler))
 			require.True(t, apierrorsIsNotFound(c.Get(t.Context(), client.ObjectKeyFromObject(scaler), scaler)))
