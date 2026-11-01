@@ -38,6 +38,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
@@ -482,7 +483,7 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Conte
 // SetupWithManager sets up the controller with the Manager.
 func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.apiReader = mgr.GetAPIReader()
-	builder := ctrl.NewControllerManagedBy(mgr).
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&leaderworkerset.LeaderWorkerSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
@@ -498,11 +499,22 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Avoid starting informers for APIs that do not exist on pre-1.37 clusters.
 	// Upstream Workload resources are watched only when that provider is active.
 	if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); ok {
-		builder = builder.
+		ctrlBuilder = ctrlBuilder.
 			Owns(&schedulingv1beta1.Workload{}).
 			Owns(&schedulingv1beta1.PodGroup{})
 	}
-	return builder.Complete(r)
+	if features.Enabled(features.AutoComputeDomain) {
+		ctrlBuilder = ctrlBuilder.
+			Watches(&computedomain.ComputeDomain{},
+				handler.EnqueueRequestsFromMapFunc(computedomain.MapComputeDomainToOwner(leaderworkerset.SetNameLabelKey)),
+				builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Pod{}, handler.Funcs{
+				DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					computedomain.EnqueueOwnerForDeletedPod(ctx, r.Client, leaderworkerset.SetNameLabelKey, e.Object, q)
+				},
+			})
+	}
+	return ctrlBuilder.Complete(r)
 }
 
 func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
@@ -515,9 +527,6 @@ func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 				return false
 			}
 			if e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0" {
-				return true
-			}
-			if features.Enabled(features.AutoComputeDomain) && len(computedomain.PodClaimTemplateNames(e.Object)) > 0 {
 				return true
 			}
 			if _, ok := r.SchedulerProvider.(*schedulerprovider.KubernetesProvider); !ok {

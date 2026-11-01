@@ -30,7 +30,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
@@ -739,32 +738,13 @@ func (r *DisaggregatedSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// ComputeDomains carry no owner reference (see
 			// computedomain.OwnerUIDLabelKey), so map them by label.
 			Watches(&computedomain.ComputeDomain{},
-				handler.EnqueueRequestsFromMapFunc(sliceComputeDomainToDisaggregatedSet),
+				handler.EnqueueRequestsFromMapFunc(computedomain.MapComputeDomainToOwner(disaggregatedsetv1.SetNameLabelKey)),
 				builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Watches(&corev1.Pod{}, handler.Funcs{
-				DeleteFunc: func(_ context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					if e.Object == nil {
-						return
-					}
-					dsName := e.Object.GetLabels()[disaggregatedsetv1.SetNameLabelKey]
-					if dsName != "" && len(computedomain.PodClaimTemplateNames(e.Object)) > 0 {
-						q.Add(reconcile.Request{
-							NamespacedName: types.NamespacedName{Namespace: e.Object.GetNamespace(), Name: dsName},
-						})
-					}
+				DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					computedomain.EnqueueOwnerForDeletedPod(ctx, r.Client, disaggregatedsetv1.SetNameLabelKey, e.Object, q)
 				},
 			})
 	}
 	return ctrlBuilder.Complete(r)
-}
-
-// sliceComputeDomainToDisaggregatedSet maps a slice ComputeDomain to the
-// DisaggregatedSet that manages it.
-func sliceComputeDomainToDisaggregatedSet(_ context.Context, obj client.Object) []reconcile.Request {
-	labels := obj.GetLabels()
-	dsName := labels[disaggregatedsetv1.SetNameLabelKey]
-	if dsName == "" || labels[computedomain.OwnerUIDLabelKey] == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: dsName}}}
 }

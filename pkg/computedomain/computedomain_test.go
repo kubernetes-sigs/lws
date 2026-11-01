@@ -992,3 +992,62 @@ func TestReconcilerIgnoresUnmanagedComputeDomain(t *testing.T) {
 		t.Fatalf("expected a ComputeDomain without %s to be left alone: %v", OwnerUIDLabelKey, err)
 	}
 }
+
+func TestOwnerWatchMappers(t *testing.T) {
+	ctx := context.Background()
+	lwsCD := &ComputeDomain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lws-cd",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkersetv1.SetNameLabelKey: "my-lws",
+				OwnerUIDLabelKey:                  "uid-1",
+			},
+		},
+	}
+	unmanagedCD := &ComputeDomain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unmanaged-cd",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkersetv1.SetNameLabelKey: "my-lws",
+			},
+		},
+	}
+	c := newFakeClient(t, lwsCD, unmanagedCD)
+
+	mapFn := MapComputeDomainToOwner(leaderworkersetv1.SetNameLabelKey)
+	want := []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "default", Name: "my-lws"}}}
+	if diff := cmp.Diff(want, mapFn(ctx, lwsCD)); diff != "" {
+		t.Fatalf("MapComputeDomainToOwner managed CD mismatch (-want +got):\n%s", diff)
+	}
+	if got := mapFn(ctx, unmanagedCD); len(got) != 0 {
+		t.Fatalf("expected unmanaged CD to produce no requests, got %+v", got)
+	}
+
+	// Deleted Pod without workload labels still resolves its owner via the ComputeDomain's labels.
+	unlabeledPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unlabeled-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			ResourceClaims: []corev1.PodResourceClaim{
+				{Name: "lws-compute-domain-channel", ResourceClaimTemplateName: ptr.To("lws-cd")},
+				{Name: "other", ResourceClaimTemplateName: ptr.To("unmanaged-cd")},
+				{Name: "missing", ResourceClaimTemplateName: ptr.To("nonexistent-cd")},
+			},
+		},
+	}
+	var gotReqs requestRecorder
+	EnqueueOwnerForDeletedPod(ctx, c, leaderworkersetv1.SetNameLabelKey, unlabeledPod, &gotReqs)
+	if diff := cmp.Diff(want, []reconcile.Request(gotReqs)); diff != "" {
+		t.Fatalf("EnqueueOwnerForDeletedPod mismatch (-want +got):\n%s", diff)
+	}
+}
+
+type requestRecorder []reconcile.Request
+
+func (r *requestRecorder) Add(req reconcile.Request) {
+	*r = append(*r, req)
+}
