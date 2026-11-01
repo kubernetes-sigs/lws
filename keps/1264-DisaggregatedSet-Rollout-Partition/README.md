@@ -183,15 +183,31 @@ start a new revision.
 
 For each role with `partition = p > 0` and desired replicas `d`:
 
-- The target revision grows to at most `max(0, d - p)` groups. Groups it
-  already has are never removed because of the partition.
-- Older revisions together keep at least `min(p, d)` groups, as far as they
-  still have them. The active old revision keeps what parked revisions do not
-  already provide. A drained group is not recreated.
-- Everything else is unchanged: maxSurge/maxUnavailable bound each step, roles
-  progress within the fractional coordination window, revisions retire
-  coherently, and bootstrap surge or availability fallback apply only within
-  the partition's bounds.
+- The target revision grows to at most `max(0, d - p)` groups. Raising the
+  partition does not remove groups it already has, except excess above `d`
+  under `Immediate` (below).
+- Older revisions together keep up to `min(p, d - t)` groups, as far as they
+  still have them, where `t` is the target's groups. The active old revision
+  keeps what parked revisions do not already provide. A drained group is not
+  recreated. Capping the floor at `d - t` keeps the role at `d`: when the
+  partition rises mid-surge (3 replicas, 2 old + 2 new, partition 1 to 2) the
+  old revision drains to 1, through the normal drain budget (under
+  `Immediate`, the target gives up the excess group instead).
+- When `d` drops during a hold (an autoscaler, or an edit of `replicas`):
+  - with `scaleDownDuringRollout: Deferred` (the default) the target revision
+    is not reduced, as for any rollout, and old groups drain to `d - t`;
+  - with `Immediate`, excess comes from the target first, down to
+    `max(d - p, d - old)` groups (at least one for a started required role),
+    as a StatefulSet removes its newest Pods first; the old revision keeps its
+    held groups. Replicas 3 to 2 with partition 1 (1 old + 2 new) ends at
+    1 old + 1 new instead of 0 old + 2 new.
+- The partition is a growth ceiling, not a smaller phase: the fractional
+  coordination window still measures each role against its whole desired
+  count. With partitions 1 and 9 on two roles of 10, the second role stops at
+  1 new group and the first stops within one window of it (2), not at 9.
+- Everything else is unchanged: maxSurge/maxUnavailable bound each step,
+  revisions retire coherently, and bootstrap surge or availability fallback
+  apply only within the partition's bounds.
 
 `p = 0` or unset keeps today's behavior exactly.
 
@@ -201,17 +217,23 @@ The planner gains two bounds, both applied where the existing bounds are, so
 the executor's step validation (which recomputes the plan) agrees by
 construction:
 
-- `targetReplicasForActiveRevision` caps each role's phase target at
-  `d - p` (never below the target's current Spec). Growth limits, bootstrap
-  surge and the step validator all read the phase target, so none of them can
-  grow past the partition.
+- `furthestNewTargets` caps each role's growth at `d - p` (never below the
+  target's current Spec), after the growth limits and before the coordination
+  window, which still uses the uncapped phase targets. Bootstrap surge does not
+  treat a role held by its partition as blocked, and the step validator checks
+  the same ceiling.
 - `furthestOldTargets` raises each role's old-revision target to the
   partition floor before the coordination window and revision-completeness
   bounds, so ordinary drains and the availability fallback both stop at it.
+- Under `scaleDownDuringRollout: Immediate`, `furthestTargetScaleDownTargets`
+  and its availability bounds let the target shrink to the groups the
+  partition leaves it.
 
-When neither bound leaves a change, the planner returns no step and the
-executor waits, recording `RollingUpdatePartitioned` instead of
-`RevisionDrainBlocked`.
+When no bound leaves a change, the planner returns no step and the executor
+waits without recording `RevisionDrainBlocked`. It reports the slice held only
+when, from its own observations, every role has exactly `d` groups across all
+revisions and every group is Ready; a slice whose groups are still starting is
+waiting, not held.
 
 ### Propagation to LeaderWorkerSets
 
@@ -233,12 +255,13 @@ strategy, leaving any LWS-level partition the controller manages unchanged.
 - `status.roleStatuses[].updatedReplicas` reports the new revision's groups per
   role, which is what a driver waits on between steps.
 - The `Progressing` condition carries reason `RolloutPartitioned` (instead of
-  `RolloutInProgress`) once every role has reached its partition target and is
-  Ready, so a held rollout is distinguishable from one still moving. Its
-  message lists each role's groups on the current revision, for example
+  `RolloutInProgress`) once every slice still rolling is held, as above, and
+  the aggregated `status.roleStatuses` agree (every role at `d` groups, all
+  Ready, some not yet updated), so a held rollout is distinguishable from one
+  still moving. A slice that is pending or failed in the reconcile prevents it.
+  Its message lists each role's groups on the current revision, for example
   `Rolling update held at the role partitions; groups on the current revision:
-  prefill 1/3, decode 1/3`. It is computed from `status.roleStatuses` and the
-  partitions (per slice), so it needs no state beyond the object.
+  prefill 1/3, decode 1/3`.
 
 ### Integration with Argo CD
 
@@ -287,7 +310,10 @@ operator with `kubectl`) owns the partitions.
 the DisaggregatedSet, and the controller creates the
 DisaggregatedSetRoleScaler, so Argo CD manages neither the replica count nor the
 scaler. An integer partition holds a fixed number of old groups, so a driver
-recomputes it when the target changes.
+recomputes it when the target changes. Scale-down during a hold returns the
+role to `d` under either scaling policy (see Semantics); scale-up still puts
+all growth on the target revision. Proportional scale-up and percentage
+partitions are left to a follow-up.
 
 **Health.** Argo CD has no built-in health check for DisaggregatedSets. A
 custom check in `argocd-cm` maps the conditions:
@@ -329,8 +355,12 @@ to implement this enhancement.
   completes at zero, for symmetric and asymmetric role sizes and several
   surge/unavailable budgets, checking every step with the executor's validator
   and the availability floor; a partition at or above replicas starts nothing;
-  raising a partition does not retract target groups; parked revisions count
-  toward the held groups; the partition is read from the role spec and is not
+  raising a partition does not retract target groups and, mid-surge, drains
+  the old revision back to desired; scale-down during a hold under both
+  scaling policies; the coordination window still applies between roles with
+  different partitions; parked revisions count toward the held groups; a slice
+  is reported held only with every group issued and Ready, and the set only
+  when every rolling slice is held; the partition is read from the role spec and is not
   propagated to the LWS on create or sync.
 - `pkg/webhooks/disaggregatedset`: partition accepted, including above replicas;
   negative rejected; rejected with subRoles.
@@ -359,6 +389,10 @@ partitions to 0 before downgrading.
 - 2026-10-31: `RolloutPartitioned` condition reason implemented; the hold event
   is recorded once per hold. Tested on GKE (B200) with a P/D workload under
   load, driven by hand and by Argo CD with an Argo Rollouts Rollout.
+- 2026-11-01: review fixes: the old-revision floor is capped at `d - t`;
+  Immediate scale-down takes excess from the target first; the partition no
+  longer changes the coordination window; a hold is reported per slice, only
+  once every group is issued and Ready.
 
 ## Drawbacks
 

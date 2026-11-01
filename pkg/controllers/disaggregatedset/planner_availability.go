@@ -196,7 +196,9 @@ func targetScaleDownBounds(snapshot rolloutSnapshot) (drainBudget, RoleReplicaSt
 		required = min(required, target.RawReadyReplicas[i])
 		minimum[i] = max(minimum[i], minimumSpecToPreserveReady(target.SpecReplicas[i], target.ReadyReplicas[i], required))
 		if i >= len(target.AllUnscheduled) || !target.AllUnscheduled[i] || target.RawReadyReplicas[i] > 0 || target.ReadyReplicas[i] > 0 {
-			minimum[i] = max(minimum[i], min(target.SpecReplicas[i], desired))
+			// A target keeps its desired groups, less those its partition
+			// takes back under Immediate scale-down.
+			minimum[i] = max(minimum[i], min(target.SpecReplicas[i], desired, snapshot.partitionedTargetKeeps(i)))
 		}
 	}
 	return budget, minimum
@@ -228,18 +230,22 @@ func disjointTargetReadyFraction(snapshot rolloutSnapshot) (numerator, denominat
 
 // Old revisions get the first chance to absorb excess. Only then may the
 // target shrink towards the latest surge ceiling, subject to its drain budget.
+// A partition instead takes excess from the target first, without the surge
+// allowance, because its held old groups do not drain.
 func furthestTargetScaleDownTargets(snapshot rolloutSnapshot) RoleReplicaState {
 	target := snapshot.Target
 	targets := slicesClone(target.SpecReplicas)
 	budget, minimum := targetScaleDownBounds(snapshot)
 	for i, desired := range target.DesiredReplicas {
-		if targets[i] <= desired {
+		keep := snapshot.partitionedTargetKeeps(i)
+		if targets[i] <= desired && keep >= targets[i] {
 			continue
 		}
 		targets[i] = desired
 		if snapshot.old.spec[i] > 0 {
 			targets[i] = min(target.SpecReplicas[i], max(0, desired+snapshot.Config[i].MaxSurge-snapshot.old.spec[i]))
 		}
+		targets[i] = min(targets[i], keep)
 		if target.RequiredRoles[i] && target.SpecReplicas[i] > 0 {
 			targets[i] = max(1, targets[i])
 		}

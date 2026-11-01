@@ -41,8 +41,8 @@ import (
 
 // updateStatus publishes cached counts and conditions.
 // Scalers use the same counts as the DisaggregatedSet's nested role status.
-// partitionHeld reports that the rollout executor found no step to take because
-// of a role partition in this reconcile.
+// partitionHeld reports that the rollout executor found every rolling slice
+// settled at its role partitions in this reconcile.
 func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, partitionHeld bool) error {
 	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
@@ -560,7 +560,7 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
-	} else if held, ok := partitionHold(disaggregatedSet, roleStatuses); ok && partitionHeld {
+	} else if held, ok := partitionHold(roleStatuses); ok && partitionHeld {
 		reason, message = reasonRolloutPartitioned, held
 	}
 
@@ -574,14 +574,13 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 }
 
 // partitionHold reports a rolling update that has stopped at its role
-// partitions: every role has exactly its desired groups, all Ready, at least
-// desired - partition of them on the current revision, and some role has fewer
-// than all. The message lists each role's groups on the current revision.
-// Counts alone can briefly match while a new LWS's status lags its groups, so
-// the caller also requires the executor to have found the rollout held.
-func partitionHold(ds *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
-	sliceCount := disaggregatedsetutils.GetSlices(ds)
-	configs := disaggregatedsetutils.GetRoleConfigs(ds)
+// partitions: every role has exactly its desired groups, all Ready, and some
+// role has fewer than all of them on the current revision. The message lists
+// each role's groups on the current revision. Counts alone can briefly match
+// while a new LWS's status lags its groups, or one slice's progress can mask
+// another's, so the caller also requires the executor to have found every
+// rolling slice held.
+func partitionHold(roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
 	held := false
 	counts := make([]string, 0, len(roleStatuses))
 	for _, status := range roleStatuses {
@@ -589,15 +588,7 @@ func partitionHold(ds *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disag
 			return "", false
 		}
 		desired := *status.DesiredReplicas
-		var partition int32
-		if config := configs[status.Name]; config != nil && len(config.SubRoles) == 0 {
-			if rc := config.Spec.RolloutStrategy.RollingUpdateConfiguration; rc != nil && rc.Partition != nil {
-				partition = *rc.Partition
-			}
-		}
-		// The partition applies per slice.
-		floor := max(0, desired-partition*sliceCount)
-		if status.Replicas != desired || status.ReadyReplicas != desired || status.UpdatedReplicas < floor {
+		if status.Replicas != desired || status.ReadyReplicas != desired {
 			return "", false
 		}
 		held = held || status.UpdatedReplicas < desired

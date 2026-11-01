@@ -73,6 +73,8 @@ Change the template with the partitions at 2; the rollout stops at one new prefi
 
 - The partition counts groups **per slice**, and it holds the rollout only: with no template change it does nothing, and the budgets and the fractional window still apply while the rollout advances.
 - While held, the `Progressing` condition has reason `RolloutPartitioned`, its message lists each role's groups on the current revision, and one `RollingUpdatePartitioned` event is recorded for each hold. `status.roleStatuses[].updatedReplicas` is the number of new groups per role.
+- The fractional window still applies between roles. With different partitions per role, a role can stop short of its own partition, within one window of a role its partition holds.
+- If `replicas` drops during a hold, the role returns to `replicas`. With `scaleDownDuringRollout: Deferred` (the default) old groups drain; with `Immediate` new groups are removed first, keeping the partition's old groups. Raising the partition does not remove new groups, except, under `Immediate`, a surge group above `replicas`.
 - A partition equal to `replicas` holds a template change at zero new groups. A driver such as a progressive-delivery controller can keep it there between releases and lower it step by step.
 - `partition` is not supported on a role with `subRoles`.
 

@@ -16,7 +16,10 @@ limitations under the License.
 
 package disaggregatedset
 
-import "slices"
+import (
+	"math"
+	"slices"
+)
 
 // Every per-role slice uses the same role index, resolved by the executor.
 type RoleReplicaState = []int
@@ -204,8 +207,8 @@ func (snapshot rolloutSnapshot) surgeCeiling(role int) int {
 	return baseline + snapshot.Config[role].MaxSurge
 }
 
-// A partition caps target growth at the desired groups it does not hold. It
-// never retracts groups the target already has.
+// A partition caps target growth at the desired groups it does not hold. The
+// cap limits growth only; partitionedTargetKeeps decides reductions.
 func (snapshot rolloutSnapshot) partitionedTargetLimit(role int) (int, bool) {
 	partition := snapshot.Config[role].Partition
 	if partition <= 0 {
@@ -214,15 +217,46 @@ func (snapshot rolloutSnapshot) partitionedTargetLimit(role int) (int, bool) {
 	return max(0, snapshot.Target.DesiredReplicas[role]-partition), true
 }
 
+// The target groups a partition leaves in place. A partition never retracts
+// target groups, except under Immediate scale-down: excess above desired then
+// comes from the target first, down to the groups the partition releases, as a
+// StatefulSet removes its newest Pods first.
+func (snapshot rolloutSnapshot) partitionedTargetKeeps(role int) int {
+	spec := snapshot.Target.SpecReplicas[role]
+	limit, partitioned := snapshot.partitionedTargetLimit(role)
+	if !partitioned || !snapshot.ScaleDownDuringRollout {
+		return spec
+	}
+	keep := min(spec, max(limit, snapshot.Target.DesiredReplicas[role]-snapshot.old.spec[role]))
+	if snapshot.Target.RequiredRoles[role] && spec > 0 {
+		keep = max(1, keep) // As any target reduction, keep a started required role.
+	}
+	return keep
+}
+
 // The active old revision keeps the held groups that parked revisions do not
-// already provide. A partition cannot restore a group that has already drained.
+// already provide, but never more than the desired groups the target does not
+// have: after a partition rises mid-surge or desired drops during a hold, old
+// groups drain to desired - target through the normal drain budget. A
+// partition cannot restore a group that has already drained.
 func (snapshot rolloutSnapshot) partitionedOldFloor(role int) int {
-	partition := min(snapshot.Config[role].Partition, snapshot.Target.DesiredReplicas[role])
+	held := max(0, snapshot.Target.DesiredReplicas[role]-snapshot.partitionedTargetKeeps(role))
+	partition := min(snapshot.Config[role].Partition, held)
 	if partition <= 0 {
 		return 0
 	}
 	parked := snapshot.old.spec[role] - snapshot.ActiveOld.SpecReplicas[role]
 	return min(snapshot.ActiveOld.SpecReplicas[role], max(0, partition-parked))
+}
+
+// The most target groups a partition admits: its limit, or the current Spec
+// when the target already holds more.
+func (snapshot rolloutSnapshot) partitionCeiling(role int) int {
+	limit, partitioned := snapshot.partitionedTargetLimit(role)
+	if !partitioned {
+		return math.MaxInt
+	}
+	return max(snapshot.Target.SpecReplicas[role], limit)
 }
 
 func (snapshot rolloutSnapshot) availabilityFloor(role int) int {

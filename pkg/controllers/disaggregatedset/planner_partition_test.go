@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,11 +70,12 @@ func TestPartitionHoldsRolloutAtEachStep(t *testing.T) {
 		{desired: RoleReplicaState{2, 6}, partitions: []RoleReplicaState{{1, 5}, {1, 3}, {0, 0}}},
 		{desired: RoleReplicaState{2, 4}, partitions: []RoleReplicaState{{1, 2}, {0, 0}}},
 	} {
-		for _, budget := range [][2]int{{1, 0}, {0, 1}, {1, 1}, {2, 0}} {
-			t.Run(fmt.Sprintf("%v/surge=%d,unavailable=%d", tc.desired, budget[0], budget[1]), func(t *testing.T) {
+		for _, budget := range [][3]int{{1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 0, 0}, {1, 0, 1}, {0, 1, 1}} {
+			t.Run(fmt.Sprintf("%v/surge=%d,unavailable=%d,immediate=%d", tc.desired, budget[0], budget[1], budget[2]), func(t *testing.T) {
 				zero := make(RoleReplicaState, len(tc.desired))
 				state := rolloutState(tc.desired, tc.desired, tc.desired, nil, nil, zero, zero, tc.desired,
 					partitionedConfigs(budget[0], budget[1], tc.partitions[0]))
+				state.ScaleUpDuringRollout, state.ScaleDownDuringRollout = budget[2] == 1, budget[2] == 1
 				for _, partitions := range tc.partitions {
 					for i := range state.Config {
 						state.Config[i].Partition = partitions[i]
@@ -100,6 +102,96 @@ func TestRaisingPartitionDoesNotRetractTargetGroups(t *testing.T) {
 	state := rolloutState(desired, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}, nil, nil,
 		RoleReplicaState{2, 2}, RoleReplicaState{2, 2}, desired, partitionedConfigs(1, 0, RoleReplicaState{2, 2}))
 	require.Nil(t, ComputeNextStep(state), "a raised partition stops progress; it does not roll back")
+}
+
+func TestPartitionKeepsTheCoordinationWindow(t *testing.T) {
+	// Partitions 1 and 9 allow 9 and 1 new groups, but each role still
+	// progresses within one window (1/10) of the least advanced role.
+	desired, zero := RoleReplicaState{10, 10}, RoleReplicaState{0, 0}
+	state := rolloutState(desired, desired, desired, nil, nil, zero, zero, desired, partitionedConfigs(9, 0, RoleReplicaState{1, 9}))
+	step := ComputeNextStep(state)
+	require.NotNil(t, step)
+	require.NoError(t, validateUpdateStep(state, step))
+	require.LessOrEqual(t, step.New[0]-step.New[1], 1, "new groups %v leave the coordination window", step.New)
+	settle(t, &state)
+	require.Equal(t, RoleReplicaState{2, 1}, state.Target.SpecReplicas)
+	require.True(t, heldAtPartition(state))
+}
+
+func TestRaisingPartitionMidSurgeReturnsToDesired(t *testing.T) {
+	// Two old and two target groups per role (a surge toward partition 1) when
+	// the partition is raised to 2. Deferred keeps the target's groups and
+	// drains the old revision to desired - target; Immediate takes the excess
+	// from the target first.
+	for _, tc := range []struct {
+		immediate           bool
+		wantOld, wantTarget RoleReplicaState
+	}{
+		{false, RoleReplicaState{1, 1}, RoleReplicaState{2, 2}},
+		{true, RoleReplicaState{2, 2}, RoleReplicaState{1, 1}},
+	} {
+		t.Run(fmt.Sprintf("immediate=%t", tc.immediate), func(t *testing.T) {
+			desired := RoleReplicaState{3, 3}
+			state := rolloutState(desired, RoleReplicaState{2, 2}, RoleReplicaState{2, 2}, nil, nil,
+				RoleReplicaState{2, 2}, RoleReplicaState{2, 2}, desired, partitionedConfigs(1, 0, RoleReplicaState{2, 2}))
+			state.ScaleDownDuringRollout = tc.immediate
+			require.False(t, heldAtPartition(state))
+			settle(t, &state)
+			require.Equal(t, tc.wantOld, state.ActiveOld.SpecReplicas)
+			require.Equal(t, tc.wantTarget, state.Target.SpecReplicas)
+			require.True(t, heldAtPartition(state))
+		})
+	}
+}
+
+func TestScaleDownDuringPartitionHold(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		immediate         bool
+		partition         int
+		old, target       RoleReplicaState // held at replicas 3
+		wantOld, wantNext RoleReplicaState // after replicas drops to 2
+	}{
+		// Deferred never reduces the target during a rollout: old groups drain.
+		{"deferred, partition 2", false, 2, RoleReplicaState{2, 2}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}},
+		{"deferred, partition 1", false, 1, RoleReplicaState{1, 1}, RoleReplicaState{2, 2}, RoleReplicaState{0, 0}, RoleReplicaState{2, 2}},
+		// Immediate takes the excess from the target first, as a StatefulSet
+		// removes its newest Pods first, keeping one group of a started role.
+		{"immediate, partition 2", true, 2, RoleReplicaState{2, 2}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}},
+		{"immediate, partition 1", true, 1, RoleReplicaState{1, 1}, RoleReplicaState{2, 2}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired := RoleReplicaState{2, 2}
+			state := rolloutState(RoleReplicaState{3, 3}, tc.old, tc.old, nil, nil, tc.target, tc.target, desired,
+				partitionedConfigs(1, 0, RoleReplicaState{tc.partition, tc.partition}))
+			state.ScaleDownDuringRollout = tc.immediate
+			settle(t, &state)
+			require.Equal(t, tc.wantOld, state.ActiveOld.SpecReplicas, "old")
+			require.Equal(t, tc.wantNext, state.Target.SpecReplicas, "target")
+			require.True(t, heldAtPartition(state) || tc.wantOld[0] == 0)
+		})
+	}
+}
+
+func TestHeldAtPartitionRequiresSettledGroups(t *testing.T) {
+	desired := RoleReplicaState{3, 3}
+	held := func(oldReady, targetSpec, targetReady RoleReplicaState) bool {
+		return heldAtPartition(rolloutState(desired, RoleReplicaState{2, 2}, oldReady, nil, nil,
+			targetSpec, targetReady, desired, partitionedConfigs(1, 0, RoleReplicaState{2, 2})))
+	}
+	assert.True(t, held(RoleReplicaState{2, 2}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}))
+	assert.False(t, held(RoleReplicaState{2, 2}, RoleReplicaState{1, 1}, RoleReplicaState{1, 0}), "target group starting")
+	assert.False(t, held(RoleReplicaState{2, 1}, RoleReplicaState{1, 1}, RoleReplicaState{1, 1}), "old group not Ready")
+	assert.False(t, held(RoleReplicaState{2, 2}, RoleReplicaState{1, 0}, RoleReplicaState{1, 0}), "decode below its partition target")
+	assert.False(t, held(RoleReplicaState{2, 2}, RoleReplicaState{2, 1}, RoleReplicaState{2, 1}), "prefill surging")
+}
+
+func TestPartitionHeldRequiresEverySlice(t *testing.T) {
+	executor := &RollingUpdateExecutor{rollingSlices: 2, heldSlices: 1}
+	assert.False(t, executor.PartitionHeld(), "one slice is still rolling")
+	executor.heldSlices = 2
+	assert.True(t, executor.PartitionHeld())
+	assert.False(t, (&RollingUpdateExecutor{}).PartitionHeld(), "nothing rolling")
 }
 
 func TestPartitionCountsParkedRevisionGroups(t *testing.T) {
@@ -172,10 +264,12 @@ func TestPartitionHoldCondition(t *testing.T) {
 			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 4, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
 		{"new group not ready", 1, []int32{2, 2},
 			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 2, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
-		{"below the partition target", 1, []int32{1, 1},
-			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
-		{"no partition", 1, []int32{0, 0},
-			[]disaggregatedsetv1.RoleStatus{status("prefill", 3, 3, 3, 1), status("decode", 3, 3, 3, 1)}, "RolloutInProgress", ""},
+		{"short of its own partition, held by a peer's", 1, []int32{1, 9},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 10, 10, 10, 2), status("decode", 10, 10, 10, 1)},
+			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 2/10, decode 1/10"},
+		{"partition above replicas, many slices", 2, []int32{math.MaxInt32, math.MaxInt32},
+			[]disaggregatedsetv1.RoleStatus{status("prefill", 6, 6, 6, 0), status("decode", 6, 6, 6, 0)},
+			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 0/6, decode 0/6"},
 		{"partition applies per slice", 2, []int32{2, 2},
 			[]disaggregatedsetv1.RoleStatus{status("prefill", 6, 6, 6, 2), status("decode", 6, 6, 6, 2)},
 			reasonRolloutPartitioned, "Rolling update held at the role partitions; groups on the current revision: prefill 2/6, decode 2/6"},
