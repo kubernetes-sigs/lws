@@ -118,10 +118,9 @@ const (
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 
 	// GroupRestartChargedLeadersAnnotationKey is set on a LeaderWorkerSet and stores
-	// a bounded JSON map from revision/group keys to charged leader UIDs whose
-	// deletions may still need retrying. Entries can be reclaimed after the Pod
-	// cache observes deletion or replacement. It is updated atomically with
-	// GroupRestartCountsAnnotationKey.
+	// a JSON map from revision/group keys to a 16-character hexadecimal token
+	// of the leader UID last charged against the restart budget. It is updated
+	// atomically with GroupRestartCountsAnnotationKey.
 	GroupRestartChargedLeadersAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-charged-leaders"
 
 	// GroupRecreatePendingAnnotationKey is set on a leader Pod when a group

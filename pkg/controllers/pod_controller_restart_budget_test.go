@@ -32,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -51,6 +50,183 @@ func restartBudgetTestScheme(t *testing.T) *runtime.Scheme {
 		}
 	}
 	return scheme
+}
+
+func chargedLeaderAnnotation(t *testing.T, leaders map[string]types.UID) string {
+	t.Helper()
+	tokens := make(map[string]string, len(leaders))
+	for key, uid := range leaders {
+		tokens[key] = chargedLeaderToken(uid)
+	}
+	raw, err := json.Marshal(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestChargedLeaderToken(t *testing.T) {
+	for _, tc := range []struct {
+		uid  types.UID
+		want string
+	}{
+		{uid: "12345678-1234-4123-8123-123456789abc", want: "af16785cab34225b"},
+		// Different incarnations may share a prefix; hash the entire UID.
+		{uid: "12345678-1234-4123-8123-123456789abd", want: "88c656a92e4142f7"},
+	} {
+		if got := chargedLeaderToken(tc.uid); got != tc.want {
+			t.Errorf("chargedLeaderToken(%q) = %q, want %q", tc.uid, got, tc.want)
+		}
+	}
+}
+
+func TestRestartBudgetRetainsLegacyChargedUID(t *testing.T) {
+	uid := types.UID("12345678-1234-4123-8123-123456789abc")
+	got, err := parseGroupRestartChargedLeaders(fmt.Sprintf(`{"revision-a/0":%q}`, uid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["revision-a/0"] != "af16785cab34225b" {
+		t.Fatalf("legacy UID was not recognized: %v", got)
+	}
+}
+
+func TestRestartBudgetTokenCapacityAndAnnotationBoundary(t *testing.T) {
+	wantCounts := make(map[string]int32, 4000)
+	wantLeaders := make(map[string]types.UID, 4000)
+	for i := range 4000 {
+		key := fmt.Sprintf("0123456789/%d", i)
+		wantCounts[key] = 1
+		wantLeaders[key] = types.UID(fmt.Sprintf("%08x-0000-4000-8000-%012x", i, i))
+	}
+	countsJSON, err := json.Marshal(wantCounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullUIDs, err := json.Marshal(wantLeaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey:         string(countsJSON),
+		leaderworkerset.GroupRestartChargedLeadersAnnotationKey: string(fullUIDs),
+	}
+	if err := apivalidation.ValidateAnnotationsSize(annotations); err == nil {
+		t.Fatal("full UID records for 4,000 groups must reproduce the annotation-size regression")
+	}
+	annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = chargedLeaderAnnotation(t, wantLeaders)
+	if err := apivalidation.ValidateAnnotationsSize(annotations); err != nil {
+		t.Fatalf("compact tokens for 4,000 groups must fit: %v", err)
+	}
+	const paddingKey = "test.lws/padding"
+	size := len(paddingKey)
+	for key, value := range annotations {
+		size += len(key) + len(value)
+	}
+	t.Logf("4,000 groups' count and token annotations occupy %d bytes", size-len(paddingKey))
+
+	for _, offset := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", offset), func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(4000).Size(1).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3).Obj()
+			leader := wrappers.MakePodWithLabels(lws.Name, "3999", "0", lws.Namespace, 1)
+			leader.UID = wantLeaders["0123456789/3999"]
+			leader.Labels[leaderworkerset.RevisionKey] = "0123456789"
+			leader.Status.Phase = corev1.PodRunning
+			leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+			leader.Finalizers = []string{"test.lws/retain"}
+			initialCounts := make(map[string]int32, 3999)
+			initialLeaders := make(map[string]types.UID, 3999)
+			for key, count := range wantCounts {
+				if key != "0123456789/3999" {
+					initialCounts[key] = count
+					initialLeaders[key] = wantLeaders[key]
+				}
+			}
+			initialJSON, err := json.Marshal(initialCounts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lws.Annotations = map[string]string{
+				leaderworkerset.GroupRestartCountsAnnotationKey:         string(initialJSON),
+				leaderworkerset.GroupRestartChargedLeadersAnnotationKey: chargedLeaderAnnotation(t, initialLeaders),
+				paddingKey: strings.Repeat("x", apivalidation.TotalAnnotationSizeLimitB+offset-size),
+			}
+			if err := apivalidation.ValidateAnnotationsSize(lws.Annotations); err != nil {
+				t.Fatalf("initial object must be valid: %v", err)
+			}
+			updates, deletes := 0, 0
+			cli := fake.NewClientBuilder().WithScheme(restartBudgetTestScheme(t)).WithObjects(lws, leader).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+						updates++
+						return c.Update(ctx, obj, opts...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						deletes++
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).Build()
+			r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
+			deleted, result, err := r.handleRestartPolicy(t.Context(), *leader, *lws)
+			var current leaderworkerset.LeaderWorkerSet
+			if getErr := cli.Get(t.Context(), client.ObjectKeyFromObject(lws), &current); getErr != nil {
+				t.Fatal(getErr)
+			}
+			if offset > 0 {
+				if err == nil || !strings.Contains(err.Error(), "annotations size") || deleted || result.RequeueAfter != 0 || updates != 0 || deletes != 0 {
+					t.Fatalf("overflow must surface an error without fixed-rate retries or partial updates: deleted=%t result=%+v err=%v updates=%d deletes=%d", deleted, result, err, updates, deletes)
+				}
+				assertRestartBudgetState(t, &current, initialCounts, initialLeaders)
+			} else {
+				if err != nil || !deleted || result.RequeueAfter != 0 {
+					t.Fatalf("valid charge failed: deleted=%t result=%+v err=%v", deleted, result, err)
+				}
+				assertRestartBudgetState(t, &current, wantCounts, wantLeaders)
+			}
+		})
+	}
+}
+
+func TestHandleRestartPolicyRepeatedWorkerEventsWithStaleLeaderCache(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(8).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3).Obj()
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 8)
+	leader.UID = "failed-leader"
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	deletes := 0
+	cli := fake.NewClientBuilder().WithScheme(restartBudgetTestScheme(t)).WithObjects(lws, leader).
+		WithInterceptorFuncs(interceptor.Funcs{
+			// Model the API server accepting deletion while the Pod cache still
+			// holds the live leader, independently of the updated LWS cache.
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deletes++
+				if obj.GetAnnotations()[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "" {
+					t.Fatal("one collective failure exhausted the restart budget")
+				}
+				return nil
+			},
+		}).Build()
+	r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
+	for i := 1; i < 8; i++ {
+		worker := wrappers.MakePodWithLabels(lws.Name, "0", fmt.Sprint(i), lws.Namespace, 8)
+		worker.Labels[leaderworkerset.RevisionKey] = "revision-a"
+		worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))}
+		worker.Status.Phase = corev1.PodRunning
+		worker.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+		deleted, result, err := r.handleRestartPolicy(t.Context(), *worker, *lws)
+		if err != nil || !deleted || result.RequeueAfter != 0 {
+			t.Fatalf("worker %d: deleted=%t result=%+v err=%v", i, deleted, result, err)
+		}
+	}
+	var current leaderworkerset.LeaderWorkerSet
+	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(lws), &current); err != nil {
+		t.Fatal(err)
+	}
+	assertRestartBudgetState(t, &current, map[string]int32{"revision-a/0": 1}, map[string]types.UID{"revision-a/0": leader.UID})
+	if deletes != 7 {
+		t.Fatalf("deletion attempts=%d, want 7", deletes)
+	}
 }
 
 // Multiple workers can observe an updated LWS while still seeing the old
@@ -84,7 +260,7 @@ func TestHandleRestartPolicyChargesBudgetOncePerGroupFailure(t *testing.T) {
 			}
 			lws.Annotations = map[string]string{leaderworkerset.GroupRestartCountsAnnotationKey: `{"revision-a/0":1}`}
 			if tc.charged != "" {
-				lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = fmt.Sprintf(`{"revision-a/0":%q}`, tc.charged)
+				lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = chargedLeaderAnnotation(t, map[string]types.UID{"revision-a/0": tc.charged})
 			}
 			leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 3)
 			leader.UID = "failed-leader"
@@ -165,98 +341,6 @@ func TestHandleRestartPolicyRetriesDeletionAfterPersistingCharge(t *testing.T) {
 	}
 }
 
-func TestRestartBudgetAnnotationSizeBoundary(t *testing.T) {
-	for _, pending := range []int{1, maxGroupRestartChargedLeaders} {
-		t.Run(fmt.Sprintf("pending=%d", pending), func(t *testing.T) {
-			testRestartBudgetAnnotationSizeBoundary(t, pending)
-		})
-	}
-}
-
-func testRestartBudgetAnnotationSizeBoundary(t *testing.T, pending int) {
-	t.Helper()
-	scheme := restartBudgetTestScheme(t)
-	lws := wrappers.BuildLeaderWorkerSet("default").Replica(4000).Size(1).
-		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3).Obj()
-	counts := map[string]int32{}
-	charged := map[string]types.UID{}
-	for i := range 4000 {
-		key := fmt.Sprintf("0123456789/%d", i)
-		counts[key] = 1
-		charged[key] = types.UID(fmt.Sprintf("00000000-0000-0000-0000-%012d", i))
-	}
-	countsJSON, err := json.Marshal(counts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chargedJSON, err := json.Marshal(charged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lws.Annotations = map[string]string{
-		leaderworkerset.GroupRestartCountsAnnotationKey:         string(countsJSON),
-		leaderworkerset.GroupRestartChargedLeadersAnnotationKey: string(chargedJSON),
-	}
-	if errs := apivalidation.ValidateAnnotations(lws.Annotations, field.NewPath("metadata", "annotations")); len(errs) == 0 {
-		t.Fatal("expected unbounded UID history for 4,000 groups to exceed the annotation limit")
-	}
-	// Only in-flight deletions need a UID record. Previously charged groups
-	// below have already disappeared from the Pod cache.
-	for i := range 4000 {
-		if i < 3999-pending || i == 3999 {
-			delete(charged, fmt.Sprintf("0123456789/%d", i))
-		}
-	}
-	chargedJSON, err = json.Marshal(charged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = string(chargedJSON)
-	// Fill the remaining annotation space exactly, including user annotations.
-	const paddingKey = "test.lws/padding"
-	size := len(paddingKey)
-	for key, value := range lws.Annotations {
-		size += len(key) + len(value)
-	}
-	lws.Annotations[paddingKey] = strings.Repeat("x", apivalidation.TotalAnnotationSizeLimitB-size)
-	if errs := apivalidation.ValidateAnnotations(lws.Annotations, field.NewPath("metadata", "annotations")); len(errs) != 0 {
-		t.Fatalf("initial annotations must fit exactly: %v", errs)
-	}
-	leader := wrappers.MakePodWithLabels(lws.Name, "3999", "0", lws.Namespace, 1)
-	leader.UID = "00000000-0000-0000-0000-000000003999"
-	leader.Labels[leaderworkerset.RevisionKey] = "0123456789"
-	leader.Status.Phase = corev1.PodRunning
-	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
-	leader.Finalizers = []string{"test.lws/retain"}
-	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				if errs := apivalidation.ValidateAnnotations(obj.GetAnnotations(), field.NewPath("metadata", "annotations")); len(errs) != 0 {
-					return apierrors.NewInvalid(leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet").GroupKind(), obj.GetName(), errs)
-				}
-				return c.Update(ctx, obj, opts...)
-			},
-		}).Build()
-	r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
-	deleted, _, err := r.handleRestartPolicy(t.Context(), *leader, *lws)
-	if err != nil || !deleted {
-		t.Fatalf("recovery at annotation-size boundary = (%t, %v)", deleted, err)
-	}
-	var current leaderworkerset.LeaderWorkerSet
-	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(lws), &current); err != nil {
-		t.Fatal(err)
-	}
-	counts["0123456789/3999"] = 2
-	assertRestartBudgetState(t, &current, counts, map[string]types.UID{"0123456789/3999": leader.UID})
-	var terminating corev1.Pod
-	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(leader), &terminating); err != nil {
-		t.Fatal(err)
-	}
-	if terminating.DeletionTimestamp == nil || terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "" {
-		t.Fatalf("automatic recovery was blocked: %+v", terminating.ObjectMeta)
-	}
-}
-
 func TestHandleRestartPolicyDeletesOnlyObservedLeader(t *testing.T) {
 	for _, state := range []string{"deleting", "gone", "replaced"} {
 		t.Run(state, func(t *testing.T) {
@@ -265,7 +349,7 @@ func TestHandleRestartPolicyDeletesOnlyObservedLeader(t *testing.T) {
 				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(1).Obj()
 			lws.Annotations = map[string]string{
 				leaderworkerset.GroupRestartCountsAnnotationKey:         `{"revision-a/0":1}`,
-				leaderworkerset.GroupRestartChargedLeadersAnnotationKey: `{"revision-a/0":"failed-leader"}`,
+				leaderworkerset.GroupRestartChargedLeadersAnnotationKey: chargedLeaderAnnotation(t, map[string]types.UID{"revision-a/0": "failed-leader"}),
 			}
 			cached := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
 			cached.UID = "failed-leader"
@@ -352,7 +436,7 @@ func TestPersistGroupRestartCountDeduplicatesAfterConflict(t *testing.T) {
 				}
 				current.Annotations = map[string]string{
 					leaderworkerset.GroupRestartCountsAnnotationKey:         `{"revision-a/0":1,"revision-a/1":2}`,
-					leaderworkerset.GroupRestartChargedLeadersAnnotationKey: `{"revision-a/0":"failed-leader","revision-a/1":"other-leader"}`,
+					leaderworkerset.GroupRestartChargedLeadersAnnotationKey: chargedLeaderAnnotation(t, map[string]types.UID{"revision-a/0": "failed-leader", "revision-a/1": "other-leader"}),
 				}
 				if err := c.Update(ctx, &current); err != nil {
 					return err
@@ -387,13 +471,13 @@ func TestRestartBudgetPrunesChargedLeadersWithCounts(t *testing.T) {
 			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Obj()
 			lws.Annotations = map[string]string{
 				leaderworkerset.GroupRestartCountsAnnotationKey:         `{"revision-a/0":1,"revision-a/1":2,"old-revision/0":3}`,
-				leaderworkerset.GroupRestartChargedLeadersAnnotationKey: `{"revision-a/0":"leader-0","revision-a/1":"leader-1","old-revision/0":"old-leader"}`,
+				leaderworkerset.GroupRestartChargedLeadersAnnotationKey: chargedLeaderAnnotation(t, map[string]types.UID{"revision-a/0": "leader-0", "revision-a/1": "leader-1", "old-revision/0": "old-leader"}),
 			}
 			leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
 			leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
 			if action == "last entry" {
 				lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = `{"revision-a/0":1}`
-				lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = `{"revision-a/0":"leader-0"}`
+				lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = chargedLeaderAnnotation(t, map[string]types.UID{"revision-a/0": "leader-0"})
 			}
 			cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 			pods := &PodReconciler{Client: cli}
@@ -458,14 +542,18 @@ func assertRestartBudgetState(t *testing.T, lws *leaderworkerset.LeaderWorkerSet
 	if diff := cmp.Diff(wantCounts, counts); diff != "" {
 		t.Fatalf("restart counts mismatch (-want,+got):\n%s", diff)
 	}
-	// Decode independently of the production parser to verify persisted UIDs.
-	charged := map[string]types.UID{}
+	// Decode independently of the production parser to verify persisted tokens.
+	charged := map[string]string{}
 	if raw := lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey]; raw != "" {
 		if err := json.Unmarshal([]byte(raw), &charged); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if diff := cmp.Diff(wantCharged, charged); diff != "" {
+	wantTokens := map[string]string{}
+	for key, uid := range wantCharged {
+		wantTokens[key] = chargedLeaderToken(uid)
+	}
+	if diff := cmp.Diff(wantTokens, charged); diff != "" {
 		t.Fatalf("charged leaders mismatch (-want,+got):\n%s", diff)
 	}
 }

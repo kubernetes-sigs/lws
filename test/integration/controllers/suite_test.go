@@ -27,12 +27,10 @@ import (
 	"github.com/onsi/gomega"
 	. "github.com/onsi/gomega"
 
-	corev1 "k8s.io/api/core/v1"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -113,9 +111,6 @@ var _ = BeforeSuite(func() {
 	Expect(k8sClient).NotTo(BeNil())
 	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
-		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
-			&corev1.Pod{}: {Transform: podInformerLag},
-		}},
 	})
 	Expect(err).ToNot(HaveOccurred())
 
