@@ -1,7 +1,7 @@
 ---
-name: Clean Up Request
+name: 🧹 Clean Up Request
 about: Suggest to clean up code, process or tech debt to the LWS project
-title: ''
+title: "🧹 "
 labels: kind/cleanup
 assignees: ''
 
