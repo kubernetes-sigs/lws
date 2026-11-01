@@ -117,6 +117,12 @@ const (
 	// use "<revision>/<groupIndex>" and values are non-negative integers.
 	GroupRestartCountsAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-counts"
 
+	// GroupRestartChargedLeadersAnnotationKey is set on a LeaderWorkerSet and stores
+	// a JSON map from revision/group keys to a 16-character hexadecimal token
+	// of the leader UID last charged against the restart budget. It is updated
+	// atomically with GroupRestartCountsAnnotationKey.
+	GroupRestartChargedLeadersAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-charged-leaders"
+
 	// GroupRecreatePendingAnnotationKey is set on a leader Pod when a group
 	// recreation has been triggered but deferred by restartBackoff.
 	GroupRecreatePendingAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-recreate-pending"
