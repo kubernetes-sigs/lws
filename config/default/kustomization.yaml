@@ -35,6 +35,9 @@ resources:
 # [VOLCANO] To enable Volcano gang scheduling RBAC, uncomment the following.
 # components:
 # - ../components/volcano
+# [COMPUTEDOMAIN] To enable NVIDIA DRA ComputeDomain RBAC, uncomment the following.
+# components:
+# - ../components/computedomain
 
 patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in

@@ -25,7 +25,8 @@ for, and garbage-collects `ComputeDomain` resources at two scopes:
 ## Prerequisites and Installation
 
 1. **Kubernetes and NVIDIA DRA driver**: A cluster with Dynamic Resource
-   Allocation (DRA) enabled and the NVIDIA GPU DRA driver serving
+   Allocation (DRA) enabled and `k8s-dra-driver-gpu` running in its default
+   `driverManaged` IMEX mode with `IMEXDaemonsWithDNSNames` enabled and serving
    `computedomains.resource.nvidia.com/v1beta1`. The controller manager exits at
    startup if the gate is enabled and this API is not served.
 2. **Helm RBAC and Feature Gate**: Enable the `AutoComputeDomain` feature gate
@@ -48,43 +49,28 @@ featureGates:
   AutoComputeDomain: true
 ```
 
-The kustomize manifests do not grant ComputeDomain permissions. Without them
-the ComputeDomain informer cannot sync and the controller manager fails to
-start. Add a ClusterRole bound to the controller manager's ServiceAccount
-(`lws-controller-manager` in `lws-system` by default):
+The default kustomize manifests do not grant ComputeDomain permissions, and
+without them the ComputeDomain informer cannot sync and the controller manager
+fails to start. Uncomment the `config/components/computedomain` component in
+`config/default/kustomization.yaml` (or include `../components/computedomain`
+in your kustomization overlay) to patch `manager-role` with the required
+`resource.nvidia.com` permissions:
 
 ```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: lws-computedomain-manager
-rules:
-  - apiGroups: ["resource.nvidia.com"]
-    resources: ["computedomains"]
-    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
-  - apiGroups: ["resource.nvidia.com"]
-    resources: ["computedomains/finalizers"]
-    verbs: ["update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: lws-computedomain-manager
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: lws-computedomain-manager
-subjects:
-  - kind: ServiceAccount
-    name: lws-controller-manager
-    namespace: lws-system
+components:
+- ../components/computedomain
 ```
 
 > **Note:** An IMEX channel only connects GPUs within the same physical NVLink
-> clique (typically labeled `nvidia.com/gpu.clique`). Pair `auto-compute-domain`
-> with topology placement (such as `leaderworkerset.sigs.k8s.io/exclusive-topology`
-> or `DisaggregatedSet.spec.placementPolicy`) so pods sharing a `ComputeDomain`
-> co-locate on the same NVLink clique.
+> clique (typically labeled `nvidia.com/gpu.clique`), and `k8s-dra-driver-gpu`
+> enforces at most one active `ComputeDomain` per node in `driverManaged` mode
+> even when a node has free GPUs. Pair `auto-compute-domain` with placement
+> constraints (such as `leaderworkerset.sigs.k8s.io/exclusive-topology` or
+> `DisaggregatedSet.spec.placementPolicy`) so pods sharing a `ComputeDomain`
+> co-locate on the same NVLink clique while separate domains (replicas,
+> role-scoped domains, or surging revisions) land on distinct nodes. Rolling
+> updates with `maxSurge > 0` and in-place group restarts require spare clique
+> nodes, or `maxSurge: 0` drain-before-reuse when all clique nodes are occupied.
 
 ## Option 1: Per-Replica ComputeDomain (`LeaderWorkerSet`)
 
