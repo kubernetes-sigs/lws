@@ -114,12 +114,16 @@ Other orchestrators in the ecosystem (such as
 [Grove's `auto-mnnvl`](https://github.com/ai-dynamo/grove/blob/main/docs/user-guide/auto-mnnvl.md))
 automate `ComputeDomain` creation, but only at a single monolithic workload
 granularity without revision isolation or the two-level distinction between
-per-replica intra-role MNNVL and per-slice cross-role MNNVL. Meanwhile,
-upstream Kubernetes work on `PodGroup`-scoped DRA `ResourceClaim`s
-([KEP-5729](https://github.com/kubernetes/enhancements/issues/5729),
-[dra-driver-nvidia-gpu#934](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/934))
-is still in early design and will take multiple Kubernetes releases to replace
-`ComputeDomain`.
+per-replica intra-role MNNVL and per-slice cross-role MNNVL. Meanwhile, although upstream `PodGroup`-scoped DRA `ResourceClaim`s
+([KEP-5729](https://github.com/kubernetes/enhancements/issues/5729), Beta and
+default-disabled behind `DRAWorkloadResourceClaims` in Kubernetes 1.37) and
+shared leaf-group claims in `spec.scheduling`
+([KEP-666](/keps/666-gang-scheduling-in-lws)) exist at the scheduling API layer,
+`k8s-dra-driver-gpu`
+([dra-driver-nvidia-gpu#934](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/934))
+still provisions MNNVL IMEX domains exclusively through `ComputeDomain` CRs, and
+upstream `PodGroup` claims attach only to leaf `PodGroup`s rather than
+cross-role `DisaggregatedSet` slices or composite groups.
 
 ### Goals
 
@@ -229,13 +233,25 @@ role. Only `prefill` and `decode` enroll in the slice `ComputeDomain`.
 
 ### Notes/Constraints/Caveats
 
-- **NVLink topology alignment is required at the scheduling layer.** An IMEX
-  channel only connects GPUs within the same physical NVLink clique
-  (typically labeled `nvidia.com/gpu.clique`). Operators must pair
-  `auto-compute-domain` with an appropriate placement constraint (such as
+- **NVLink topology alignment and node-disjoint domain placement at the scheduling layer.**
+  An IMEX channel only connects GPUs within the same physical NVLink clique
+  (typically labeled `nvidia.com/gpu.clique`), and in `k8s-dra-driver-gpu`'s
+  `driverManaged` mode the kubelet plugin enforces at most **one active
+  `ComputeDomain` per node** even when a node has free GPUs. Operators must pair
+  `auto-compute-domain` with placement constraints (such as
   `spec.placementPolicy`, WAS `PodGroup` topology constraints, or Kueue TAS) so
   all pods enrolled in a single `ComputeDomain` land within the same NVLink
-  clique.
+  clique while distinct `ComputeDomain`s (separate replicas, separate role-level
+  domains, or surging revisions) do not share nodes. Rolling updates with
+  `maxSurge > 0` and in-place group restarts require spare nodes in the clique,
+  or `maxSurge: 0` drain-before-reuse when all clique nodes are occupied.
+- **`k8s-dra-driver-gpu` driver mode prerequisite.** LWS creates elastic
+  `ComputeDomain`s (`spec.numNodes: 0`), which require `k8s-dra-driver-gpu`
+  configured in its default `driverManaged` IMEX mode with
+  `IMEXDaemonsWithDNSNames` enabled (`hostManaged` IMEX mode and disabled
+  `IMEXDaemonsWithDNSNames` are unsupported). Startup and admission checks
+  verify `ComputeDomain` (`v1beta1`) CRD availability via `RESTMapper` without
+  reading cross-namespace driver deployments.
 - **Asynchronous `ResourceClaimTemplate` creation.** When LWS creates a
   `ComputeDomain`, the NVIDIA DRA controller asynchronously creates the backing
   `ResourceClaimTemplate`. Standard Kubernetes DRA (`ResourceClaimController`
@@ -267,8 +283,12 @@ garbage collection mark its `ComputeDomain`s terminating while pods drain. Once
 a replica, slice, or parent workload is gone and zero `Pod`s reference the
 `ComputeDomain`, LWS removes the protection finalizer
 (`leaderworkerset.sigs.k8s.io/compute-domain-protection`) and deletes the
-`ComputeDomain`. That finalizer also holds direct `ComputeDomain` deletions
-(by hand or during namespace deletion) until all referencing pods exit.
+`ComputeDomain`. If a `ComputeDomain` is deleted directly out of band or via
+`Namespace` deletion (`deletionTimestamp` already set, which immediately tears
+down the IMEX `DaemonSet` in `k8s-dra-driver-gpu`), the protection finalizer
+holds etcd object removal and name reuse until all referencing pods exit, after
+which LWS releases the finalizer and recreates the domain if an active slice or
+replacement group still requires it.
 
 **Risk**: Using `unstructured.Unstructured` with `controller-runtime`'s default
 cache settings can bypass the informer cache and issue uncached `GET`/`LIST`
@@ -356,6 +376,12 @@ the following rules to the generated manager `ClusterRole`:
     - update
 ```
 
+For non-Helm installations (`config/default`), provide an opt-in Kustomize
+component under `config/components/computedomain` (commented out by default in
+`config/default/kustomization.yaml`, mirroring `config/components/volcano`) that
+patches `manager-role` with the same `resource.nvidia.com` rules while keeping
+default generated manifests in `config/rbac/role.yaml` free of vendor CRDs.
+
 At manager startup, when `features.Enabled(features.AutoComputeDomain)` is
 `true`, `cmd/main.go` checks `mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: "resource.nvidia.com", Kind: "ComputeDomain"}, "v1beta1")`.
 If no mapping exists, startup fails fast with a descriptive error. When the
@@ -364,7 +390,16 @@ reconcilers are registered, new opt-ins (`CREATE` or newly enabled on `UPDATE`)
 are rejected at admission while pre-existing opted-in objects remain updatable,
 running pod templates are left unchanged so active groups do not restart, and
 `DisaggregatedSet` refuses to create new enrolled child `LeaderWorkerSet`s
-without claims alongside already-claimed slices.
+without claims alongside already-claimed slices. Because managed
+`ComputeDomain`s carry `leaderworkerset.sigs.k8s.io/compute-domain-protection`
+without `ownerReferences`, operators disabling `AutoComputeDomain` (or
+uninstalling the controller) must first disable `auto-compute-domain` on
+opted-in workloads (rolling them out to a non-MNNVL revision) or delete those
+workloads and wait for referencing pods to exit so `computedomain.Reconciler`
+releases the finalizer and deletes all managed `ComputeDomain`s before flipping
+the gate off; otherwise remaining `ComputeDomain`s retain the protection
+finalizer (blocking subsequent namespace/object removal until manually cleared)
+and replica-mode replacements no longer inject claims.
 
 ### Annotations and Precedence
 
@@ -387,7 +422,7 @@ within a slice are ever introduced later.
 | `leaderworkerset.sigs.k8s.io/compute-domain-prefix` | Managed leader `PodTemplateSpec` | Stamped by `LeaderWorkerSetReconciler` when replica-level `auto-compute-domain` is active for the revision; carries `<lwsName>-<uid5>` so `PodWebhook` can derive collision-free `ComputeDomain` names synchronously without API calls. |
 | `leaderworkerset.sigs.k8s.io/compute-domain-name` | Leader `Pod` and worker `StatefulSet` `PodTemplateSpec` | Stamped idempotently on the leader `Pod` by `PodWebhook` and copied onto the worker `StatefulSet` `PodTemplateSpec` by `PodReconciler` so all pods of the replica join the exact same `ComputeDomain`. |
 | `leaderworkerset.sigs.k8s.io/compute-domain-owner-uid` | `ComputeDomain.metadata.labels` | Records the `metadata.uid` of the managing `LeaderWorkerSet` or `DisaggregatedSet`. Replaces `ownerReferences` so Kubernetes garbage collection does not mark `ComputeDomain`s terminating while a deleted workload's pods are still draining, and prevents adopting a same-named `ComputeDomain` from another object. |
-| `leaderworkerset.sigs.k8s.io/compute-domain-protection` | `ComputeDomain.metadata.finalizers` | Holds direct `ComputeDomain` deletion (by hand or during namespace deletion) until zero `Pod`s in the namespace reference its `resourceClaimTemplateName`. |
+| `leaderworkerset.sigs.k8s.io/compute-domain-protection` | `ComputeDomain.metadata.finalizers` | Holds etcd removal and name reuse of a terminating `ComputeDomain` (when deleted directly or during namespace deletion, where `deletionTimestamp` is already set) until zero `Pod`s in the namespace reference its `resourceClaimTemplateName`. |
 
 #### Effective Scope Resolution Matrix on DisaggregatedSet
 
@@ -602,8 +637,12 @@ finalizer on `LeaderWorkerSet` or `DisaggregatedSet` itself:
      `DisaggregatedSet` (`Delete` mapped to managed `ComputeDomain`s by name +
      UID).
    - When `cd.DeletionTimestamp != nil` (deleted directly by hand or during
-     namespace deletion), removes `compute-domain-protection` once
-     `PodClaimTemplateIndex` has zero referencing `Pod`s.
+     namespace deletion, where `deletionTimestamp` is already set and
+     `k8s-dra-driver-gpu` immediately tears down the IMEX `DaemonSet`), holds
+     etcd object removal and name reuse by keeping `compute-domain-protection`
+     until `PodClaimTemplateIndex` has zero referencing `Pod`s, then removes the
+     finalizer so the object finishes deletion and the controller can recreate
+     it if still required.
    - When `cd.DeletionTimestamp == nil` and the managing `LeaderWorkerSet` or
      `DisaggregatedSet` is absent from the informer cache or has a different
      UID (`ownerGone`), keeps `cd` unmarked while pods drain and removes
@@ -673,6 +712,10 @@ causing untracked pod restarts or upgrade churn:
     the restored object unless present in the revision patch, so groups on an
     older non-MNNVL revision keep non-MNNVL templates if their worker
     `StatefulSet` is reconstructed during a rollout.
+  - `revisionEqualityCacheKey` (`SetMatchesRevision`) includes the normalized
+    effective `auto-compute-domain` boolean (`autoComputeDomainEnabled`)
+    alongside `lws.UID`, `lws.Generation`, and `existingRevision.ResourceVersion`
+    because annotation-only updates do not increment `metadata.generation`.
 - **`DisaggregatedSet` (`pkg/utils/disaggregatedset.ComputeDisaggregatedSetRevision` & `resolveRevision`):**
   - When `disaggregatedset.x-k8s.io/auto-compute-domain: "enabled"` is set on
     the `DisaggregatedSet`, `ComputeDisaggregatedSetRevision` stamps the
@@ -730,11 +773,22 @@ To adhere to LWS performance standards on hot paths (`PodReconciler`,
 ### Relationship and Migration Path to Upstream PodGroup DRA (KEP-5729)
 
 Upstream Kubernetes [KEP-5729](https://github.com/kubernetes/enhancements/issues/5729)
-(*DRA ResourceClaims for PodGroups / Workloads*) and
-[kubernetes-sigs/dra-driver-nvidia-gpu#934](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/934)
-propose allowing a DRA `ResourceClaim` to bind directly to a `PodGroup` rather
-than requiring an out-of-band vendor CR (`ComputeDomain`) to synthesize a
-per-domain `ResourceClaimTemplate`.
+(*DRA ResourceClaims for PodGroups / Workloads*, Beta behind the
+default-disabled `DRAWorkloadResourceClaims` gate in Kubernetes 1.37) and LWS's
+`spec.scheduling` leaf `PodGroup` claim support in
+[KEP-666](/keps/666-gang-scheduling-in-lws) establish the Kubernetes scheduling
+API foundation for `PodGroup`-scoped DRA claims. However, two gaps prevent
+replacing `ComputeDomain` today:
+
+1. **NVIDIA DRA driver integration
+   ([dra-driver-nvidia-gpu#934](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/934)):**
+   `k8s-dra-driver-gpu` still provisions MNNVL IMEX channels exclusively via
+   `ComputeDomain` CRs and their generated `ResourceClaimTemplate`s rather than
+   binding IMEX domains directly to `PodGroup`-scoped `ResourceClaim`s.
+2. **Leaf `PodGroup` claim scope:** In Kubernetes 1.37 and
+   [KEP-666](/keps/666-gang-scheduling-in-lws), shared `resourceClaims` attach
+   only to leaf `PodGroup`s rather than `CompositePodGroup`s spanning separate
+   leader/worker templates or multiple roles within a `DisaggregatedSet` slice.
 
 Keeping `auto-compute-domain` in annotations behind a feature gate aligns
 cleanly with that trajectory:
@@ -744,11 +798,13 @@ cleanly with that trajectory:
   indefinitely under v1 compatibility guarantees.
 - Replica-level `ComputeDomain` scoping maps 1:1 onto LWS's per-replica
   `PodGroup` in [KEP-666](/keps/666-gang-scheduling-in-lws), and slice-level
-  scoping maps onto a slice-level `PodGroup` / `Workload`.
-- Once `PodGroup`-scoped DRA claims mature in Kubernetes and the NVIDIA DRA
-  driver, LWS can offer a vendor-neutral DRA claim template mechanism (or
-  translate the annotation) and deprecate `AutoComputeDomain` according to
-  standard feature-gate lifecycle policy.
+  scoping maps onto a slice-level `PodGroup` / `Workload` once composite/slice
+  claim binding and driver support land.
+- Once `k8s-dra-driver-gpu` supports `PodGroup`-scoped IMEX claims and upstream
+  `DRAWorkloadResourceClaims` reaches default-enabled maturity across LWS
+  topologies, LWS can transition users to native `spec.scheduling` claims and
+  deprecate `AutoComputeDomain` according to standard feature-gate lifecycle
+  policy.
 
 ### Test Plan
 
@@ -781,8 +837,9 @@ suites when testing `AutoComputeDomain`.
 - `pkg/utils/revision` & `pkg/utils/disaggregatedset`: byte-identical revisions
   when `auto-compute-domain` is unset/disabled (upgrade safety), legacy `v1` ->
   `v2` `DisaggregatedSet` revision migration on role or slice opt-in, new
-  revision generation when toggled, and `ApplyRevision` restoration across
-  mixed-MNNVL rollouts.
+  revision generation (including primed `SetMatchesRevision` semantic-equality
+  cache invalidation across annotation-only toggles), and `ApplyRevision`
+  restoration across mixed-MNNVL rollouts.
 
 ##### Integration tests
 
@@ -941,12 +998,17 @@ external webhook/controller watching `LeaderWorkerSet`, `DisaggregatedSet`, and
 
 ### Alternative 5: Wait for Upstream PodGroup-Scoped DRA (KEP-5729)
 
-Defer any MNNVL automation in LWS until Kubernetes supports `PodGroup`-scoped
-`ResourceClaim`s and the NVIDIA DRA driver migrates off `ComputeDomain`.
+Defer any MNNVL automation in LWS until `k8s-dra-driver-gpu` migrates off
+`ComputeDomain` to native `PodGroup`-scoped `ResourceClaim`s and upstream
+`DRAWorkloadResourceClaims` supports composite and cross-role slice groups.
 
 **Rejected because:**
-- `KEP-5729` and driver adoption span multiple future Kubernetes releases,
-  whereas multi-node inference on GB200/GB300 NVL72 clusters is an immediate
-  production requirement for LWS and `DisaggregatedSet` users today. An
-  annotation-based, feature-gated integration solves the gap now without
-  creating permanent API debt.
+- Although `KEP-5729` (`DRAWorkloadResourceClaims`, Beta default-disabled in
+  Kubernetes 1.37) and LWS `spec.scheduling` ([KEP-666](/keps/666-gang-scheduling-in-lws))
+  expose shared leaf `PodGroup` claims, `k8s-dra-driver-gpu`
+  ([dra-driver-nvidia-gpu#934](https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/934))
+  still requires `ComputeDomain` CRs and upstream claims attach only to leaf
+  `PodGroup`s rather than cross-role slices or composite groups, whereas
+  multi-node inference on GB200/GB300 NVL72 clusters is an immediate production
+  requirement today. An annotation-based, feature-gated integration solves the
+  gap now without creating permanent API debt.
