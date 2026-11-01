@@ -735,6 +735,73 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
 		assert.Zero(t, statuses[0].AvailableReplicas, "the old revision cannot serve without old child b")
 	})
+
+	annotate := func(t *testing.T, f *subRoleFixture, annotations map[string]string) {
+		lws := f.observe().LWS
+		for key, value := range annotations {
+			if value == "" {
+				delete(lws.Annotations, key)
+			} else {
+				lws.Annotations[key] = value
+			}
+		}
+		require.NoError(t, f.manager.client.Update(t.Context(), lws))
+	}
+	partitioned := func(children ...string) []disaggregatedsetv1.DisaggregatedRoleSpec {
+		role := disaggregatedsetv1.DisaggregatedRoleSpec{Name: "model"}
+		for _, child := range children {
+			role.SubRoles = append(role.SubRoles, disaggregatedsetv1.DisaggregatedSubRoleSpec{Name: child})
+		}
+		return []disaggregatedsetv1.DisaggregatedRoleSpec{role}
+	}
+
+	// Sub-roles do not change the revision, so these workloads stay current. The
+	// fixture's revision label is its workload name.
+	t.Run("dropping sub-roles in place counts the current workload as one role", func(t *testing.T) {
+		f := setUp(t, false)
+		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
+	})
+	t.Run("removing a child in place does not require it on the current revision", func(t *testing.T) {
+		f := setUp(t, true)
+		f.ds.Spec.Roles = partitioned("a")
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 1, "model/a": 1})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
+		assert.EqualValues(t, 1, statuses[0].SubRoleStatuses[0].AvailableReplicas)
+	})
+	t.Run("gaining sub-roles in place does not require the parent", func(t *testing.T) {
+		f := setUp(t, true)
+		annotate(t, f, map[string]string{subRoleReplicasAnnotation: "", disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey: ""})
+		f.ds.Spec.Roles = partitioned("a", "b")
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, statuses[0].AvailableReplicas)
+	})
+	t.Run("a current child with a positive target is still required", func(t *testing.T) {
+		f := setUp(t, false)
+		f.ds.Spec.Roles = partitioned("a", "b")
+		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
+		assert.Zero(t, statuses[0].AvailableReplicas, "child b has no Ready group")
+	})
+
+	// Without a valid issued layout, groups cannot be matched to the frozen children.
+	for name, issued := range map[string]string{"invalid": "not-json", "missing": ""} {
+		for _, revision := range []string{"model", "new"} {
+			t.Run(fmt.Sprintf("%s subrole-replicas with initial counts set, revision %s", name, revision), func(t *testing.T) {
+				f := setUp(t, false)
+				annotate(t, f, map[string]string{subRoleReplicasAnnotation: issued})
+				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
+				statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, revision, map[string]int{"model": 2})
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
+			})
+		}
+	}
 }
 
 func TestMinimumReplicasAvailableCondition(t *testing.T) {

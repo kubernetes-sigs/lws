@@ -152,7 +152,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 				if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
 					status.UpdatedReplicas += lws.Status.UpdatedReplicas
 				}
-				if err := m.observeServingLayout(ctx, capacity, lws, role); err != nil {
+				if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
 					return nil, false, err
 				}
 			}
@@ -163,7 +163,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	// without them.
 	for role, workloads := range byRole {
 		for _, lws := range workloads {
-			if err := m.observeServingLayout(ctx, capacity, lws, role); err != nil {
+			if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
 				return nil, false, err
 			}
 		}
@@ -173,17 +173,18 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	return statuses, allAssigned, nil
 }
 
-// observeServingLayout counts a workload that the current spec does not partition
-// by the layout recorded on it: the children of an old partitioned workload stay
-// separately required while it drains. As in subRoleStatus, an invalid record does
-// not withhold every other publication, so the workload then counts as one role.
-func (m *LeaderWorkerSetManager) observeServingLayout(ctx context.Context, capacity servingCapacity, lws *leaderworkersetv1.LeaderWorkerSet, role string) error {
+// observeServingLayout counts a workload that the current spec does not partition.
+// The children of an old partitioned workload stay separately required while it
+// drains. A workload of the current revision counts as one role, since dropping
+// sub-roles updates it in place, and so does one without a valid issued layout: as
+// in subRoleStatus, an invalid record does not withhold every other publication.
+func (m *LeaderWorkerSetManager) observeServingLayout(ctx context.Context, capacity servingCapacity, lws *leaderworkersetv1.LeaderWorkerSet, role, revision string) error {
 	membership, _ := subRoleCounts(lws, subRoleReplicasAnnotation)
-	initial, _ := subRoleCounts(lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
-	if membership == nil && initial == nil {
+	if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision || membership == nil {
 		capacity.observeWorkload(lws, role)
 		return nil
 	}
+	initial, _ := subRoleCounts(lws, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
 	s, err := replicagroups.Observe(ctx, m.reader, lws)
 	if err != nil {
 		return err
@@ -479,15 +480,19 @@ func (m *LeaderWorkerSetManager) subRoleStatus(ctx context.Context, role *disagg
 		if err != nil {
 			return status, false, err
 		}
-		// The executor reports an invalid frozen baseline; status falls back to
-		// the issued counts rather than withholding every other publication.
-		initial, _ := subRoleCounts(s.LWS, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
-		serving := capacity.revision(s.LWS)
-		serving.requireSubRoles(role.Name, membership, initial)
-		if membership == nil && initial == nil {
-			serving.observe(role.Name, 0, intendedReplicas(s.LWS) > 0)
-		}
 		current := s.LWS.Labels[disaggregatedsetv1.RevisionLabelKey] == revision
+		serving := capacity.revision(s.LWS)
+		// The current revision is required by its targets: sub-roles change in place,
+		// so its recorded layout can name children that the spec no longer has.
+		if !current {
+			// The executor reports an invalid frozen baseline; status falls back to
+			// the issued counts rather than withholding every other publication.
+			initial, _ := subRoleCounts(s.LWS, disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey)
+			serving.requireSubRoles(role.Name, membership, initial)
+			if membership == nil && initial == nil {
+				serving.observe(role.Name, 0, intendedReplicas(s.LWS) > 0)
+			}
+		}
 		for _, group := range activeSubRoleGroups(s) {
 			name, coherent := groupSubRole(group)
 			i, known := index[name]
