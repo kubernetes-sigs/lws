@@ -782,13 +782,6 @@ func parseGroupRestartChargedLeaders(raw string) (map[string]string, error) {
 	if charged == nil {
 		return nil, fmt.Errorf("invalid charged leaders: expected a JSON object")
 	}
-	// Earlier development versions stored full UIDs. Recognize those without
-	// charging an already recorded failure again after upgrading the controller.
-	for key, value := range charged {
-		if len(value) > 16 {
-			charged[key] = chargedLeaderToken(types.UID(value))
-		}
-	}
 	return charged, nil
 }
 

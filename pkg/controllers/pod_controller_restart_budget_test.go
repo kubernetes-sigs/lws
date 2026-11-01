@@ -80,17 +80,6 @@ func TestChargedLeaderToken(t *testing.T) {
 	}
 }
 
-func TestRestartBudgetRetainsLegacyChargedUID(t *testing.T) {
-	uid := types.UID("12345678-1234-4123-8123-123456789abc")
-	got, err := parseGroupRestartChargedLeaders(fmt.Sprintf(`{"revision-a/0":%q}`, uid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["revision-a/0"] != "af16785cab34225b" {
-		t.Fatalf("legacy UID was not recognized: %v", got)
-	}
-}
-
 func TestRestartBudgetTokenCapacityAndAnnotationBoundary(t *testing.T) {
 	wantCounts := make(map[string]int32, 4000)
 	wantLeaders := make(map[string]types.UID, 4000)
