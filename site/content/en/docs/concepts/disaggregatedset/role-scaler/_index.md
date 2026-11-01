@@ -53,6 +53,8 @@ However, because child LeaderWorkerSets include dynamic revision hashes in their
 
 {{% alert title="Note" color="info" %}}
 External role scaling (`scaling.mode: External`) currently requires `spec.slices: 1` (or omitted, which defaults to 1). Admission validation rejects configurations with `slices > 1` when any role uses `scaling.mode: External`.
+
+Because an autoscaler sets the size of an External role, admission reserves room in its generated names for a group index of 8 digits, the same room a `groupIdentity: Hash` role reserves for its group key. With the default `groupIdentity`, the DisaggregatedSet name and the role name of an External role can be at most 31 characters combined (for example, a 24-character DisaggregatedSet name with the role `prefill`). An External role at that limit can reach 100 million groups; beyond that, Pods of new groups cannot be created because their `controller-revision-hash` label would be too long. Roles that were External with the default `groupIdentity` in a DisaggregatedSet created before LWS v1.1 keep their earlier limit on updates, with an admission warning when their names cannot hold an 8-digit group index, but the 31-character limit applies if the DisaggregatedSet is deleted and created again. If your names are longer, shorten them.
 {{% /alert %}}
 
 ---
