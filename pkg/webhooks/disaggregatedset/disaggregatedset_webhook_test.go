@@ -47,6 +47,40 @@ func TestValidateHashSubRoles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateRolePartition(t *testing.T) {
+	newDS := func(partition int32, subRoles []disaggv1.DisaggregatedSubRoleSpec) *disaggv1.DisaggregatedSet {
+		role := disaggv1.DisaggregatedRoleSpec{Name: "model", SubRoles: subRoles}
+		if subRoles == nil {
+			role.Spec.Replicas = ptr.To[int32](3)
+		}
+		role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
+			MaxSurge: intstr.FromInt32(1), Partition: ptr.To(partition),
+		}
+		return &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{role}}}
+	}
+	for _, tc := range []struct {
+		name  string
+		ds    *disaggv1.DisaggregatedSet
+		error string
+	}{
+		{"partition below replicas", newDS(2, nil), ""},
+		{"partition above replicas holds every group", newDS(5, nil), ""},
+		{"negative partition", newDS(-1, nil), "partition: Invalid value: -1"},
+		{"partition with subRoles", newDS(1, []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}), "partition: Forbidden"},
+		{"zero partition with subRoles", newDS(0, []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			webhook := &DisaggregatedSetWebhook{}
+			_, err := webhook.ValidateCreate(t.Context(), tc.ds)
+			if tc.error == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.error)
+		})
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -270,7 +304,7 @@ func TestValidateCreate(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "invalid DisaggregatedSet with partition set to non-zero",
+			name: "valid DisaggregatedSet with a role partition",
 			obj: &disaggv1.DisaggregatedSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Spec: disaggv1.DisaggregatedSetSpec{
@@ -282,7 +316,8 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									RolloutStrategy: leaderworkerset.RolloutStrategy{
 										RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-											Partition: ptr.To(int32(1)),
+											Partition:      ptr.To(int32(1)),
+											MaxUnavailable: intstr.FromInt32(1),
 										},
 									},
 								},
@@ -299,8 +334,7 @@ func TestValidateCreate(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "partition",
+			expectError: false,
 		},
 		{
 			name: "invalid DisaggregatedSet with unsupported rollout type",
@@ -1011,7 +1045,7 @@ func TestValidateUpdate(t *testing.T) {
 		},
 	}
 
-	invalidObj := &disaggv1.DisaggregatedSet{
+	partitionedObj := &disaggv1.DisaggregatedSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 		Spec: disaggv1.DisaggregatedSetSpec{
 			Roles: []disaggv1.DisaggregatedRoleSpec{
@@ -1022,7 +1056,8 @@ func TestValidateUpdate(t *testing.T) {
 							Replicas: ptr.To(int32(2)),
 							RolloutStrategy: leaderworkerset.RolloutStrategy{
 								RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
-									Partition: ptr.To(int32(1)),
+									Partition:      ptr.To(int32(1)),
+									MaxUnavailable: intstr.FromInt32(1),
 								},
 							},
 						},
@@ -1045,10 +1080,9 @@ func TestValidateUpdate(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("invalid update with partition", func(t *testing.T) {
-		_, err := webhook.ValidateUpdate(ctx, validObj, invalidObj)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "partition")
+	t.Run("valid update setting a role partition", func(t *testing.T) {
+		_, err := webhook.ValidateUpdate(ctx, validObj, partitionedObj)
+		require.NoError(t, err)
 	})
 
 	t.Run("invalid update: maxSurge=0 and maxUnavailable=0 with replicas > 0", func(t *testing.T) {

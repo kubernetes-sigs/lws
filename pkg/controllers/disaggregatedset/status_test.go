@@ -58,7 +58,7 @@ func TestStatusWriteCacheLifecycle(t *testing.T) {
 	r.staleStatusVersions = utilcache.NewLRUExpireCacheWithClock(maxStaleStatusVersions, clock)
 	desired := map[string]int{"prefill": 1}
 	publish := func() error {
-		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil)
+		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil, false)
 	}
 	require.NoError(t, publish())
 	desired["prefill"] = 2
@@ -667,7 +667,7 @@ func TestUpdateStatusReportsMissingWorkloadOfCurrentRevision(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	r := newTestReconciler(c)
 	desired := map[string]int{"prefill": 2, "decode": 1}
-	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil))
+	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil, false))
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	assert.Zero(t, ds.Status.RoleStatuses[0].AvailableReplicas)
 	condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
@@ -915,7 +915,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			key := client.ObjectKeyFromObject(ds)
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			r := newTestReconciler(c)
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, false))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			require.Equal(t, tc.decode, ds.Status.RoleStatuses[1])
 			require.False(t, meta.IsStatusConditionTrue(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "the change has not completed")
@@ -926,7 +926,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(decode), decode))
 			decode.Status.ReadyReplicas = 2
 			require.NoError(t, c.Status().Update(t.Context(), decode))
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, false))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
 			require.NotNil(t, condition)

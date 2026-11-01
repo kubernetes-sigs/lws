@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -40,7 +41,9 @@ import (
 
 // updateStatus publishes cached counts and conditions.
 // Scalers use the same counts as the DisaggregatedSet's nested role status.
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
+// partitionHeld reports that the rollout executor found every rolling slice
+// settled at its role partitions in this reconcile.
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, partitionHeld bool) error {
 	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
@@ -54,7 +57,9 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	changed := setRoleStatuses(ds, roleStatuses)
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
 	unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole)
-	changed = setDisaggregatedSetCondition(ds, disaggregatedSetCondition(ds, available && assigned, unresolvedRoles)) || changed
+	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, partitionHeld)
+	holdStarted := condition.Reason == reasonRolloutPartitioned && progressingReason(ds) != reasonRolloutPartitioned
+	changed = setDisaggregatedSetCondition(ds, condition) || changed
 	changed = setDisaggregatedSetCondition(ds, minimumReplicasAvailableCondition(ds, roleStatuses)) || changed
 	if ds.Status.ObservedGeneration != ds.Generation {
 		ds.Status.ObservedGeneration = ds.Generation
@@ -67,6 +72,11 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 		scalerErr = r.ScalerManager.WriteStatus(ctx, ds, scalers, observedReplicas)
 	}
 	err = r.publishStatus(ctx, ds, changed)
+	if err == nil && holdStarted {
+		// Once per hold, after the condition is written: not on every requeue
+		// while it lasts, nor again from a stale read of the previous status.
+		r.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonRollingUpdatePartition, "Wait", "%s", condition.Message)
+	}
 	if errors.Is(err, errStatusPending) && scalerErr != nil {
 		// A normal status retry must not hide a scaler failure.
 		return scalerErr
@@ -539,7 +549,9 @@ func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role
 	return true
 }
 
-func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool, unresolvedRoles []string) metav1.Condition {
+const reasonRolloutPartitioned = "RolloutPartitioned"
+
+func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus, available bool, unresolvedRoles []string, partitionHeld bool) metav1.Condition {
 	condType := disaggregatedsetv1.DisaggregatedSetProgressing
 	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
 	if len(unresolvedRoles) > 0 {
@@ -548,6 +560,8 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
+	} else if held, ok := partitionHold(roleStatuses); ok && partitionHeld {
+		reason, message = reasonRolloutPartitioned, held
 	}
 
 	return metav1.Condition{
@@ -557,6 +571,40 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 		Reason:             reason,
 		Message:            message,
 	}
+}
+
+// partitionHold reports a rolling update that has stopped at its role
+// partitions: every role has exactly its desired groups, all Ready, and some
+// role has fewer than all of them on the current revision. The message lists
+// each role's groups on the current revision. Counts alone can briefly match
+// while a new LWS's status lags its groups, or one slice's progress can mask
+// another's, so the caller also requires the executor to have found every
+// rolling slice held.
+func partitionHold(roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
+	held := false
+	counts := make([]string, 0, len(roleStatuses))
+	for _, status := range roleStatuses {
+		if status.DesiredReplicas == nil {
+			return "", false
+		}
+		desired := *status.DesiredReplicas
+		if status.Replicas != desired || status.ReadyReplicas != desired {
+			return "", false
+		}
+		held = held || status.UpdatedReplicas < desired
+		counts = append(counts, fmt.Sprintf("%s %d/%d", status.Name, status.UpdatedReplicas, desired))
+	}
+	if !held {
+		return "", false
+	}
+	return "Rolling update held at the role partitions; groups on the current revision: " + strings.Join(counts, ", "), true
+}
+
+func progressingReason(ds *disaggregatedsetv1.DisaggregatedSet) string {
+	if c := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing)); c != nil && c.Status == metav1.ConditionTrue {
+		return c.Reason
+	}
+	return ""
 }
 
 // exclusiveConditionTypes reports whether t1 and t2 are a mutually-exclusive

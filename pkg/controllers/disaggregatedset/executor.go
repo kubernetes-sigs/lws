@@ -48,6 +48,7 @@ const (
 	EventReasonBootstrapSurge         = "BootstrapSurge"
 	EventReasonAvailabilityFallback   = "AvailabilityFallback"
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
+	EventReasonRollingUpdatePartition = "RollingUpdatePartitioned"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	unschedulablePodGracePeriod       = time.Minute
@@ -57,6 +58,16 @@ const (
 type RollingUpdateExecutor struct {
 	Record     events.EventRecorder
 	LWSManager *LeaderWorkerSetManager
+	// Slices rolling in this reconcile, and those of them held at their role
+	// partitions with every group issued and Ready. The status reports a hold
+	// only when every rolling slice is held.
+	rollingSlices, heldSlices int
+}
+
+// PartitionHeld reports that every slice still rolling in this reconcile is
+// held at its role partitions.
+func (executor *RollingUpdateExecutor) PartitionHeld() bool {
+	return executor.heldSlices > 0 && executor.heldSlices == executor.rollingSlices
 }
 
 type rolloutInputs struct {
@@ -100,6 +111,7 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if len(oldRevisions) == 0 {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+	executor.rollingSlices++
 	// Guardrail: old LWS objects should already have their initial-replicas
 	// baseline. Recover it before planning if that annotation is unexpectedly
 	// missing or invalid.
@@ -220,6 +232,17 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	selectedRevision, selectedState, selectedStep, err := executor.selectNextRolloutStep(ctx, candidates, oldRevisions, targetRevision, inputs)
 	if err != nil {
 		return ctrl.Result{}, false, err
+	}
+	if selectedStep == nil && partitioned(inputs.config) {
+		// No step can also mean groups are still starting. The status records
+		// the hold (condition reason RolloutPartitioned and one event) only once
+		// this slice has settled at its partitions.
+		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidates[0], targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
+		if heldAtPartition(state) {
+			log.V(1).Info("Rolling update is held by a role partition; waiting for the partition to change", "revision", targetRevision.Revision)
+			executor.heldSlices++
+		}
+		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
 	if selectedStep == nil {
 		reason := "no feasible replica change is currently available within the rollout constraints"
@@ -661,10 +684,36 @@ func extractRollingUpdateConfig(
 				// admission, but a percentage can round down to 0 after a scale-down.
 				cfg = defaultRollingUpdateConfig
 			}
+			if rc.Partition != nil && child.Name == "" {
+				// The webhook admits a partition only on a role without sub-roles.
+				cfg.Partition = int(*rc.Partition)
+			}
 			config[roleIndex[name]] = cfg
 		}
 	}
 	return config
+}
+
+func partitioned(config []RollingUpdateConfig) bool {
+	return slices.ContainsFunc(config, func(c RollingUpdateConfig) bool { return c.Partition > 0 })
+}
+
+// heldAtPartition reports a slice settled while its partitions stop the
+// rollout: every role has exactly its desired groups across all revisions and
+// every issued group is Ready. A role may stop short of its own partition when
+// a peer's partition holds it within the coordination window.
+func heldAtPartition(state RolloutState) bool {
+	for i, desired := range state.Target.DesiredReplicas {
+		old, oldReady := state.ActiveOld.SpecReplicas[i], state.ActiveOld.ReadyReplicas[i]
+		for _, parked := range state.ParkedOld {
+			old, oldReady = old+parked.SpecReplicas[i], oldReady+parked.ReadyReplicas[i]
+		}
+		target := state.Target.SpecReplicas[i]
+		if old+target != desired || oldReady != old || state.Target.ReadyReplicas[i] != target {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultRollingUpdateConfig applies to a role without a rollingUpdateConfiguration.
@@ -976,7 +1025,7 @@ func (plan rolloutPlan) validateTargets(step *UpdateStep, limits RoleReplicaStat
 		if step.Past[i] < 0 || step.Past[i] > old {
 			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, old)
 		}
-		minimum, maximum := min(snapshot.Target.SpecReplicas[i], plan.ordinary.New[i]), min(limits[i], phase[i])
+		minimum, maximum := min(snapshot.Target.SpecReplicas[i], plan.ordinary.New[i]), min(limits[i], phase[i], snapshot.partitionCeiling(i))
 		if step.New[i] < minimum || step.New[i] > maximum {
 			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, minimum, maximum)
 		}

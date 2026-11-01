@@ -74,8 +74,7 @@ spec:
                     description: |-
                       DisaggregatedRoleSpec defines the configuration for a disaggregated role.
                       This structure embeds LeaderWorkerSetTemplateSpec from sigs.k8s.io/lws, with validation
-                      to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate,
-                      RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).
+                      to reject unsupported fields (RolloutStrategy.Type must be RollingUpdate).
                     properties:
                       metadata:
                         description: metadata of the LWS created from this template.

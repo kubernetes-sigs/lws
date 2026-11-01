@@ -399,9 +399,10 @@ func roleExclusiveTopologyAnnotation(role disaggv1.DisaggregatedRoleSpec) (strin
 }
 
 // validateRoleRolloutStrategy validates the RolloutStrategy fields for a role.
-// DisaggregatedSet handles rolling updates differently from LWS and does not support:
-// - RolloutStrategy.Type other than RollingUpdate (or empty, which defaults to RollingUpdate)
-// - RolloutStrategy.RollingUpdateConfiguration.Partition
+// DisaggregatedSet handles rolling updates differently from LWS and does not support
+// RolloutStrategy.Type other than RollingUpdate (or empty, which defaults to RollingUpdate).
+// RolloutStrategy.RollingUpdateConfiguration.Partition holds that many of the role's
+// groups on older revisions during a rollout; it is not supported with subRoles.
 func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	rolloutPath := rolePath.Child("spec", "rolloutStrategy")
@@ -419,12 +420,13 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 		rucPath := rolloutPath.Child("rollingUpdateConfiguration")
 		ruc := role.Spec.RolloutStrategy.RollingUpdateConfiguration
 
-		// Validate Partition - must not be set (DisaggregatedSet manages rollouts across roles)
-		if ruc.Partition != nil && *ruc.Partition != 0 {
-			allErrs = append(allErrs, field.Forbidden(
-				rucPath.Child("partition"),
-				"partition is not supported by DisaggregatedSet; rolling updates are managed across roles by the DisaggregatedSet controller",
-			))
+		if ruc.Partition != nil {
+			partitionPath := rucPath.Child("partition")
+			if *ruc.Partition < 0 {
+				allErrs = append(allErrs, field.Invalid(partitionPath, *ruc.Partition, "must be greater than or equal to 0"))
+			} else if *ruc.Partition > 0 && len(role.SubRoles) > 0 {
+				allErrs = append(allErrs, field.Forbidden(partitionPath, "partition is not supported on a role with subRoles"))
+			}
 		}
 
 		// External roles ignore spec.replicas, so their target is unknown.

@@ -98,7 +98,7 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 			r := newTestReconciler(f.manager.client)
 			r.LWSManager = f.manager
 			desired := map[string]int{"model": 1, "model/a": 1}
-			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil, false))
 			require.Equal(t, []disaggregatedsetv1.RoleStatus{
 				{Name: "model", DesiredReplicas: ptr.To[int32](1), MinAvailableReplicas: ptr.To[int32](0), Replicas: tc.parent, ReadyReplicas: tc.parent, AvailableReplicas: tc.parent, UpdatedReplicas: 1, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
 					{Name: "a", DesiredReplicas: ptr.To[int32](1), MinAvailableReplicas: ptr.To[int32](0), Replicas: tc.childCount, ReadyReplicas: tc.childCount, AvailableReplicas: tc.childCount, UpdatedReplicas: 1},
@@ -107,7 +107,7 @@ func TestSubRoleStatusPreservesHistoricalCapacity(t *testing.T) {
 			require.Equal(t, tc.assigned, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)))
 			require.False(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "a Ready target cannot hide surviving historical capacity or invalid assignments")
 			require.NoError(t, f.manager.client.Delete(t.Context(), old.lws))
-			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil, false))
 			require.True(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)))
 		})
 	}
@@ -340,7 +340,7 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			}
 			r := newTestReconciler(c)
 			r.LWSManager, r.ScalerManager = f.manager, m
-			err = r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 3, "model/a": 2, "model/b": 1, "model/empty": 0}, scalers)
+			err = r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 3, "model/a": 2, "model/b": 1, "model/empty": 0}, scalers, false)
 			require.Equal(t, failure != "", err != nil)
 			want := []disaggregatedsetv1.RoleStatus{
 				{Name: "model", DesiredReplicas: ptr.To[int32](3), MinAvailableReplicas: ptr.To[int32](1), Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3, UpdatedReplicas: 2, SubRoleStatuses: []disaggregatedsetv1.SubRoleStatus{
@@ -370,16 +370,16 @@ func TestSubRoleScalerAndStatusLifecycle(t *testing.T) {
 			require.NoError(t, c.Delete(t.Context(), old.lws))
 			for _, a := range []int{1, 2} {
 				desired := map[string]int{"model": 2, "model/a": a, "model/b": 2 - a, "model/empty": 0}
-				require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil))
+				require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, desired, nil, false))
 				require.Equal(t, a == 1, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)))
 			}
 			// A missing child target is unknown, even when that child has no groups.
-			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 2, "model/a": 1, "model/b": 1}, nil))
+			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 2, "model/a": 1, "model/b": 1}, nil, false))
 			require.False(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)))
 			worker := f.observe().Groups[0].Pods[1]
 			delete(worker.Labels, disaggregatedsetv1.SubRoleLabelKey)
 			require.NoError(t, c.Update(t.Context(), worker))
-			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 2, "model/a": 1, "model/b": 1, "model/empty": 0}, nil))
+			require.NoError(t, r.updateStatus(t.Context(), f.ds, []string{"model"}, f.lws.Name, map[string]int{"model": 2, "model/a": 1, "model/b": 1, "model/empty": 0}, nil, false))
 			require.False(t, meta.IsStatusConditionTrue(f.ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetSubRolesAssigned)))
 			require.EqualValues(t, 1, f.ds.Status.RoleStatuses[0].Replicas, "incoherent groups give neither parent nor child credit")
 			// A new ordinary role must not adopt the retiring child's same DNS name.

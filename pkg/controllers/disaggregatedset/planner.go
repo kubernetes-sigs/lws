@@ -123,10 +123,13 @@ func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState 
 	return targets
 }
 
+// A partition is a growth ceiling, not a smaller phase: the coordination window
+// still measures each role against its whole phase, so a role held by its
+// partition holds its peers within one window of it.
 func furthestNewTargets(snapshot rolloutSnapshot, phase, limits RoleReplicaState) RoleReplicaState {
 	targets := make(RoleReplicaState, len(phase))
 	for i := range targets {
-		targets[i] = min(phase[i], limits[i])
+		targets[i] = min(phase[i], limits[i], snapshot.partitionCeiling(i))
 	}
 	return boundGrowingSnapshotTargets(snapshot, phase, targets)
 }
@@ -263,7 +266,8 @@ func snapshotWithBootstrapSurge(snapshot rolloutSnapshot, phase, normalLimits Ro
 		}
 		ceiling := snapshot.surgeCeiling(i)
 		coordinationBlocked := (snapshot.ScaleDownDuringRollout || scaleUp) && old+current == ceiling && snapshot.Target.ReadyReplicas[i] >= current
-		if config.MaxSurge+config.MaxUnavailable > 0 && phase[i] > current && normalLimits[i] == current &&
+		// A role held by its partition is not blocked.
+		if config.MaxSurge+config.MaxUnavailable > 0 && min(phase[i], snapshot.partitionCeiling(i)) > current && normalLimits[i] == current &&
 			(current == 0 || coordinationBlocked) {
 			bootstrap.Config[i].MaxSurge = max(config.MaxSurge+1, config.MaxSurge+old-ceiling+1)
 			needed = true
