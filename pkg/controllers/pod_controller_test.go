@@ -1307,7 +1307,7 @@ func TestPersistGroupRestartCountPreservesConcurrentGroupUpdates(t *testing.T) {
 	leader := wrappers.MakePodWithLabels(stored.Name, "0", "0", stored.Namespace, 1)
 	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
 
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stored).Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stored, leader).Build()
 	r := &PodReconciler{Client: fakeClient}
 	if err := r.persistGroupRestartCount(context.Background(), stale, leader, 1); err != nil {
 		t.Fatal(err)

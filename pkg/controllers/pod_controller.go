@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +64,7 @@ import (
 // PodReconciler reconciles a LeaderWorkerSet object
 type PodReconciler struct {
 	client.Client
+	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
@@ -598,6 +600,23 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return true, ctrl.Result{}, r.removePodGroupRestartBudgetFinalizer(ctx, &pod)
 	}
 	leaderWorkerSet = freshLWS
+	maxGroupRestarts := leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
+	restartBackoff := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartBackoff
+	if maxGroupRestarts != nil || restartBackoff != nil {
+		// Read the Pod cache after the LWS cache. A charged UID may have been
+		// reclaimed after this cache observed its leader terminating or gone.
+		// Do not use a leader snapshot taken before that reclamation to exhaust
+		// the budget or charge the same failure again. This is a cached read.
+		var current corev1.Pod
+		if err := r.Get(ctx, client.ObjectKeyFromObject(&leader), &current); err != nil {
+			return true, ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if current.UID != leader.UID {
+			return true, ctrl.Result{}, nil
+		}
+		leader = current
+		isRecreatePending = leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
+	}
 	// if the leader pod is being deleted, we don't need to send deletion requests
 	if leader.DeletionTimestamp != nil {
 		return true, ctrl.Result{}, nil
@@ -608,8 +627,6 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		deleted, err := r.terminateExhaustedGroup(ctx, &leaderWorkerSet, &leader)
 		return deleted, ctrl.Result{}, err
 	}
-	maxGroupRestarts := leaderWorkerSet.Spec.LeaderWorkerTemplate.MaxGroupRestarts
-	restartBackoff := leaderWorkerSet.Spec.LeaderWorkerTemplate.RestartBackoff
 	alreadyCharged := false
 	if maxGroupRestarts != nil || restartBackoff != nil {
 		charged, err := parseGroupRestartChargedLeaders(leaderWorkerSet.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey])
@@ -618,6 +635,18 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		}
 		uid, found := charged[groupRestartCountKey(&leader)]
 		alreadyCharged = found && uid == leader.UID
+		if !found {
+			counts, err := parseGroupRestartCounts(leaderWorkerSet.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey])
+			if err != nil {
+				return false, ctrl.Result{}, err
+			}
+			if counts[groupRestartCountKey(&leader)] > 0 {
+				active, err := r.unchargedRestartLeaderIsActive(ctx, &leader)
+				if err != nil || !active {
+					return true, ctrl.Result{}, err
+				}
+			}
+		}
 	}
 
 	// RecreateGroupAfterStart only defers a new recreation, so it runs after the
@@ -693,6 +722,9 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 			}
 		}
 		if err := r.persistGroupRestartCount(ctx, &leaderWorkerSet, &leader, count+1); err != nil {
+			if errors.Is(err, errGroupRestartChargesFull) {
+				return false, ctrl.Result{RequeueAfter: groupRestartChargeRequeueDelay}, nil
+			}
 			return false, ctrl.Result{}, fmt.Errorf("updating group restart count for %s: %w", leader.Name, err)
 		}
 	}
@@ -785,6 +817,34 @@ func (r *PodReconciler) getPersistedGroupRestartCount(lws *leaderworkerset.Leade
 	return counts[groupRestartCountKey(leader)], nil
 }
 
+// Keep only a bounded number of in-flight charges on the LWS, rather than one
+// UID for every group that has ever restarted. With ordinary revision keys and
+// UIDs this adds about 8 KiB, independent of the number of groups. Full accounting
+// waits for the Pod cache to observe a completed deletion; an active charge must
+// never be evicted because its Delete may have failed and still needs retrying.
+const (
+	maxGroupRestartChargedLeaders        = 128
+	groupRestartChargeRequeueDelay       = 100 * time.Millisecond
+	groupRestartChargeAnnotationHeadroom = 1024
+)
+
+var errGroupRestartChargesFull = errors.New("waiting for charged leader deletions to reach the Pod cache")
+
+// Once a UID record has been reclaimed, a different controller instance may
+// still have an older Pod cache. Only this ambiguous, previously charged case
+// needs a live read. Initial failures and recorded deletion retries use caches.
+func (r *PodReconciler) unchargedRestartLeaderIsActive(ctx context.Context, leader *corev1.Pod) (bool, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var current corev1.Pod
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(leader), &current); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return current.UID == leader.UID && current.DeletionTimestamp == nil, nil
+}
+
 func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leader *corev1.Pod, next int32) error {
 	// Note: When only restartBackoff is configured (without maxGroupRestarts),
 	// this counter increases with each recreation without an upper bound.
@@ -792,11 +852,62 @@ func (r *PodReconciler) persistGroupRestartCount(ctx context.Context, lws *leade
 	// and returns capSeconds for higher counts.
 	key := client.ObjectKeyFromObject(lws)
 	countKey := groupRestartCountKey(leader)
-	return mutateGroupRestartCounts(ctx, r.Client, key, func(_ *leaderworkerset.LeaderWorkerSet, counts map[string]int32, charged map[string]types.UID) (bool, error) {
+	return mutateGroupRestartCounts(ctx, r.Client, key, func(latest *leaderworkerset.LeaderWorkerSet, counts map[string]int32, charged map[string]types.UID) (bool, error) {
 		// A retry may observe a newer count written by another reconcile. Never
 		// overwrite it with a value computed from a stale LWS object.
 		if uid, found := charged[countKey]; (found && uid == leader.UID) || counts[countKey] >= next {
 			return false, nil
+		}
+		changed := false
+		annotationBytes := 0
+		for key, value := range latest.Annotations {
+			annotationBytes += len(key) + len(value)
+		}
+		// Reclaim completed charges early when user annotations leave little
+		// room, even if the entry limit has not been reached. Reserve enough
+		// space for a new count/UID entry and its annotation keys.
+		if len(charged) >= maxGroupRestartChargedLeaders || annotationBytes+groupRestartChargeAnnotationHeadroom > apivalidation.TotalAnnotationSizeLimitB {
+			var leaders corev1.PodList
+			if err := r.List(ctx, &leaders, client.InNamespace(lws.Namespace), client.MatchingLabels{
+				leaderworkerset.SetNameLabelKey:     lws.Name,
+				leaderworkerset.WorkerIndexLabelKey: "0",
+			}); err != nil {
+				return false, err
+			}
+			active := make(map[types.UID]struct{}, len(leaders.Items))
+			for i := range leaders.Items {
+				if leaders.Items[i].DeletionTimestamp == nil {
+					active[leaders.Items[i].UID] = struct{}{}
+				}
+			}
+			for key, uid := range charged {
+				if _, found := active[uid]; !found {
+					delete(charged, key)
+					changed = true
+				}
+			}
+		}
+		// A conflict retry may read an LWS after another reconcile reclaimed
+		// this leader's UID. Recheck the Pod cache after reading that LWS,
+		// just as handleRestartPolicy does before enforcing the budget.
+		var current corev1.Pod
+		if err := r.Get(ctx, client.ObjectKeyFromObject(leader), &current); err != nil {
+			return changed, client.IgnoreNotFound(err)
+		}
+		if current.UID != leader.UID || current.DeletionTimestamp != nil {
+			return changed, nil
+		}
+		// handleRestartPolicy already checked this LWS snapshot. If the
+		// mutation now sees a newer one with a reclaimed UID, repeat its live
+		// check before charging; a cache may lag across controller failover.
+		if _, found := charged[countKey]; !found && counts[countKey] > 0 && latest.ResourceVersion != lws.ResourceVersion {
+			active, err := r.unchargedRestartLeaderIsActive(ctx, leader)
+			if err != nil || !active {
+				return changed, err
+			}
+		}
+		if len(charged) >= maxGroupRestartChargedLeaders {
+			return false, errGroupRestartChargesFull
 		}
 		counts[countKey] = next
 		charged[countKey] = leader.UID
@@ -1098,6 +1209,9 @@ func mutateGroupRestartCounts(ctx context.Context, c client.Client, key client.O
 				return err
 			}
 			latest.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = string(raw)
+		}
+		if err := apivalidation.ValidateAnnotationsSize(latest.Annotations); err != nil {
+			return errGroupRestartChargesFull
 		}
 		return c.Update(ctx, latest)
 	})
@@ -1726,6 +1840,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	return builder.TypedControllerManagedBy[podReconcileRequest](mgr).
 		Named("pod").
 		Watches(&corev1.Pod{}, podEventHandler()).

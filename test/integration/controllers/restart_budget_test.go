@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,73 @@ func podInformerLag(obj interface{}) (interface{}, error) {
 }
 
 var _ = ginkgo.Describe("Group restart budget", func() {
+	ginkgo.It("keeps charged UID accounting bounded with 4000 group restart counters", func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "bounded-charges-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(4000).Size(1).
+			RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3).Obj()
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+		var leaderSts appsv1.StatefulSet
+		gomega.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &leaderSts)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)).To(gomega.Succeed())
+		var leader corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leader)).To(gomega.Succeed())
+		revision := leader.Labels[leaderworkerset.RevisionKey]
+		counts := make(map[string]int32, 4000)
+		for i := range 4000 {
+			counts[fmt.Sprintf("%s/%d", revision, i)] = 1
+		}
+		countsJSON, err := json.Marshal(counts)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		chargedHistory := map[string]types.UID{}
+		for i := 3871; i < 3999; i++ {
+			chargedHistory[fmt.Sprintf("%s/%d", revision, i)] = types.UID(fmt.Sprintf("00000000-0000-0000-0000-%012d", i))
+		}
+		chargedJSON, err := json.Marshal(chargedHistory)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Eventually(func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), lws); err != nil {
+				return err
+			}
+			if lws.Annotations == nil {
+				lws.Annotations = map[string]string{}
+			}
+			lws.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey] = string(countsJSON)
+			lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = string(chargedJSON)
+			return k8sClient.Update(ctx, lws)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		// Seed accounting before the failure, including in the manager's
+		// cache, just as it would be after previous group recreations.
+		gomega.Eventually(func(g gomega.Gomega) {
+			var cached leaderworkerset.LeaderWorkerSet
+			g.Expect(podController.Get(ctx, client.ObjectKeyFromObject(lws), &cached)).To(gomega.Succeed())
+			g.Expect(cached.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]).To(gomega.Equal(string(countsJSON)))
+			g.Expect(cached.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey]).To(gomega.Equal(string(chargedJSON)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		leader.Status.Phase = corev1.PodRunning
+		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+		gomega.Expect(k8sClient.Status().Update(ctx, &leader)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			var current leaderworkerset.LeaderWorkerSet
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+			var gotCounts map[string]int32
+			g.Expect(json.Unmarshal([]byte(current.Annotations[leaderworkerset.GroupRestartCountsAnnotationKey]), &gotCounts)).To(gomega.Succeed())
+			counts[revision+"/0"] = 2
+			g.Expect(gotCounts).To(gomega.HaveLen(4000))
+			g.Expect(gotCounts[revision+"/0"]).To(gomega.Equal(int32(2)))
+			var charged map[string]types.UID
+			g.Expect(json.Unmarshal([]byte(current.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey]), &charged)).To(gomega.Succeed())
+			g.Expect(charged).To(gomega.Equal(map[string]types.UID{revision + "/0": leader.UID}))
+			var terminating corev1.Pod
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&leader), &terminating)).To(gomega.Succeed())
+			g.Expect(terminating.DeletionTimestamp).NotTo(gomega.BeNil())
+			g.Expect(terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey]).To(gomega.BeEmpty())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("charges one group failure once when several workers restart together", func() {
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: laggingPodNamespacePrefix}}
 		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())

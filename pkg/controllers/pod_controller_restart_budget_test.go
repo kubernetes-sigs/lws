@@ -21,15 +21,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -153,6 +156,105 @@ func TestHandleRestartPolicyRetriesDeletionAfterPersistingCharge(t *testing.T) {
 	if err != nil || !deleted || result.RequeueAfter != 0 || deleteCalls != 2 {
 		t.Fatalf("retry = (%t, %+v, %v), deletes=%d; want deletion without exhaustion or backoff", deleted, result, err, deleteCalls)
 	}
+	var terminating corev1.Pod
+	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(leader), &terminating); err != nil {
+		t.Fatal(err)
+	}
+	if terminating.DeletionTimestamp == nil || terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "" {
+		t.Fatalf("retry must delete the leader without exhausting its budget: %+v", terminating.ObjectMeta)
+	}
+}
+
+func TestRestartBudgetAnnotationSizeBoundary(t *testing.T) {
+	for _, pending := range []int{1, maxGroupRestartChargedLeaders} {
+		t.Run(fmt.Sprintf("pending=%d", pending), func(t *testing.T) {
+			testRestartBudgetAnnotationSizeBoundary(t, pending)
+		})
+	}
+}
+
+func testRestartBudgetAnnotationSizeBoundary(t *testing.T, pending int) {
+	t.Helper()
+	scheme := restartBudgetTestScheme(t)
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(4000).Size(1).
+		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).MaxGroupRestarts(3).Obj()
+	counts := map[string]int32{}
+	charged := map[string]types.UID{}
+	for i := range 4000 {
+		key := fmt.Sprintf("0123456789/%d", i)
+		counts[key] = 1
+		charged[key] = types.UID(fmt.Sprintf("00000000-0000-0000-0000-%012d", i))
+	}
+	countsJSON, err := json.Marshal(counts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chargedJSON, err := json.Marshal(charged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lws.Annotations = map[string]string{
+		leaderworkerset.GroupRestartCountsAnnotationKey:         string(countsJSON),
+		leaderworkerset.GroupRestartChargedLeadersAnnotationKey: string(chargedJSON),
+	}
+	if errs := apivalidation.ValidateAnnotations(lws.Annotations, field.NewPath("metadata", "annotations")); len(errs) == 0 {
+		t.Fatal("expected unbounded UID history for 4,000 groups to exceed the annotation limit")
+	}
+	// Only in-flight deletions need a UID record. Previously charged groups
+	// below have already disappeared from the Pod cache.
+	for i := range 4000 {
+		if i < 3999-pending || i == 3999 {
+			delete(charged, fmt.Sprintf("0123456789/%d", i))
+		}
+	}
+	chargedJSON, err = json.Marshal(charged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lws.Annotations[leaderworkerset.GroupRestartChargedLeadersAnnotationKey] = string(chargedJSON)
+	// Fill the remaining annotation space exactly, including user annotations.
+	const paddingKey = "test.lws/padding"
+	size := len(paddingKey)
+	for key, value := range lws.Annotations {
+		size += len(key) + len(value)
+	}
+	lws.Annotations[paddingKey] = strings.Repeat("x", apivalidation.TotalAnnotationSizeLimitB-size)
+	if errs := apivalidation.ValidateAnnotations(lws.Annotations, field.NewPath("metadata", "annotations")); len(errs) != 0 {
+		t.Fatalf("initial annotations must fit exactly: %v", errs)
+	}
+	leader := wrappers.MakePodWithLabels(lws.Name, "3999", "0", lws.Namespace, 1)
+	leader.UID = "00000000-0000-0000-0000-000000003999"
+	leader.Labels[leaderworkerset.RevisionKey] = "0123456789"
+	leader.Status.Phase = corev1.PodRunning
+	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1}}
+	leader.Finalizers = []string{"test.lws/retain"}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if errs := apivalidation.ValidateAnnotations(obj.GetAnnotations(), field.NewPath("metadata", "annotations")); len(errs) != 0 {
+					return apierrors.NewInvalid(leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet").GroupKind(), obj.GetName(), errs)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &PodReconciler{Client: cli, Record: fakeEventRecorder{}}
+	deleted, _, err := r.handleRestartPolicy(t.Context(), *leader, *lws)
+	if err != nil || !deleted {
+		t.Fatalf("recovery at annotation-size boundary = (%t, %v)", deleted, err)
+	}
+	var current leaderworkerset.LeaderWorkerSet
+	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(lws), &current); err != nil {
+		t.Fatal(err)
+	}
+	counts["0123456789/3999"] = 2
+	assertRestartBudgetState(t, &current, counts, map[string]types.UID{"0123456789/3999": leader.UID})
+	var terminating corev1.Pod
+	if err := cli.Get(t.Context(), client.ObjectKeyFromObject(leader), &terminating); err != nil {
+		t.Fatal(err)
+	}
+	if terminating.DeletionTimestamp == nil || terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "" {
+		t.Fatalf("automatic recovery was blocked: %+v", terminating.ObjectMeta)
+	}
 }
 
 func TestHandleRestartPolicyDeletesOnlyObservedLeader(t *testing.T) {
@@ -235,7 +337,7 @@ func TestPersistGroupRestartCountDeduplicatesAfterConflict(t *testing.T) {
 	leader.UID = "failed-leader"
 	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
 	updates := 0
-	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 				updates++
