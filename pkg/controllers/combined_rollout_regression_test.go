@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -357,30 +358,52 @@ func testCombinedRegressions(t *testing.T, c client.Client, scheme *runtime.Sche
 
 func TestCombinedMixedSizeRestartUsesLeaderStamp(t *testing.T) {
 	for _, workerRestart := range []bool{false, true} {
-		t.Run(fmt.Sprintf("worker=%t", workerRestart), func(t *testing.T) {
-			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).Obj()
-			lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.RecreateGroupAfterStart
-			leader := combinedTestGroup(0, "old", true).leader
-			leader.Annotations[leaderworkerset.SizeAnnotationKey] = "2"
-			leader.Labels[leaderworkerset.WorkerIndexLabelKey] = "0"
-			leader.Labels[leaderworkerset.SetNameLabelKey] = lws.Name
-			leader.Labels[leaderworkerset.GroupIndexLabelKey] = "0"
-			worker := leader.DeepCopy()
-			worker.Name, worker.UID = leader.Name+"-1", "worker"
-			worker.Labels[leaderworkerset.WorkerIndexLabelKey] = "1"
-			worker.OwnerReferences = []metav1.OwnerReference{{Kind: "Pod", Name: leader.Name, UID: leader.UID, Controller: ptr.To(true)}}
-			restarting := leader
-			if workerRestart {
-				restarting = worker
-			}
-			restarting.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "test", RestartCount: 1}}
-			c := fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).WithObjects(lws, leader, worker).Build()
-			r := NewPodReconciler(c, c.Scheme(), fakeEventRecorder{}, nil)
-			deleted, _, err := r.handleRestartPolicy(context.Background(), *restarting, *lws)
-			if err != nil || !deleted {
-				t.Fatalf("old size-two group suppressed under live size-one: deleted=%t err=%v", deleted, err)
-			}
-		})
+		for _, alreadyCharged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("worker=%t/charged=%t", workerRestart, alreadyCharged), func(t *testing.T) {
+				lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(1).MaxGroupRestarts(1).Obj()
+				lws.Spec.LeaderWorkerTemplate.RestartPolicy = leaderworkerset.RecreateGroupAfterStart
+				leader := combinedTestGroup(0, "old", true).leader
+				leader.Annotations[leaderworkerset.SizeAnnotationKey] = "2"
+				leader.Labels[leaderworkerset.WorkerIndexLabelKey] = "0"
+				leader.Labels[leaderworkerset.SetNameLabelKey] = lws.Name
+				leader.Labels[leaderworkerset.GroupIndexLabelKey] = "0"
+				leader.Finalizers = []string{"test.lws/retain"}
+				worker := leader.DeepCopy()
+				worker.Name, worker.UID = leader.Name+"-1", "worker"
+				worker.Labels[leaderworkerset.WorkerIndexLabelKey] = "1"
+				worker.OwnerReferences = []metav1.OwnerReference{{Kind: "Pod", Name: leader.Name, UID: leader.UID, Controller: ptr.To(true)}}
+				if alreadyCharged {
+					lws.Annotations = map[string]string{
+						leaderworkerset.GroupRestartCountsAnnotationKey:         `{"old/0":1}`,
+						leaderworkerset.GroupRestartChargedLeadersAnnotationKey: chargedLeaderAnnotation(t, map[string]types.UID{"old/0": leader.UID}),
+					}
+					worker.Status.Phase = corev1.PodPending
+				}
+				restarting := leader
+				if workerRestart {
+					restarting = worker
+				}
+				restarting.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "test", RestartCount: 1}}
+				c := fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).WithObjects(lws, leader, worker).Build()
+				r := NewPodReconciler(c, c.Scheme(), fakeEventRecorder{}, nil)
+				deleted, result, err := r.handleRestartPolicy(t.Context(), *restarting, *lws)
+				if err != nil || !deleted || result.RequeueAfter != 0 {
+					t.Fatalf("old size-two group suppressed under live size-one: deleted=%t result=%+v err=%v", deleted, result, err)
+				}
+				var storedLWS leaderworkerset.LeaderWorkerSet
+				if err := c.Get(t.Context(), client.ObjectKeyFromObject(lws), &storedLWS); err != nil {
+					t.Fatal(err)
+				}
+				assertRestartBudgetState(t, &storedLWS, map[string]int32{"old/0": 1}, map[string]types.UID{"old/0": leader.UID})
+				var terminating corev1.Pod
+				if err := c.Get(t.Context(), client.ObjectKeyFromObject(leader), &terminating); err != nil {
+					t.Fatal(err)
+				}
+				if terminating.DeletionTimestamp == nil || terminating.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "" {
+					t.Fatalf("expected deletion without charging or exhausting the same failure again: %+v", terminating.ObjectMeta)
+				}
+			})
+		}
 	}
 }
 
