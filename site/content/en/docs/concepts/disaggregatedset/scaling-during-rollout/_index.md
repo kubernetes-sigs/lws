@@ -32,6 +32,8 @@ These rules apply to both Ordinal and Hash. Static roles receive requests throug
 
 A replica group is one copy of a role. It may contain several Pods, which must all be Ready for the group to count as Ready.
 
+Both illustrations use roughly 44 seconds of playback for readability. Their recorded timestamps are unchanged, but they do not share a real-time playback scale.
+
 ## When demand increases
 
 Only B grows; A is never scaled back up. The scale-up policy determines whether new groups must wait behind a batch that is still starting.
