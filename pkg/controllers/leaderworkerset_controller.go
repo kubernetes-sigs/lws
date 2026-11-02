@@ -1147,13 +1147,42 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws 
 
 	if !revisionutils.EqualRevision(currentRevision, revision) {
 		// If raw bytes differ but the revision is semantically equivalent, avoid triggering a spurious rolling update.
-		if revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
-			return nil, nil
+		if !revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
+			return currentRevision, nil
 		}
-		return currentRevision, nil
 	}
 
-	return nil, nil
+	return nil, r.recordPlacementInRevision(ctx, lws, revision)
+}
+
+// recordPlacementInRevision re-records a revision created before revisions
+// recorded placement, once the LeaderWorkerSet matches it. Such a revision
+// keeps the live exclusive-topology annotations when applied, so it matches
+// any later change to them, and that change would replace every group under
+// the same revision key instead of rolling out. The re-recorded revision keeps
+// the revision key, so the leader StatefulSet, its partition and the pods'
+// revision labels do not change. It records the live annotations, which the
+// controller already put into the leader template under this key.
+func (r *LeaderWorkerSetReconciler) recordPlacementInRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) error {
+	recorded, err := revisionutils.RecordsPlacement(revision)
+	if err != nil || recorded {
+		return err
+	}
+	revisionKey := revisionutils.GetRevisionKey(revision)
+	migrated, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
+	if err != nil {
+		return err
+	}
+	// Create before delete: GetRevision returns the highest revision for a key,
+	// so the re-recorded one is used even if the delete below fails.
+	if _, err := revisionutils.CreateRevision(ctx, r.Client, migrated); err != nil {
+		return err
+	}
+	if err := r.Delete(ctx, revision); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	ctrl.LoggerFrom(ctx).V(2).Info("Re-recorded revision with placement", "revisionKey", revisionKey, "revision", klog.KObj(migrated))
+	return nil
 }
 
 // buildLeaderPodTemplateApplyConfiguration constructs the leader pod template

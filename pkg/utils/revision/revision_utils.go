@@ -263,6 +263,19 @@ func revisionRecordsPlacement(revision *appsv1.ControllerRevision, placementInDa
 	return placementInData || revision.Annotations[placementRecordedAnnotationKey] == "true"
 }
 
+// RecordsPlacement reports whether a revision records the effective placement.
+// A revision created before spec.placementPolicy does not, so ApplyRevision
+// keeps the live exclusive-topology annotations for it and SetMatchesRevision
+// matches whatever those annotations are now. The controller re-records such a
+// revision once it matches, so later placement changes create a new revision.
+func RecordsPlacement(revision *appsv1.ControllerRevision) (bool, error) {
+	placementInData, err := revisionDataHasPlacement(revision)
+	if err != nil {
+		return false, err
+	}
+	return revisionRecordsPlacement(revision, placementInData), nil
+}
+
 // revisionDataHasPlacement reports whether a revision's data carries a
 // placementPolicy, which it does only when the recorded placement is exclusive
 // at some level.
