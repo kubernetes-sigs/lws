@@ -35,7 +35,7 @@
   [data-animation-clock] {font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap;}
   [data-animation-fullscreen] svg {display: block;}
   [data-animation-tooltip] {
-    position: absolute; z-index: 1; max-width: unquote("min(420px, calc(100% - 16px))");
+    position: absolute; z-index: 1; width: max-content; max-width: unquote("min(420px, calc(100% - 16px))");
     padding: 10px 12px; border: 1px solid var(--bs-border-color, #bdc1c6); border-radius: 6px;
     background: var(--bs-body-bg, #fff); font-size: 14px; line-height: 1.4;
     white-space: pre-line; pointer-events: none; box-shadow: 0 3px 12px #0002;
