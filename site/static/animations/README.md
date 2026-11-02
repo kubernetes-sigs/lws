@@ -20,6 +20,6 @@ pnpm exec playwright install chromium
 pnpm export:docs --themes lws,lws-dark --out /path/to/lws/site/static/animations
 ```
 
-To regenerate only one asset, add `--scene gating`, `--scene scaling`, or `--scene fractional`. For recorded scaling input, follow the standalone project's `docs/RECORDED_SCALING.md`. Use `PLAYWRIGHT_CHANNEL=chrome` with the export command to reuse an installed Google Chrome instead of Playwright's downloaded browser.
+To regenerate only one asset, add `--scene gating`, `--scene scaling`, `--scene scaling-up`, or `--scene fractional`. For recorded scaling input, follow the standalone project's `docs/RECORDED_SCALING.md`. Use `PLAYWRIGHT_CHANNEL=chrome` with the export command to reuse an installed Google Chrome instead of Playwright's downloaded browser.
 
 The tool invokes the original scene renderer, records its finite Canvas operations, and verifies every state boundary in both LWS themes against the source pixels before writing the files. Gating's decorative motion is sampled at 24 fps and interpolated during playback. See the standalone project's `docs/PREPARED_DRAWINGS.md` for the detailed workflow. No videos or generated raster frames are required.
