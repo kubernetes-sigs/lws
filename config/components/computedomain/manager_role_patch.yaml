@@ -1,0 +1,24 @@
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - resource.nvidia.com
+    resources:
+    - computedomains
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- op: add
+  path: /rules/-
+  value:
+    apiGroups:
+    - resource.nvidia.com
+    resources:
+    - computedomains/finalizers
+    verbs:
+    - update

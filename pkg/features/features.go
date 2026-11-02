@@ -33,6 +33,13 @@ const (
 	// Enables spec.scheduling. Existing scheduled objects continue reconciling
 	// when it is disabled.
 	WorkloadAwareScheduling featuregate.Feature = "WorkloadAwareScheduling"
+
+	// owner: @ahg-g
+	// kep: https://github.com/kubernetes-sigs/lws/blob/main/keps/1259-auto-compute-domain/README.md
+	//
+	// Enables automatic NVIDIA DRA ComputeDomain lifecycle management and pod
+	// resourceClaims injection via auto-compute-domain annotations.
+	AutoComputeDomain featuregate.Feature = "AutoComputeDomain"
 )
 
 func init() {
@@ -46,6 +53,8 @@ func init() {
 // changes when adding or removing one entry.
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	WorkloadAwareScheduling: {Default: false, PreRelease: featuregate.Alpha},
+
+	AutoComputeDomain: {Default: false, PreRelease: featuregate.Alpha},
 }
 
 func SetFeatureGateDuringTest(tb testing.TB, f featuregate.Feature, value bool) {

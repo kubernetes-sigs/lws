@@ -32,6 +32,26 @@ rules:
       - list
       - watch
   {{- end }}
+  {{- if or (and .Values.computeDomainManagement .Values.computeDomainManagement.enabled) (and .Values.featureGates .Values.featureGates.AutoComputeDomain) }}
+  - apiGroups:
+      - resource.nvidia.com
+    resources:
+      - computedomains
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - resource.nvidia.com
+    resources:
+      - computedomains/finalizers
+    verbs:
+      - update
+  {{- end }}
   - apiGroups:
       - ""
     resources:

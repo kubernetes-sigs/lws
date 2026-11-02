@@ -34,6 +34,7 @@ Running multiple identical copies of a multi-role serving setup previously requi
 ### 2. Accelerator Domain Confinement & Fault Isolation
 Disaggregated inference architectures (such as vLLM or SGLang with KV-cache transfer) benefit when prefill and decode pods communicating with each other are confined to the same physical domain (e.g., an NVLink rack or high-bandwidth switch).
 - Each slice provides a stable unit of identity that can be pinned or spread across physical topology domains.
+- On NVIDIA Multi-Node NVLink (MNNVL) systems, LWS can also automatically provision and inject a shared per-slice DRA `ComputeDomain` across enrolled roles; see [Automatic ComputeDomain Management](../../accelerators/auto-compute-domain/).
 - A failure or network disruption in one domain affects only that slice, while other slices continue serving traffic uninterrupted.
 
 ### 3. Independent Rolling Updates per Slice

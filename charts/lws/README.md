@@ -168,5 +168,6 @@ The following table lists the configurable parameters of the LWS chart and their
 | `tolerations`                              | Tolerations                                    | `[]`                                                |
 | `affinity`                                 | Affinity                                       | `{}`                                                |
 | `gangSchedulingManagement`                 | Configuration for gang scheduling.             | `{}`                                                |
-| `featureGates`                             | Alpha LWS feature gates, e.g. `{WorkloadAwareScheduling: true}` | `{}`                               |
+| `computeDomainManagement.enabled`          | Grant RBAC permissions for NVIDIA DRA `ComputeDomain` (`computedomains.resource.nvidia.com`) | `false` |
+| `featureGates`                             | Alpha LWS feature gates, e.g. `{WorkloadAwareScheduling: true, AutoComputeDomain: true}` | `{}`          |
 | `leaderElection`                           | Manager lease timing (`leaseDuration`, `renewDeadline`, `retryPeriod`); controller defaults when empty | `{}` |

@@ -28,6 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
+	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
@@ -205,6 +207,12 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 		}
 	} else if pod.Annotations[schedulerprovider.WorkloadSchedulingAnnotationKey] != "" {
 		return fmt.Errorf("pod %s requests workload-aware scheduling but no scheduler provider is configured", pod.Name)
+	}
+
+	if features.Enabled(features.AutoComputeDomain) {
+		if err := computedomain.InjectPodClaims(pod); err != nil {
+			return err
+		}
 	}
 
 	// injecting env vars if needed

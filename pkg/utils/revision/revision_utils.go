@@ -192,7 +192,30 @@ func ApplyRevision(lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.Contro
 	if restartBackoff := lws.Spec.LeaderWorkerTemplate.RestartBackoff; restartBackoff != nil {
 		restoredLws.Spec.LeaderWorkerTemplate.RestartBackoff = restartBackoff.DeepCopy()
 	}
+	if revisionHasAutoComputeDomainEnabled(revision.Data.Raw) {
+		if restoredLws.Annotations == nil {
+			restoredLws.Annotations = make(map[string]string)
+		}
+		restoredLws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] = leaderworkerset.AutoComputeDomainEnabled
+	} else if restoredLws.Annotations != nil {
+		delete(restoredLws.Annotations, leaderworkerset.AutoComputeDomainAnnotationKey)
+	}
 	return restoredLws, nil
+}
+
+func revisionHasAutoComputeDomainEnabled(raw []byte) bool {
+	if !bytes.Contains(raw, []byte(leaderworkerset.AutoComputeDomainAnnotationKey)) {
+		return false
+	}
+	var patchMeta struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &patchMeta); err != nil {
+		return false
+	}
+	return patchMeta.Metadata.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled
 }
 
 // EqualRevision returns true if lhs and rhs are either both nil, if the revisionKey is the same,
@@ -207,11 +230,14 @@ func EqualRevision(lhs *appsv1.ControllerRevision, rhs *appsv1.ControllerRevisio
 
 // revisionEqualityCacheKey is the cache key for remembering that a particular
 // revision ResourceVersion is semantically equal to the revision produced from
-// a particular LWS UID at a particular generation.
+// a particular LWS UID at a particular generation. The revision patch also
+// carries the auto-compute-domain annotation, which can change without bumping
+// the generation, so its effective value is part of the key.
 type revisionEqualityCacheKey struct {
-	lwsUID                  types.UID
-	lwsGeneration           int64
-	revisionResourceVersion string
+	lwsUID                   types.UID
+	lwsGeneration            int64
+	revisionResourceVersion  string
+	autoComputeDomainEnabled bool
 }
 
 // SetMatchesRevision returns true if the proposedRevision (generated from the current LWS spec)
@@ -223,9 +249,10 @@ type revisionEqualityCacheKey struct {
 // This function adapts the approach in https://github.com/kubernetes/kubernetes/pull/135017.
 func SetMatchesRevision(lws *leaderworkerset.LeaderWorkerSet, proposedRevision *appsv1.ControllerRevision, existingRevision *appsv1.ControllerRevision, cache *lru.Cache) bool {
 	cacheKey := revisionEqualityCacheKey{
-		lwsUID:                  lws.UID,
-		lwsGeneration:           lws.Generation,
-		revisionResourceVersion: existingRevision.ResourceVersion,
+		lwsUID:                   lws.UID,
+		lwsGeneration:            lws.Generation,
+		revisionResourceVersion:  existingRevision.ResourceVersion,
+		autoComputeDomainEnabled: lws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled,
 	}
 	if _, ok := cache.Get(cacheKey); ok {
 		return true
@@ -309,6 +336,13 @@ func getPatch(lws *leaderworkerset.LeaderWorkerSet) ([]byte, error) {
 	delete(template, "maxGroupRestarts")
 	delete(template, "restartBackoff")
 	objCopy["spec"] = specCopy
+	if lws.Annotations[leaderworkerset.AutoComputeDomainAnnotationKey] == leaderworkerset.AutoComputeDomainEnabled {
+		objCopy["metadata"] = map[string]interface{}{
+			"annotations": map[string]interface{}{
+				leaderworkerset.AutoComputeDomainAnnotationKey: leaderworkerset.AutoComputeDomainEnabled,
+			},
+		}
+	}
 	return json.Marshal(objCopy)
 }
 

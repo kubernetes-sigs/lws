@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	disaggregatedset "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	disaggregatedsetwebhook "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
 )
@@ -79,7 +80,10 @@ var _ = BeforeSuite(func() {
 	webhookPaths = append(webhookPaths, filepath.Join("..", "..", "..", "config", "webhook", "service.yaml"))
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "config", "crd", "bases"),
+			filepath.Join("..", "..", "..", "test", "integration", "crd"),
+		},
 		ErrorIfCRDPathMissing: false,
 
 		// The BinaryAssetsDirectory is only required if you want to run the tests directly
@@ -106,6 +110,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = disaggregatedset.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = computedomain.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = admissionv1.AddToScheme(scheme.Scheme)
