@@ -50,10 +50,14 @@ test('Light/Dark persists; Auto follows the system; blocked storage is harmless'
 });
 
 test('documentation embeds local prepared data without a separate application', async () => {
-  const scenes = { 'rollout-strategy': 'fractional', 'scaling-during-rollout': 'scaling', 'llm-d-integration': 'gating' };
-  for (const [page, scene] of Object.entries(scenes)) {
+  const scenes = {
+    'rollout-strategy': ['fractional'],
+    'scaling-during-rollout': ['scaling-up', 'scaling'],
+    'llm-d-integration': ['gating'],
+  };
+  for (const [page, assets] of Object.entries(scenes)) {
     const source = await read(`../content/en/docs/concepts/disaggregatedset/${page}/_index.md`);
-    assert.ok(source.includes(`data="/animations/${scene}.json"`));
+    for (const scene of assets) assert.ok(source.includes(`data="/animations/${scene}.json"`), `${page}: ${scene}`);
     assert.doesNotMatch(source, /<video|\.mp4|\.gif/);
   }
   const shortcode = await read('../layouts/shortcodes/canvas-animation.html');
