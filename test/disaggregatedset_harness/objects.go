@@ -99,9 +99,7 @@ func clone(o Object) Object {
 }
 func jsonText(v any) string {
 	b, e := json.Marshal(v)
-	if e != nil {
-		panic(e)
-	}
+	abort(e)
 	return string(b)
 }
 func keys[V any](m map[string]V) []string {

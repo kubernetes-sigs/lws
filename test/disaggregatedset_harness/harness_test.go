@@ -67,6 +67,19 @@ func requireNoError(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestUnserializableInputFailsCaseWithoutExecutingCommand(t *testing.T) {
+	executor := &fakeExecutor{}
+	l := testLab(t, executor)
+	err := catch(func() { l.Apply(Object{"invalid": func() {}}) })
+	var unsupported *json.UnsupportedTypeError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Apply returned %v, want a recoverable JSON encoding error", err)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatal("invalid manifest invoked a command", executor.calls)
+	}
+}
 func pod(name, version, role, group, index string, isReady bool) Object {
 	status := "False"
 	if isReady {
