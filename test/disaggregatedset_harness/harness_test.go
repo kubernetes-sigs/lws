@@ -80,6 +80,27 @@ func TestUnserializableInputFailsCaseWithoutExecutingCommand(t *testing.T) {
 		t.Fatal("invalid manifest invoked a command", executor.calls)
 	}
 }
+
+func TestSameTargetsComparesCountsIncludingEmptyMaps(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b Targets
+		want bool
+	}{
+		{"both absent", nil, nil, true},
+		{"missing annotation", annotatedCounts(Object{}), Targets{}, true},
+		{"empty annotation", annotatedCounts(Object{"metadata": Object{"annotations": Object{ChildCounts: ""}}}), Targets{}, true},
+		{"same counts", pair(2, 3), pair(2, 3), true},
+		{"different counts", pair(2, 3), pair(2, 4), false},
+		{"missing key", Targets{}, Targets{"prefill": 0}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameTargets(tc.a, tc.b); got != tc.want {
+				t.Fatalf("sameTargets(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
 func pod(name, version, role, group, index string, isReady bool) Object {
 	status := "False"
 	if isReady {

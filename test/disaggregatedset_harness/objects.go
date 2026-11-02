@@ -5,6 +5,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -311,7 +312,7 @@ func annotatedCounts(lws Object) Targets {
 	_ = json.Unmarshal([]byte(str(at(lws, "metadata", "annotations", ChildCounts))), &t)
 	return t
 }
-func sameTargets(a, b Targets) bool { return jsonText(a) == jsonText(b) }
+func sameTargets(a, b Targets) bool { return maps.Equal(a, b) }
 func describe(t Targets) string {
 	var cells []string
 	for _, k := range keys(t) {
