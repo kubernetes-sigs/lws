@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
@@ -65,6 +65,17 @@ test('documentation embeds local prepared data without a separate application', 
 test('gating subtitle introduces the role counts without a release label', async () => {
   const drawing = JSON.parse(await read('../static/animations/gating.json'));
   assert.equal(drawing.primitives.find(item => item.type === 'text' && item.y === 94).text, '5 Prefill + 13 Decode');
+});
+
+test('animation labels are release-independent; source provenance remains separate', async () => {
+  const directory = new URL('../static/animations/', import.meta.url);
+  for (const name of (await readdir(directory)).filter(name => name.endsWith('.json'))) {
+    const drawing = JSON.parse(await readFile(new URL(name, directory), 'utf8'));
+    const labels = [drawing.title, ...drawing.primitives.map(item => item.text),
+      ...drawing.frames.flatMap(frame => [frame.caption,
+        ...(frame.hits ?? []).flatMap(hit => [hit.label, hit.detail])])].filter(Boolean);
+    for (const label of labels) assert.doesNotMatch(label, /\bLWS\s+(?:v(?:ersion)?\s*)?\d|\bPR\b|\bpull request\b/i, name);
+  }
 });
 
 test('all deployment contexts preserve snapshots and need only the Hugo build', async () => {

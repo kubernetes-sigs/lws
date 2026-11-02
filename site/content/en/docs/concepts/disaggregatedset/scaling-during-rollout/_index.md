@@ -56,12 +56,8 @@ The scale-down policy controls reductions independently of the scale-up policy. 
 The animation below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares the two **scale-down** policies using autoscaler requests, with both rollout budgets set to 10%. Scale-up remains Deferred in both examples.
 
 {{< canvas-animation data="/animations/scaling.json" title="Deferred versus Immediate scale-down during a rollout" >}}
-Real planner decisions with simulated readiness and timing. This example assumes deletions remove Ready groups first.
+Two recorded Kubernetes runs with controlled model-loading readiness. Panels are aligned at the replica change; each shows its own observed state. Playback is compressed.
 {{< /canvas-animation >}}
-
-After watching the animation, you might ask:
-
-**Why not reduce B straight to 20 Prefill groups?** With `maxUnavailable: 10%`, at least **18 must stay Ready**. At 23 groups, 18 are Ready and 5 are loading. Reaching 20 requires three deletions. The planner chooses a count, not which groups are deleted: losing three Ready groups would leave only **15**. It cannot assume that only loading groups will be removed, so it waits for more groups to become Ready.
 
 **Immediate does not mean instant removal.** Both scale-down policies follow your rollout budgets, so extra groups may need to stay while replacements become Ready. Freeing resources earlier does not necessarily make the whole rollout finish sooner.
 
