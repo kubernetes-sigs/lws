@@ -592,9 +592,19 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		// group is left without a domain of its own.
 		nodes := &corev1.NodeList{}
 		gomega.Expect(k8sClient.List(ctx, nodes)).To(gomega.Succeed())
+		// The topology value of each node, which can differ from the node name.
+		topologyOfNode := map[string]string{}
 		schedulableNodes := 0
 		for _, node := range nodes.Items {
-			if !slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool { return taint.Effect == corev1.TaintEffectNoSchedule }) {
+			topologyOfNode[node.Name] = node.Labels[topologyKey]
+			if node.Spec.Unschedulable || slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool {
+				return taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute
+			}) {
+				continue
+			}
+			if slices.ContainsFunc(node.Status.Conditions, func(condition corev1.NodeCondition) bool {
+				return condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue
+			}) {
 				schedulableNodes++
 			}
 		}
@@ -632,7 +642,7 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 				if podutils.LeaderPod(pod) {
 					g.Expect(testing.ValidatePodExclusivePlacementTerms(pod, v1.ExclusiveKeyAnnotationKey, v1.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
 				} else {
-					g.Expect(pod.Spec.NodeSelector).To(gomega.HaveKeyWithValue(topologyKey, pod.Spec.NodeName))
+					g.Expect(pod.Spec.NodeSelector).To(gomega.HaveKeyWithValue(topologyKey, topologyOfNode[pod.Spec.NodeName]))
 				}
 			}
 			g.Expect(pendingLeaders).To(gomega.Equal(1))
