@@ -1,0 +1,56 @@
+// Prism re-highlights Hugo's Tango output, but leaves inline PRE colors behind.
+// Override those colors deliberately and give all docs versions one dark
+// palette. Inline code elsewhere on the page keeps Docsy's existing styling.
+[data-bs-theme="dark"] .td-content {
+  pre {
+    color: #e8edf4 !important;
+    background-color: #18202c !important;
+    border-color: #45546a;
+    text-shadow: none;
+
+    code {
+      color: inherit !important;
+      text-shadow: none;
+    }
+
+    // Preserve readable server-rendered code before Prism loads, and when JS
+    // is disabled. These inline Tango colors disappear once Prism tokenizes.
+    code span[style*="color:"] {
+      color: inherit !important;
+      background-color: transparent !important;
+      text-decoration: none !important;
+    }
+
+    .token {
+      color: inherit;
+      background: transparent;
+      text-shadow: none;
+    }
+    .token.comment, .token.prolog, .token.doctype, .token.cdata,
+    .token.punctuation { color: #aab4c3; }
+    .token.property, .token.tag, .token.atrule, .token.keyword,
+    .token.attr-name { color: #8bb0ff; }
+    .token.selector, .token.char, .token.builtin, .token.string,
+    .token.attr-value, .token.inserted { color: #77d98b; }
+    .token.boolean, .token.number, .token.constant, .token.symbol,
+    .token.important, .token.regex, .token.variable { color: #e4b95c; }
+    .token.function, .token.class-name { color: #e7adcf; }
+    .token.operator, .token.entity, .token.url { color: #c0cad8; }
+    .token.deleted { color: #ff8a80; }
+    .token.namespace { opacity: 1; }
+
+    &::selection, *::selection {
+      color: #101720;
+      background: #8bb0ff;
+      text-shadow: none;
+    }
+  }
+
+  .code-toolbar > .toolbar > .toolbar-item {
+    > a, > button, > span {
+      color: #e8edf4;
+      background: #202b3a;
+      box-shadow: none;
+    }
+  }
+}

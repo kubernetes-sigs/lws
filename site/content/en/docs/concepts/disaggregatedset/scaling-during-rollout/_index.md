@@ -45,26 +45,19 @@ Immediate counts requested groups, including those still loading, across **all**
 
 This extra growth reaches the desired count; it does not raise `maxSurge` or permit extra old-group deletions. Normal rollout growth may still use the allowed surge, and renamed-role safeguards still apply. Immediate can start more groups sooner, but cannot make them schedulable or Ready sooner.
 
+{{< canvas-animation data="/animations/scaling-up.json" title="Deferred versus Immediate scale-up from 4 to 10 groups" >}}
+Two recorded Kubernetes runs show how each policy grows B after demand rises from 4 to 10 groups per role. Model-loading readiness is controlled, and playback is compressed.
+{{< /canvas-animation >}}
+
 ## When demand decreases
 
 The scale-down policy controls reductions independently of the scale-up policy. **Deferred** waits until old groups are gone before reducing B, which can temporarily keep more resources in use. **Immediate** tries to free resources sooner, removing old groups first; it can also remove excess B groups when safe.
 
 The animation below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares the two **scale-down** policies using autoscaler requests, with both rollout budgets set to 10%. Scale-up remains Deferred in both examples.
 
-<figure class="td-max-width-on-larger-screens">
-<!-- Keep a compact area for native playback controls below the picture. -->
-<div style="position: relative; padding-top: calc(64.285714% + 2rem);">
-<video controls autoplay loop muted playsinline preload="metadata" poster="/images/disaggregatedset-scale-down-comparison-poster.png" width="1400" height="900" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready.">
-  <source src="/videos/disaggregatedset-scale-down-comparison.mp4" type="video/mp4">
-  <a href="/videos/disaggregatedset-scale-down-comparison.mp4">Download the scale-down comparison.</a>
-</video>
-</div>
-<figcaption class="small text-muted mt-2">Real planner decisions with simulated readiness and timing. This example assumes deletions remove Ready groups first.</figcaption>
-</figure>
-
-After watching the animation, you might ask:
-
-**Why not reduce B straight to 20 Prefill groups?** With `maxUnavailable: 10%`, at least **18 must stay Ready**. At 23 groups, 18 are Ready and 5 are loading. Reaching 20 requires three deletions. The planner chooses a count, not which groups are deleted: losing three Ready groups would leave only **15**. It cannot assume that only loading groups will be removed, so it waits for more groups to become Ready.
+{{< canvas-animation data="/animations/scaling.json" title="Deferred versus Immediate scale-down during a rollout" >}}
+Two recorded Kubernetes runs with controlled model-loading readiness. Panels are aligned at the replica change; each shows its own observed state. Playback is compressed.
+{{< /canvas-animation >}}
 
 **Immediate does not mean instant removal.** Both scale-down policies follow your rollout budgets, so extra groups may need to stay while replacements become Ready. Freeing resources earlier does not necessarily make the whole rollout finish sooner.
 

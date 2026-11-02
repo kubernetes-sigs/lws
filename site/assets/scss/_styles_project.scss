@@ -7,9 +7,11 @@ footer {
 
   $docs-max-width: 1920px;
 
-  // Keep the article and both sidebars together on ultrawide screens.
-  body:has(.td-navbar--docs) > .td-outer {
-    max-width: $docs-max-width;
+  // Center the article and sidebars, not the outer shell containing the footer.
+  // The row adds the container's gutter back on either side.
+  body:has(.td-navbar--docs) > .td-outer > .td-main {
+    width: 100%;
+    max-width: calc(#{$docs-max-width} - var(--bs-gutter-x, 1.5rem));
     margin-inline: auto;
   }
 
@@ -22,6 +24,9 @@ footer {
     @include media-breakpoint-up(md) {
       // Override Docsy's asymmetric ps-md-5 gutter.
       padding-inline: 1.5rem !important;
+      padding-top: calc(var(--lws-header-height, 5rem) + .5rem);
+
+      [id] { scroll-margin-top: calc(var(--lws-header-height, 5rem) + 1rem); }
     }
 
     @include media-breakpoint-up(lg) {
@@ -48,6 +53,12 @@ footer {
     background: transparent;
     white-space: normal;
     text-align: left;
+  }
+
+  // Keep navigation menus flat, including their selected and hovered rows.
+  .td-navbar .dropdown-menu {
+    box-shadow: none;
+    .dropdown-item { background-image: none; }
   }
 
   .docs-version-menu {
@@ -187,7 +198,7 @@ footer {
 
     @include media-breakpoint-up(md) {
       &.td-navbar--docs .navbar-brand {
-        // Let the larger badge hang into the sidebar's existing top clearance.
+        // The sidebar reserves clearance for the taller badge below the header.
         // Its width stays in normal flow, beside the navigation links.
         height: 5rem;
       }
@@ -275,12 +286,34 @@ footer {
   
   .td-sidebar {
     padding-bottom: 0.5rem;
-  
-    .td-sidebar__inner {
-      padding-top: 30px;
-  
-      @include media-breakpoint-down(md) {
+
+    // The header owns the mobile toggle; omit its otherwise empty search row.
+    .td-sidebar__search:has(> .td-sidebar__toggle:only-child) {
+      display: none !important;
+    }
+
+    @include media-breakpoint-up(md) {
+      --lws-sidebar-top: calc(var(--lws-logo-bottom, 6.55rem) + 1rem);
+      padding-top: var(--lws-sidebar-top);
+
+      .td-sidebar__inner {
+        position: sticky;
+        top: var(--lws-sidebar-top);
+        display: flex;
+        flex-direction: column;
+        height: auto;
         padding-top: 0;
+        // A full-height sticky box gets pushed under the header when its parent
+        // ends above the footer. Reserve that space, including our bottom gutter.
+        max-height: calc(100vh - var(--lws-sidebar-top) - var(--lws-footer-height, 6rem) - .5rem);
+        max-height: calc(100dvh - var(--lws-sidebar-top) - var(--lws-footer-height, 6rem) - .5rem);
+      }
+
+      .td-sidebar__search { flex-shrink: 0; }
+      .td-sidebar-nav {
+        min-height: 0;
+        max-height: none;
+        overflow-y: auto;
       }
     }
 
@@ -295,18 +328,17 @@ footer {
         // Put clearance inside the list so the collapse animation stays smooth.
         > .td-sidebar-nav__section { padding-top: .5rem; }
       }
-      .td-sidebar__search:has(> .td-sidebar__toggle:only-child) {
-        display: none !important;
-      }
     }
   }
   
   .td-sidebar-toc {
     @supports (position: sticky) {
         position: sticky;
-        top: 5rem;
-        height: calc(100vh - 5rem);
-        height: calc(100dvh - 5rem);
+        top: var(--lws-header-height, 5rem);
+        align-self: flex-start;
+        height: auto;
+        max-height: calc(100vh - var(--lws-header-height, 5rem) - var(--lws-footer-height, 6rem) - .5rem);
+        max-height: calc(100dvh - var(--lws-header-height, 5rem) - var(--lws-footer-height, 6rem) - .5rem);
         overflow-y: auto;
     }
   }
@@ -388,3 +420,61 @@ footer {
   nav.foldable-nav .ul-1 .with-child>input:checked~label:hover:before {
     transform: rotate(90deg) !important;
   }
+
+// Keep the site and its Canvas illustrations on the same LWS palette.
+[data-bs-theme="dark"] {
+  --bs-body-bg: #101720;
+  --bs-body-bg-rgb: 16, 23, 32;
+  --bs-body-color: #e8edf4;
+  --bs-secondary-color: #aab4c3;
+  --bs-tertiary-bg: #18202c;
+  --bs-secondary-bg: #202b3a;
+  --bs-border-color: #45546a;
+  --bs-link-color: #8bb0ff;
+  --bs-link-color-rgb: 139, 176, 255;
+  --bs-link-hover-color: #b8ceff;
+  --td-sidebar-bg-color: #18202c;
+
+  .td-sidebar { background-color: #18202c; }
+  .tab-pane { border-color: var(--bs-border-color); }
+  .docs-version-banner {
+    color: var(--bs-body-color);
+    background: #182943;
+    border-left-color: #8bb0ff;
+    &--development {
+      background: #332a17;
+      border-left-color: #e4b95c;
+    }
+  }
+  .section-head { color: #8bb0ff; }
+}
+
+@import "code_theme";
+@import "animation_player";
+
+.lws-theme-control { display: flex; align-items: center; }
+.lws-theme-control .td-light-dark-menu { position: relative !important; }
+.lws-theme-control .dropdown-menu {
+  left: auto;
+  right: 0;
+}
+.lws-theme-control #bd-theme {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  justify-content: center;
+  &:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+}
+@include media-breakpoint-down(md) {
+  // Keep the version selector on its existing row; use the free logo-row corner.
+  .td-navbar .lws-theme-control {
+    position: absolute;
+    top: 1.75rem;
+    right: 1rem;
+  }
+}
+
+@media print {
+  .lws-theme-control { display: none; }
+  .lws-animation [data-animation-player] { display: none; }
+  .lws-animation::before { content: "Interactive illustration available in the online documentation."; }
+}

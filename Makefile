@@ -405,11 +405,11 @@ site-snapshots: ## Generate versioned docs from release branches; see site/READM
 
 .PHONY: site-server
 site-server: hugo site-snapshots
-	(cd site; $(HUGO) server --source _generated --destination ../public --cleanDestinationDir)
+	(cd site; PATH="$(PROJECT_DIR)/site/node_modules/.bin:$$PATH" $(HUGO) server --source _generated --destination ../public --cleanDestinationDir)
 
 .PHONY: site-build
 site-build: hugo site-snapshots
-	(cd site; $(HUGO) --source _generated --destination ../public --cleanDestinationDir --gc --minify)
+	(cd site; PATH="$(PROJECT_DIR)/site/node_modules/.bin:$$PATH" $(HUGO) --source _generated --destination ../public --cleanDestinationDir --gc --minify)
 
 .PHONY: site-test
 site-test: ## Test docs snapshots without network access or Hugo.

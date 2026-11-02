@@ -1,0 +1,64 @@
+.lws-animation {
+  --animation-ratio: 16 / 9;
+  --animation-width-ratio: 1.777778;
+  margin-block: 2rem;
+
+  [data-animation-player] {
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #212121);
+    border: 1px solid var(--bs-border-color, #bdc1c6);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .lws-animation__stage {position: relative; overflow: hidden; width: 100%; aspect-ratio: var(--animation-ratio);}
+  canvas {display: block; width: 100%; height: 100%; object-fit: contain;}
+  [data-animation-controls] {padding: 8px 14px 12px; border-top: 1px solid var(--bs-border-color, #bdc1c6);}
+  [data-animation-seek] {display: block; width: 100%; height: 20px; margin: 0 0 6px; accent-color: #326ce5;}
+  .lws-animation__row, .lws-animation__actions, .lws-animation__options {display: flex; align-items: center; gap: 8px;}
+  .lws-animation__row {justify-content: space-between; flex-wrap: wrap; gap: 8px 16px;}
+  .lws-animation__options {font-size: 13px; gap: 14px;}
+  .lws-animation__options label {display: flex; align-items: center; gap: 6px; margin: 0; white-space: nowrap;}
+  button, select {
+    font: inherit;
+    min-height: 34px;
+    padding: 5px 10px;
+    border: 1px solid var(--bs-border-color, #bdc1c6);
+    border-radius: 6px;
+    color: inherit;
+    background: var(--bs-body-bg, #fff);
+  }
+  button {cursor: pointer; white-space: nowrap;}
+  button:hover:not(:disabled), select:hover:not(:disabled) {background: var(--bs-secondary-bg, #f3f6fa);}
+  button:disabled, input:disabled, select:disabled {opacity: .5; cursor: default;}
+  button:focus-visible, input:focus-visible, select:focus-visible {outline: 2px solid var(--bs-link-color, #326ce5); outline-offset: 3px;}
+  [data-animation-play] {min-width: 66px; font-weight: 700;}
+  [data-animation-clock] {font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap;}
+  [data-animation-fullscreen] svg {display: block;}
+  [data-animation-tooltip] {
+    position: absolute; z-index: 1; width: max-content; max-width: unquote("min(420px, calc(100% - 16px))");
+    padding: 10px 12px; border: 1px solid var(--bs-border-color, #bdc1c6); border-radius: 6px;
+    background: var(--bs-body-bg, #fff); font-size: 14px; line-height: 1.4;
+    white-space: pre-line; pointer-events: none; box-shadow: 0 3px 12px #0002;
+  }
+  .lws-animation__summary {position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap;}
+  [data-animation-error] {padding: 12px; margin: 0;}
+  [hidden] {display: none;}
+  figcaption {margin-top: 12px; font-size: .875rem; line-height: 1.5;}
+
+  [data-animation-player]:fullscreen {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 100vw; height: 100dvh; border: 0; border-radius: 0;
+    .lws-animation__stage {
+      flex: none;
+      width: unquote("min(100vw, calc((100dvh - var(--animation-controls-height, 90px)) * var(--animation-width-ratio)))");
+      max-height: calc(100dvh - var(--animation-controls-height, 90px));
+    }
+    [data-animation-controls] {width: 100%; flex: none;}
+  }
+  @media (max-width: 620px) {
+    [data-animation-previous], [data-animation-next] {display: none;}
+    [data-animation-controls] {padding: 6px 8px 10px;}
+    .lws-animation__row, .lws-animation__options {gap: 8px;}
+    select {max-width: 72px;}
+  }
+}

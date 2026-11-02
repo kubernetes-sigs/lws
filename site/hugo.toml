@@ -111,6 +111,8 @@ ignoreFiles = []
 
   # User interface configuration
   [params.ui]
+    # Native Light / Dark / Auto menu, synchronized with the Canvas illustrations.
+    showLightDarkModeMenu = true
     # Enable the logo
     navbar_logo = true
     # Enable to show the side bar menu in its compact state.
