@@ -270,6 +270,7 @@ try {
     'Only the selected scenario is fetched on entry');
   assert.ok(!requests.some(url => /trace-export\.|trace-gif-worker\./.test(url)), 'Media encoders stay unloaded until export');
   assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), false, 'Extra themes are hidden on the ordinary URL');
+  assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'No export indicator before an export starts');
   await assertResponsiveSizing();
   const catalog = JSON.parse(await page.locator('#trace-player-catalog').textContent());
   assert.deepEqual(catalog.map(group => group.scenarios.length), [28, 20, 4]);
@@ -288,8 +289,15 @@ try {
   }
 
   // Download/import is an exact local prepared-JSON round-trip, not an upload.
-  const downloadPromise = page.waitForEvent('download');await page.locator('[data-trace-export]').click();
+  const exportMenu = page.locator('[data-trace-export-menu]');
+  await exportMenu.focus();await exportMenu.press('ArrowDown');
+  await page.locator('[data-trace-export]').waitFor({state: 'visible'});
+  assert.equal(await page.locator('[data-trace-export]').evaluate(node => node === document.activeElement), true,
+    'Export menu keyboard navigation focuses its first format');
+  const downloadPromise = page.waitForEvent('download');await page.keyboard.press('Enter');
   const download = await downloadPromise, exported = JSON.parse(await readFile(await download.path(), 'utf8'));
+  assert.equal(await page.locator('[data-trace-export-status]').getAttribute('data-state'), 'done');
+  assert.equal(await page.locator('[data-trace-export-done]').isVisible(), true, 'JSON export reports completion');
   assert.equal(exported.version, 1);assert.deepEqual(exported.themes, themes);
   assert.deepEqual([exported.width, exported.height], [1920, 1080], 'Prepared JSON retains native 1080p dimensions');
   await page.locator('[data-trace-suite="import"]').click();
@@ -404,11 +412,14 @@ try {
   await assertViewportFit('Imported drawing with theme controls');
   // Reserve room for the real exporter progress/cancellation UI without encoding a video in this layout test.
   await page.locator('[data-trace-export-status]').evaluate(node => {
-    node.textContent = 'GIF · 67%';node.title = 'GIF export: 67%';node.setAttribute('aria-label', node.title);
+    node.hidden = false;node.dataset.state = 'progress';node.title = 'GIF export: 67%';node.setAttribute('aria-label', node.title);
+    node.querySelector('[data-trace-export-label]').textContent = 'GIF';
+    node.querySelector('[data-trace-export-progress]').setAttribute('aria-valuenow', '67');
+    node.querySelector('[data-trace-export-ring]').setAttribute('stroke-dashoffset', '33');
   });
   await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = false;});
   await assertViewportFit('Imported drawing with export status and controls');
-  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = '';node.removeAttribute('title');node.removeAttribute('aria-label');});
+  await page.locator('[data-trace-export-status]').evaluate(node => {node.hidden = true;delete node.dataset.state;node.removeAttribute('title');node.removeAttribute('aria-label');});
   await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = true;});
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   assert.equal(await page.locator('[data-trace-theme]').inputValue(), '', 'Unsupported current theme clears on legacy import');
@@ -427,6 +438,12 @@ try {
   const navigation = page.locator('#td-section-nav'), toggle = page.locator('.docs-section-toggle');
   assert.equal(await navigation.isVisible(), false);await assertMobileLayout('Mobile');
   await page.evaluate(() => window.scrollTo({top: 0, behavior: 'instant'}));
+  await exportMenu.click();await page.locator('[data-trace-export]').waitFor({state: 'visible'});
+  const menuBox = await page.locator('[data-trace-export]').evaluate(node => node.closest('.dropdown-menu').getBoundingClientRect().toJSON());
+  assert.ok(menuBox.x >= 0 && menuBox.right <= 390 && menuBox.bottom <= 844, 'Mobile export menu fits on screen');
+  await page.keyboard.press('Escape');
+  assert.equal(await exportMenu.getAttribute('aria-expanded'), 'false', 'Escape dismisses the export menu');
+  assert.equal(await exportMenu.evaluate(node => node === document.activeElement), true, 'Escape restores focus to Export to');
   await toggle.click();await navigation.waitFor({state: 'visible'});
   await page.waitForFunction(() => document.querySelector('.docs-section-toggle').getAttribute('aria-expanded') === 'true');
   assert.ok((await navigation.boundingBox()).height <= 844 * .45 + 1);

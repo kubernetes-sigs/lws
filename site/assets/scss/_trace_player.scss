@@ -28,24 +28,35 @@
   .trace-player-tabs, .trace-player-toolbar, .trace-player-exports {display: flex; align-items: center; gap: 10px; flex-wrap: wrap;}
   .trace-player-tabs {gap: 6px; font-size: .8125rem;}
   .trace-player-toolbar {margin-left: auto; font-size: .8125rem;}
-  .trace-player-exports {margin-left: auto;}
+  .trace-player-exports {margin-left: auto; min-height: 36px;}
   .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, .trace-player-sidebar button {font: inherit; color: inherit; border-radius: 6px; cursor: pointer;}
   .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select {background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); padding: 6px 10px;}
   .trace-player-tabs button[aria-pressed="true"] {background: var(--bs-primary); border-color: var(--bs-primary); color: #fff;}
+  .trace-player-exports .dropdown-item {
+    border: 0; border-radius: 0; padding: 6px 16px; background: none; font-size: .8125rem;
+    &:hover, &:focus-visible {background: var(--bs-tertiary-bg);}
+  }
+  .trace-player-exports .dropdown-menu {min-width: 8rem;}
   button:disabled {opacity: .5; cursor: default;}
-  button:focus-visible, select:focus-visible, input:focus-visible {outline: 2px solid var(--bs-primary); outline-offset: 3px;}
+  button:focus-visible, select:focus-visible, input:focus-visible, [data-trace-export-status]:focus-visible {outline: 2px solid var(--bs-primary); outline-offset: 3px;}
   .trace-player-toolbar label {display: flex; align-items: center; gap: 10px; margin: 0;}
   [data-trace-import] {width: 100%;}
   [data-trace-import] small {display: block; margin-top: 6px;}
   [data-trace-status], [data-trace-export-status] {display: block; font-size: .8125rem;}
   [data-trace-status]:not(.visually-hidden) {width: 100%;}
   [data-trace-export-status] {
-    padding: 3px 7px; border-radius: 4px; max-width: 12rem;
-    background: var(--bs-secondary-bg); color: var(--bs-secondary-color);
-    font-size: .75rem; font-variant-numeric: tabular-nums;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    position: relative; display: grid; place-items: center; flex: none;
+    width: 36px; height: 36px; border-radius: 50%; color: var(--bs-primary);
+    svg {grid-area: 1 / 1; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;}
+    [data-trace-export-progress] {width: 36px; height: 36px; transform: rotate(-90deg);}
+    .trace-export-track {stroke: var(--bs-border-color);}
+    [data-trace-export-label] {grid-area: 1 / 1; font-size: 10px; font-weight: 600;}
+    > svg, [data-trace-export-label] {visibility: hidden;}
+    &[data-state="progress"] { [data-trace-export-progress], [data-trace-export-label] {visibility: visible;} }
+    &[data-state="done"] {color: var(--bs-success-text-emphasis); [data-trace-export-done] {visibility: visible;} }
+    &[data-state="cancelled"] {color: var(--bs-secondary-color); [data-trace-export-cancelled] {visibility: visible;} }
+    &[data-state="error"] {color: var(--bs-danger-text-emphasis); [data-trace-export-error] {visibility: visible;} }
   }
-  [data-trace-export-status]:empty {display: none;}
   .lws-animation {width: 100%; max-width: none; margin-block: 16px 0;}
   [data-animation-player] {position: relative;}
   .lws-animation[aria-busy="true"] [data-animation-player]::after {

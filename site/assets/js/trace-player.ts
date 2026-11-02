@@ -12,7 +12,12 @@ const save = document.querySelector<HTMLButtonElement>('[data-trace-export]')!;
 const status = document.querySelector<HTMLElement>('[data-trace-status]')!;
 const tabs = [...document.querySelectorAll<HTMLButtonElement>('[data-trace-suite]')];
 const mediaButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-trace-media]')];
+const exportMenu = document.querySelector<HTMLButtonElement>('[data-trace-export-menu]')!;
 const exportStatus = document.querySelector<HTMLElement>('[data-trace-export-status]')!;
+const exportMessage = exportStatus.querySelector<HTMLElement>('[data-trace-export-message]')!;
+const exportLabel = exportStatus.querySelector<HTMLElement>('[data-trace-export-label]')!;
+const exportProgress = exportStatus.querySelector<SVGElement>('[data-trace-export-progress]')!;
+const exportRing = exportStatus.querySelector<SVGElement>('[data-trace-export-ring]')!;
 const cancel = document.querySelector<HTMLButtonElement>('[data-trace-cancel]')!;
 let suite = '', requestId = 0, pendingName = '', loading = false;
 let selected: Entry | undefined;
@@ -35,8 +40,9 @@ function applyTheme(value: string) {
 }
 
 function syncExports() {
-  save.disabled = loading || !current;
-  mediaButtons.forEach(button => {button.disabled = loading || !current || !!exporting;});
+  exportMenu.disabled = (loading || !current) && !exporting;
+  save.disabled = loading || !current || !!exporting;
+  mediaButtons.forEach(button => {button.disabled = save.disabled;});
   cancel.hidden = !exporting;
 }
 
@@ -129,13 +135,22 @@ function download(blob: Blob, name: string, extension: string) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
-function reportExport(message: string, detail = message) {
-  exportStatus.textContent = message;
+function reportExport(state: 'progress' | 'done' | 'cancelled' | 'error', label: string, detail: string, progress = 0) {
+  if (exportStatus.dataset.state === state && exportStatus.title === detail && exportLabel.textContent === label) return;
+  exportStatus.hidden = false;
+  exportStatus.dataset.state = state;
   exportStatus.title = detail;
   exportStatus.setAttribute('aria-label', detail);
+  exportMessage.textContent = detail;
+  exportLabel.textContent = label;
+  const percent = Math.round(Math.min(1, Math.max(0, progress)) * 100);
+  exportProgress.setAttribute('aria-valuenow', String(percent));
+  exportRing.setAttribute('stroke-dashoffset', String(100 - percent));
 }
 save.addEventListener('click', () => {
-  if (current) download(new Blob([JSON.stringify(current.drawing)], {type: 'application/json'}), current.name, 'json');
+  if (!current || loading || exporting) return;
+  download(new Blob([JSON.stringify(current.drawing)], {type: 'application/json'}), current.name, 'json');
+  reportExport('done', 'JSON', `JSON exported: ${current.drawing.title}.`);
 });
 cancel.addEventListener('click', () => exporting?.abort());
 mediaButtons.forEach(button => button.addEventListener('click', async () => {
@@ -144,21 +159,22 @@ mediaButtons.forEach(button => button.addEventListener('click', async () => {
   const format = button.dataset.traceMedia === 'gif' ? 'gif' : 'video';
   const speed = Number(figure.querySelector<HTMLSelectElement>('[data-animation-speed]')!.value);
   const palette = figure.dataset.animationTheme, dark = document.documentElement.dataset.bsTheme === 'dark';
+  const themeName = palette ? theme.selectedOptions[0].textContent : dark ? 'LWS dark' : 'LWS light';
   syncExports();
-  reportExport('Preparing…', 'Preparing export…');
+  reportExport('progress', format === 'gif' ? 'GIF' : 'MP4', 'Preparing export…');
   try {
     const assets = JSON.parse(document.querySelector('#trace-export-assets')!.textContent!);
     const {exportScenario, videoSupport} = await import(assets.module);
-    const label = format === 'gif' ? 'GIF' : (await videoSupport())?.extension.toUpperCase() ?? 'video';
+    const label = format === 'gif' ? 'GIF' : (await videoSupport())?.extension.toUpperCase() ?? 'MP4';
     const result = await exportScenario({drawing: source.drawing, format, speed,
       theme: palette, dark, signal: controller.signal, gifWorkerURL: assets.worker, videoModuleURL: assets.video,
       onProgress: (fraction: number) => {
-        reportExport(`${label} · ${Math.round(fraction * 100)}%`);
+        reportExport('progress', label, `${label} export: ${Math.round(fraction * 100)}%`, fraction);
       }});
     download(result.blob, source.name, result.extension);
-    reportExport(`${label} exported`, `${label} exported at 1080p using the selected theme and ${speed}× speed.`);
+    reportExport('done', label, `${label} exported: ${source.drawing.title}. 1080p, ${themeName} theme, ${speed}× speed.`);
   } catch (error) {
-    reportExport(controller.signal.aborted ? 'Cancelled' : 'Export failed',
+    reportExport(controller.signal.aborted ? 'cancelled' : 'error', '',
       controller.signal.aborted ? 'Export cancelled.' : `Export failed: ${(error as Error).message}`);
   } finally {exporting = undefined; syncExports();}
 }));

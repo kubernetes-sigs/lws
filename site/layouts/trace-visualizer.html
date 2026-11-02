@@ -26,20 +26,35 @@
         <label>Prepared drawing file <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-describedby="trace-import-help"></label>
         <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON. Files stay in your browser; nothing is uploaded.</small>
       </div>
-      <label data-trace-theme-control hidden>Animation theme
+      <div data-trace-theme-control hidden>
         <select data-trace-theme aria-label="Animation theme">
           <option value="">Follow site theme</option>
           <option value="lws">LWS light</option><option value="lws-dark">LWS dark</option>
           <option value="mistral-light">Mistral light</option><option value="mistral-dark">Mistral dark</option>
           <option value="llm-d-light">llm-d light</option><option value="llm-d-dark">llm-d dark</option>
         </select>
-      </label>
-      <div class="trace-player-exports" role="group" aria-label="Export scenario">
-        <button type="button" data-trace-export disabled>Download scenario JSON</button>
-        <button type="button" data-trace-media="gif" disabled>Export GIF</button>
-        <button type="button" data-trace-media="video" title="MP4 when supported by your browser; otherwise WebM" disabled>Export video</button>
-        <button type="button" data-trace-cancel hidden>Cancel export</button>
-        <output data-trace-export-status role="status" aria-live="polite"></output>
+      </div>
+      <div class="trace-player-exports" role="group" aria-label="Export">
+        <div class="dropdown">
+          <button type="button" class="dropdown-toggle" data-trace-export-menu data-bs-toggle="dropdown" aria-expanded="false" disabled>Export to</button>
+          <div class="dropdown-menu dropdown-menu-end">
+            <button type="button" class="dropdown-item" data-trace-export disabled>JSON</button>
+            <button type="button" class="dropdown-item" data-trace-media="gif" disabled>GIF</button>
+            <button type="button" class="dropdown-item" data-trace-media="video" title="MP4 when supported by your browser; otherwise WebM" disabled>MP4</button>
+            <button type="button" class="dropdown-item" data-trace-cancel hidden>Cancel export</button>
+          </div>
+        </div>
+        <output data-trace-export-status role="status" aria-live="polite" tabindex="0" hidden>
+          <span class="visually-hidden" data-trace-export-message></span>
+          <svg data-trace-export-progress viewBox="0 0 36 36" role="progressbar" aria-label="Export progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <circle class="trace-export-track" cx="18" cy="18" r="16"/>
+            <circle data-trace-export-ring cx="18" cy="18" r="16" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+          </svg>
+          <span data-trace-export-label aria-hidden="true"></span>
+          <svg data-trace-export-done viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          <svg data-trace-export-cancelled viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M7 17 17 7"/></svg>
+          <svg data-trace-export-error viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3v.1"/></svg>
+        </output>
       </div>
     </div>
     <output data-trace-status role="status" aria-live="polite">Loading {{ $scenario.title }}…</output>

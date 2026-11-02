@@ -14,11 +14,11 @@ const fixture = {version:1,width:1920,height:1080,title:'Export verification',pr
 ],frames:[{duration:.4,caption:'Green',items:[0,1,3]},{duration:.4,caption:'Red',items:[0,2,3]}]};
 try {
   await page.goto(`${base}/disaggregated-set-trace-visualizer/`);
-  await page.locator('[data-trace-export]:not([disabled])').waitFor();
+  await page.waitForFunction(()=>!document.querySelector('[data-trace-export-menu]').disabled);
   assert.equal(await page.evaluate(()=>performance.getEntriesByType('resource').some(entry=>/trace-(export|gif-worker|video)\./.test(entry.name))),false);
   await page.locator('[data-trace-suite="import"]').click();
   await page.locator('[data-trace-file]').setInputFiles({name:'export-check.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(fixture))});
-  await page.locator('[data-trace-export]:not([disabled])').waitFor();
+  await page.waitForFunction(()=>!document.querySelector('[data-trace-export-menu]').disabled);
   const result=await page.evaluate(async drawing=>{
     const assets=JSON.parse(document.querySelector('#trace-export-assets').textContent);
     const {exportScenario,videoSupport}=await import(assets.module);
@@ -71,47 +71,68 @@ try {
   assert.equal(result.progress[0],0);assert.equal(result.progress.at(-1),1);assert.equal(result.aborted,'AbortError');
   if(result.video){assert.equal(result.video.width,1920);assert.equal(result.video.height,1080);assert.ok(result.video.bytes>100);assert.ok(Math.abs(result.video.duration-.8)<.02);assert.ok(result.video.finalPixel[0]>180&&result.video.finalPixel[1]<30,JSON.stringify(result.video));assert.equal(result.video.cancellation,'AbortError');}
 
-  // Exercise the real toolbar as well as the encoder API: short visible feedback,
+  // Exercise the real toolbar as well as the encoder API: a format/ring while exporting,
   // with full export details available to assistive technology and on hover.
-  const status=page.locator('[data-trace-export-status]');
+  const status=page.locator('[data-trace-export-status]'),menu=page.locator('[data-trace-export-menu]');
+  assert.equal(await status.isVisible(),false);
   await status.evaluate(node=>{
     node.testChanges=[];
-    new MutationObserver(()=>node.testChanges.push(node.textContent)).observe(node,{childList:true,subtree:true,characterData:true});
+    new MutationObserver(()=>{
+      const progress=node.querySelector('[data-trace-export-progress]');
+      node.testChanges.push({state:node.dataset.state,label:node.querySelector('[data-trace-export-label]').textContent,
+        value:Number(progress.getAttribute('aria-valuenow')),offset:Number(node.querySelector('[data-trace-export-ring]').getAttribute('stroke-dashoffset')),
+        visible:getComputedStyle(progress).visibility==='visible'});
+    }).observe(node,{attributes:true,childList:true,subtree:true,characterData:true});
   });
   await page.locator('[data-animation-speed]').selectOption('2');
   for(const [format,extension] of [['gif','gif'],...(result.video?[['video',result.video.extension]]:[])]) {
     await status.evaluate(node=>{node.testChanges=[];});
     const downloaded=page.waitForEvent('download');
+    await menu.click();
     await page.locator(`[data-trace-media="${format}"]`).click();
     const download=await downloaded,label=extension.toUpperCase();
     assert.ok(download.suggestedFilename().endsWith(`.${extension}`));
-    await page.waitForFunction(label=>document.querySelector('[data-trace-export-status]').textContent===`${label} exported`,label);
+    await page.waitForFunction(()=>document.querySelector('[data-trace-export-status]').dataset.state==='done');
     const detail=await status.getAttribute('title');
     assert.match(detail,/1080p.*theme.*2×/);
     assert.equal(await status.getAttribute('aria-label'),detail,'Full export details remain accessible');
+    assert.equal(await page.locator('[data-trace-export-message]').textContent(),detail,'Live announcement retains the full export details');
+    assert.equal(await page.locator('[data-trace-export-label]').isVisible(),false,'Format label disappears after completion');
+    assert.equal(await page.locator('[data-trace-export-progress]').isVisible(),false);
+    assert.equal(await page.locator('[data-trace-export-done]').isVisible(),true,'Completion uses a check icon');
+    await status.focus();assert.equal(await status.evaluate(node=>node===document.activeElement),true,'Export details are keyboard reachable');
     const changes=await status.evaluate(node=>node.testChanges);
-    assert.ok(changes.some(text=>new RegExp(`^${label} · \\d+%$`).test(text)),`${label}: compact progress is shown`);
-    assert.ok(changes.every(text=>text==='Preparing…'||text===`${label} exported`||new RegExp(`^${label} · \\d+%$`).test(text)),
-      `${label}: exporter feedback never expands into a long toolbar sentence`);
+    const progress=changes.filter(change=>change.state==='progress');
+    assert.ok(progress.length>0&&progress.some(change=>change.value>0),`${label}: real progress updates are reported`);
+    assert.ok(progress.every(change=>change.visible&&(change.label===label||(format==='video'&&change.value===0&&change.label==='MP4'))&&
+      change.value>=0&&change.value<=100&&change.offset===100-change.value),
+      `${label}: visible ring and accessible percentage stay synchronized without a sentence`);
+    assert.equal(await page.locator('[data-trace-export-progress]').getAttribute('role'),'progressbar');
+    assert.equal(await page.locator('[data-trace-export-ring]').getAttribute('pathLength'),'100');
     const geometry=await status.evaluate(node=>{
       const rect=target=>target.getBoundingClientRect().toJSON();
       return {status:rect(node),exports:rect(node.closest('.trace-player-exports')),header:rect(node.closest('.trace-player-subheader')),
-        video:rect(document.querySelector('[data-trace-media="video"]')),rem:parseFloat(getComputedStyle(document.documentElement).fontSize)};
+        toggle:rect(document.querySelector('[data-trace-export-menu]'))};
     });
     for(const container of [geometry.exports,geometry.header]) assert.ok(geometry.status.x>=container.x-1&&geometry.status.right<=container.right+1&&
       geometry.status.y>=container.y-1&&geometry.status.bottom<=container.bottom+1,'Export badge stays within the shared subheader toolbar');
-    assert.ok(geometry.status.width<=12*geometry.rem+1,'Export badge has bounded width');
-    assert.ok(geometry.status.y>=geometry.video.y-1&&geometry.status.bottom<=geometry.video.bottom+1,'Export badge stays beside the export buttons');
+    assert.ok(geometry.status.width<=40&&geometry.status.height<=40,'Export indicator stays compact');
+    assert.ok(Math.abs((geometry.status.y+geometry.status.bottom-geometry.toggle.y-geometry.toggle.bottom)/2)<1,'Export indicator stays beside Export to');
     assert.equal(await page.locator('[data-trace-cancel]').isVisible(),false);
     assert.equal(await page.locator(`[data-trace-media="${format}"]`).isEnabled(),true);
   }
-  await page.evaluate(()=>{
+  await menu.click();
+  const canCancel=await page.evaluate(()=>{
     document.querySelector('[data-trace-media="gif"]').click();
-    document.querySelector('[data-trace-cancel]').click();
+    document.querySelector('[data-trace-export-menu]').click();
+    const cancel=document.querySelector('[data-trace-cancel]'),visible=cancel.getClientRects().length>0;
+    cancel.click();return visible;
   });
-  await page.waitForFunction(()=>document.querySelector('[data-trace-export-status]').textContent==='Cancelled');
+  assert.equal(canCancel,true,'Active export can be cancelled from its reopened menu');
+  await page.waitForFunction(()=>document.querySelector('[data-trace-export-status]').dataset.state==='cancelled');
   assert.match(await status.getAttribute('title'),/cancelled/i);
   assert.equal(await status.getAttribute('aria-label'),await status.getAttribute('title'));
+  assert.equal(await page.locator('[data-trace-export-cancelled]').isVisible(),true);
   assert.equal(await page.locator('[data-trace-cancel]').isVisible(),false);
   assert.deepEqual(failures,[]);
   console.log(JSON.stringify({gif:result.gif,video:result.video,cancellation:'passed',lazyLoading:'passed',canvasFree:'passed',toolbarFeedback:'passed'},null,2));
