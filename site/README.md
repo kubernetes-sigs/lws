@@ -197,11 +197,14 @@ Do not commit compiled JavaScript, generated media, `site/_generated/`, or
 
 ## Unlisted trace player
 
-`/disaggregated-set-trace-visualizer/` provides Small Harness, Large Harness,
-Documentation, and Import JSON workspaces using the same player, with the shared
-documentation header/footer and a scenario sidebar. It is omitted
-from navigation, search, and the sitemap and requests `noindex`; the URL is
-unlisted, **not access-controlled**.
+The [DisaggregatedSet Trace Player](https://lws.sigs.k8s.io/disaggregated-set-trace-visualizer/)
+provides Small Harness, Large Harness, Documentation, and Import JSON workspaces
+using the same player, with the shared documentation header/footer and a scenario sidebar.
+
+It is intentionally hidden because it is a maintainer tool for creating and checking
+new documentation animations and investigating recorded harness runs, not part of
+the reader-facing documentation. It is omitted from navigation, search, and the
+sitemap and requests `noindex`; the URL is unlisted, **not access-controlled**.
 
 The 48 historical harness scenarios are prepared drawings, gzip-compressed and
 loaded one at a time. Events, explanations, metrics, and inspection details are
@@ -214,12 +217,12 @@ conversion remains in the separate authoring tool.
 
 The normal page follows the site's LWS Light/Dark/Auto setting. Add `?themes=all`
 **before** the hash to reveal the optional animation palettes, for example:
-`/disaggregated-set-trace-visualizer/?themes=all#suite=small&theme=mistral-dark`.
+<https://lws.sigs.k8s.io/disaggregated-set-trace-visualizer/?themes=all#suite=small&theme=llm-d-dark>.
 The six original palettes share geometry; semantic metric colors stay green/red.
 Older two-color imports remain supported and only offer their LWS palettes.
 
-Export GIF or video saves **only the selected scenario** at 1920×1080 with the
-selected theme and speed. Playback and export share one SVG renderer. The browser
+Use **Export to** for JSON, GIF, or MP4. Media export saves **only the selected scenario**
+at 1920×1080 with the selected theme and speed. Playback and export share one SVG renderer. The browser
 decodes each SVG directly into a WebCodecs `VideoFrame`, without Canvas or screen
 capture. Video frames carry explicit timestamps: slow encoding cannot skip states.
 MP4 is preferred, with a clearly labeled WebM fallback where H.264 encoding is
