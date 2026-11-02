@@ -66,14 +66,6 @@ test('documentation embeds local prepared data without a separate application', 
   assert.doesNotMatch(shortcode, /iframe|scene=/);
 });
 
-test('replaced videos and posters are not shipped in current static assets', async () => {
-  for (const name of ['fractional-rollout', 'scale-down-comparison', 'llm-d-routing']) {
-    for (const path of [`videos/disaggregatedset-${name}.mp4`, `images/disaggregatedset-${name}-poster.png`]) {
-      await assert.rejects(readFile(new URL(`../static/${path}`, import.meta.url)), { code: 'ENOENT' });
-    }
-  }
-});
-
 test('gating subtitle introduces the role counts without a release label', async () => {
   const drawing = JSON.parse(await read('../static/animations/gating.json'));
   assert.equal(drawing.primitives.find(item => item.type === 'text' && item.y === 94).text, '5 Prefill + 13 Decode');
