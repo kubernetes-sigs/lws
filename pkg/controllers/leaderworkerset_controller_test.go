@@ -1575,6 +1575,18 @@ func legacyRevision(t *testing.T, revision *appsv1.ControllerRevision) *appsv1.C
 	return revision
 }
 
+// leaderTemplateAnnotations returns the exclusive-topology annotations a
+// controller puts on the leader pod template of lws.
+func leaderTemplateAnnotations(lws *leaderworkerset.LeaderWorkerSet) map[string]string {
+	annotations := map[string]string{}
+	for _, key := range []string{leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.SubGroupExclusiveKeyAnnotationKey} {
+		if value := lws.Annotations[key]; value != "" {
+			annotations[key] = value
+		}
+	}
+	return annotations
+}
+
 func TestGetUpdatedRevisionRecordsPlacementInLegacyRevision(t *testing.T) {
 	withAnnotation := func(lws *leaderworkerset.LeaderWorkerSet, topology string) *leaderworkerset.LeaderWorkerSet {
 		lws = lws.DeepCopy()
@@ -1641,14 +1653,11 @@ func TestGetUpdatedRevisionRecordsPlacementInLegacyRevision(t *testing.T) {
 			}
 			revisionKey := revisionutils.GetRevisionKey(legacy)
 
-			// The first reconcile after the upgrade matches the legacy revision
-			// and re-records it under the same key.
-			updated, err := reconciler.getUpdatedRevision(ctx, tc.live, legacy)
-			if err != nil {
+			// The first reconcile after the upgrade re-records the legacy
+			// revision under the same key, with the placement the previous
+			// controller put into the leader template, and then keeps it.
+			if _, err := reconciler.recordPlacementInRevision(ctx, tc.live, legacy, leaderTemplateAnnotations(tc.live)); err != nil {
 				t.Fatal(err)
-			}
-			if updated != nil {
-				t.Fatalf("the first reconcile after the upgrade created revision %s, want none", updated.Name)
 			}
 			revisions := &appsv1.ControllerRevisionList{}
 			if err := k8sClient.List(ctx, revisions); err != nil {
@@ -1676,12 +1685,100 @@ func TestGetUpdatedRevisionRecordsPlacementInLegacyRevision(t *testing.T) {
 			// A placement change now creates a new revision, so it rolls out.
 			next := tc.next.DeepCopy()
 			next.Generation = tc.live.Generation
-			updated, err = reconciler.getUpdatedRevision(ctx, next, migrated)
+			updated, err := reconciler.getUpdatedRevision(ctx, next, migrated)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if updated == nil {
 				t.Error("a placement change after re-recording did not create a new revision")
+			}
+		})
+	}
+}
+
+// TestRecordPlacementInLegacyRevisionBeforeComparing covers changes that are
+// already in the LeaderWorkerSet when the upgraded controller first reconciles
+// it. Placement is recorded from the leader template before revisions are
+// compared, so a move that keeps placement keeps the revision, and a change the
+// groups do not run with yet rolls out.
+func TestRecordPlacementInLegacyRevisionBeforeComparing(t *testing.T) {
+	base := wrappers.BuildLeaderWorkerSet("default").Obj()
+	base.UID = "lws-uid"
+	rack := base.DeepCopy()
+	rack.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}
+	withField := func(lws *leaderworkerset.LeaderWorkerSet, topology string) *leaderworkerset.LeaderWorkerSet {
+		lws = lws.DeepCopy()
+		delete(lws.Annotations, leaderworkerset.ExclusiveKeyAnnotationKey)
+		lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: topology}
+		return lws
+	}
+	zone := base.DeepCopy()
+	zone.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "zone"}
+
+	tests := []struct {
+		name string
+		// applied is the LeaderWorkerSet the previous controller last applied;
+		// live is what the upgraded controller first reconciles.
+		applied, live *leaderworkerset.LeaderWorkerSet
+		wantUpdate    bool
+	}{
+		{
+			name:    "annotation moved to an equal field in one update",
+			applied: rack,
+			live:    withField(rack, "rack"),
+		},
+		{
+			name:       "annotation moved to a different field value",
+			applied:    rack,
+			live:       withField(rack, "zone"),
+			wantUpdate: true,
+		},
+		{
+			name:       "annotation changed while the controller was upgraded",
+			applied:    rack,
+			live:       zone,
+			wantUpdate: true,
+		},
+		{
+			name:       "field added while the controller was upgraded",
+			applied:    base,
+			live:       withField(base, "rack"),
+			wantUpdate: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.TODO()
+			k8sClient := fake.NewClientBuilder().Build()
+			reconciler := &LeaderWorkerSetReconciler{
+				Client:                k8sClient,
+				Record:                fakeEventRecorder{},
+				revisionEqualityCache: lru.New(100),
+			}
+			fresh, err := revisionutils.NewRevision(ctx, k8sClient, tc.applied, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy := legacyRevision(t, fresh)
+			if err := k8sClient.Create(ctx, legacy); err != nil {
+				t.Fatal(err)
+			}
+			live := tc.live.DeepCopy()
+			live.Generation = tc.applied.Generation
+
+			migrated, err := reconciler.recordPlacementInRevision(ctx, live, legacy, leaderTemplateAnnotations(tc.applied))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := revisionutils.GetRevisionKey(migrated), revisionutils.GetRevisionKey(legacy); got != want {
+				t.Fatalf("re-recorded revision key = %q, want %q", got, want)
+			}
+			updated, err := reconciler.getUpdatedRevision(ctx, live, migrated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := updated != nil; got != tc.wantUpdate {
+				t.Errorf("creates a new revision = %t, want %t", got, tc.wantUpdate)
 			}
 		})
 	}

@@ -70,6 +70,13 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
+	if deploy != nil {
+		revision, err = r.recordPlacementInRevision(ctx, lws, revision, deploy.Spec.Template.Annotations)
+		if err != nil {
+			log.Error(err, "Recording placement in controller revision")
+			return ctrl.Result{}, err
+		}
+	}
 
 	var updatedRevision *appsv1.ControllerRevision
 	if deploy != nil {

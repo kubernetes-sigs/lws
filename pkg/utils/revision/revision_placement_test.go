@@ -177,8 +177,9 @@ func TestRevisionPlacementChanges(t *testing.T) {
 		},
 		{
 			// A revision from before placement was recorded cannot tell this
-			// apart from adding the field, so the move rolls. The two-step
-			// migration below keeps the revision.
+			// apart from adding the field, so the move rolls against it. The
+			// controller records placement in such a revision before it
+			// compares, which TestNewRevisionRecordingPlacement covers.
 			name:     "revision from before placement was recorded, annotation moved to the field",
 			existing: withoutRecordedPlacement(t, mustNewRevision(t, rack)),
 			live:     withoutExclusiveAnnotation(withPlacementPolicy(rack, exclusivePlacement("rack"))),
@@ -256,4 +257,129 @@ func TestSetMatchesRevisionCacheTracksAnnotations(t *testing.T) {
 	if SetMatchesRevision(zone, mustNewRevision(t, zone), existing, cache) {
 		t.Error("a changed exclusive-topology annotation matched the cached revision")
 	}
+}
+
+// keepsRevisionAfterUpgrade reports whether the controller keeps a revision
+// created before placement was recorded, once it has recorded placement in it
+// from the leader workload's pod template annotations.
+func keepsRevisionAfterUpgrade(t *testing.T, live *leaderworkerset.LeaderWorkerSet, legacy *appsv1.ControllerRevision, leaderTemplateAnnotations map[string]string) bool {
+	t.Helper()
+	migrated, err := NewRevisionRecordingPlacement(context.TODO(), fake.NewClientBuilder().Build(), live, legacy, leaderTemplateAnnotations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := GetRevisionKey(migrated), GetRevisionKey(legacy); got != want {
+		t.Fatalf("recorded revision key = %q, want the key of the old revision %q", got, want)
+	}
+	recorded, err := RecordsPlacement(migrated)
+	if err != nil || !recorded {
+		t.Fatalf("recorded revision must record placement, got %t, err=%v", recorded, err)
+	}
+	return keepsRevision(t, live, migrated)
+}
+
+func TestNewRevisionRecordingPlacement(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+	rack := withExclusiveAnnotation(lws, "rack")
+	rackTemplate := map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}
+	subGroups := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Obj()
+	subGroupRack := subGroups.DeepCopy()
+	subGroupRack.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
+	subGroupRackTemplate := map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
+
+	tests := []struct {
+		name             string
+		legacy           *appsv1.ControllerRevision
+		leaderAnnotation map[string]string
+		live             *leaderworkerset.LeaderWorkerSet
+		wantKeep         bool
+	}{
+		{
+			name:     "without placement",
+			legacy:   withoutRecordedPlacement(t, mustNewRevision(t, lws)),
+			live:     lws,
+			wantKeep: true,
+		},
+		{
+			name:             "with the annotation",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, rack)),
+			leaderAnnotation: rackTemplate,
+			live:             rack,
+			wantKeep:         true,
+		},
+		{
+			name:             "with the subgroup annotation",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, subGroupRack)),
+			leaderAnnotation: subGroupRackTemplate,
+			live:             subGroupRack,
+			wantKeep:         true,
+		},
+		{
+			name:   "annotation added",
+			legacy: withoutRecordedPlacement(t, mustNewRevision(t, lws)),
+			live:   rack,
+		},
+		{
+			name:             "annotation removed",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, rack)),
+			leaderAnnotation: rackTemplate,
+			live:             lws,
+		},
+		{
+			name:             "subgroup annotation changed",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, subGroupRack)),
+			leaderAnnotation: subGroupRackTemplate,
+			live: func() *leaderworkerset.LeaderWorkerSet {
+				zone := subGroups.DeepCopy()
+				zone.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "zone"}
+				return zone
+			}(),
+		},
+		{
+			name:   "field added",
+			legacy: withoutRecordedPlacement(t, mustNewRevision(t, lws)),
+			live:   withPlacementPolicy(lws, exclusivePlacement("rack")),
+		},
+		{
+			name:             "annotation moved to the field in one update",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, rack)),
+			leaderAnnotation: rackTemplate,
+			live:             withoutExclusiveAnnotation(withPlacementPolicy(rack, exclusivePlacement("rack"))),
+			wantKeep:         true,
+		},
+		{
+			name:             "matching field added next to the annotation",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, rack)),
+			leaderAnnotation: rackTemplate,
+			live:             withPlacementPolicy(rack, exclusivePlacement("rack")),
+			wantKeep:         true,
+		},
+		{
+			// This also covers a change made before the upgraded controller first
+			// reconciled: the leader template still holds the old value, so the
+			// change rolls instead of being absorbed into the recorded revision.
+			name:             "annotation changed",
+			legacy:           withoutRecordedPlacement(t, mustNewRevision(t, rack)),
+			leaderAnnotation: rackTemplate,
+			live:             withExclusiveAnnotation(lws, "zone"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepsRevisionAfterUpgrade(t, tc.live, tc.legacy, tc.leaderAnnotation); got != tc.wantKeep {
+				t.Errorf("keeps the revision = %t, want %t", got, tc.wantKeep)
+			}
+		})
+	}
+
+	t.Run("a revision without placement keeps its data and hash", func(t *testing.T) {
+		legacy := withoutRecordedPlacement(t, mustNewRevision(t, lws))
+		migrated, err := NewRevisionRecordingPlacement(context.TODO(), fake.NewClientBuilder().Build(), lws, legacy, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !EqualRevision(legacy, migrated) || hashRevision(legacy) != hashRevision(migrated) {
+			t.Errorf("recorded revision data changed:\nold=%s\nnew=%s", legacy.Data.Raw, migrated.Data.Raw)
+		}
+	})
 }

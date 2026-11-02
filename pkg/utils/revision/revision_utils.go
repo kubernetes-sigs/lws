@@ -267,13 +267,47 @@ func revisionRecordsPlacement(revision *appsv1.ControllerRevision, placementInDa
 // A revision created before spec.placementPolicy does not, so ApplyRevision
 // keeps the live exclusive-topology annotations for it and SetMatchesRevision
 // matches whatever those annotations are now. The controller re-records such a
-// revision once it matches, so later placement changes create a new revision.
+// revision before it compares revisions, so later placement changes create a
+// new revision.
 func RecordsPlacement(revision *appsv1.ControllerRevision) (bool, error) {
 	placementInData, err := revisionDataHasPlacement(revision)
 	if err != nil {
 		return false, err
 	}
 	return revisionRecordsPlacement(revision, placementInData), nil
+}
+
+// NewRevisionRecordingPlacement returns a revision that records placement for a
+// revision created before placement was recorded. It has the same revision key,
+// so the leader workload, its pods and its partition keep that key, and nothing
+// rolls.
+//
+// The new revision restores the template that the old one recorded. For
+// placement, it uses the exclusive-topology annotations in leaderTemplateAnnotations,
+// which are the pod template annotations of the leader workload the old
+// revision runs as. That template reflects the placement the groups have.
+// The live annotations may have changed since the template was last applied,
+// for example while the controller was being upgraded. Once the new revision
+// exists, changing placement through the field or an annotation creates a new
+// revision and rolls out under maxUnavailable and maxSurge.
+func NewRevisionRecordingPlacement(ctx context.Context, k8sClient client.Client, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision, leaderTemplateAnnotations map[string]string) (*appsv1.ControllerRevision, error) {
+	restored, err := ApplyRevision(lws, revision)
+	if err != nil {
+		return nil, err
+	}
+	// ApplyRevision clears spec.placementPolicy for a revision that does not
+	// record placement, so only the annotations set below decide it.
+	for _, key := range []string{leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.SubGroupExclusiveKeyAnnotationKey} {
+		if value := leaderTemplateAnnotations[key]; value != "" {
+			if restored.Annotations == nil {
+				restored.Annotations = map[string]string{}
+			}
+			restored.Annotations[key] = value
+		} else {
+			delete(restored.Annotations, key)
+		}
+	}
+	return NewRevision(ctx, k8sClient, restored, GetRevisionKey(revision))
 }
 
 // revisionDataHasPlacement reports whether a revision's data carries a

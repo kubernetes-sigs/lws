@@ -201,6 +201,13 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
+	if leaderSts != nil {
+		revision, err = r.recordPlacementInRevision(ctx, lws, revision, leaderSts.Spec.Template.Annotations)
+		if err != nil {
+			log.Error(err, "Recording placement in controller revision")
+			return ctrl.Result{}, err
+		}
+	}
 
 	var updatedRevision *appsv1.ControllerRevision
 	if leaderSts != nil {
@@ -1139,6 +1146,37 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, rev
 	return newRevision, err
 }
 
+// recordPlacementInRevision replaces a revision created before revisions
+// recorded placement with one that records it under the same revision key, and
+// returns the revision to use. Such a revision keeps the live exclusive-topology
+// annotations when it is applied, so it matches any annotation value. Without
+// this, adding, changing or removing the annotation on a LeaderWorkerSet that
+// existed before the upgrade would never create a revision: the leader workload
+// template would change under the same revision key and every group would be
+// replaced at once. leaderTemplateAnnotations are the pod template annotations
+// of the leader workload, which hold the placement the groups run with.
+func (r *LeaderWorkerSetReconciler) recordPlacementInRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision, leaderTemplateAnnotations map[string]string) (*appsv1.ControllerRevision, error) {
+	recorded, err := revisionutils.RecordsPlacement(revision)
+	if err != nil || recorded {
+		return revision, err
+	}
+	migrated, err := revisionutils.NewRevisionRecordingPlacement(ctx, r.Client, lws, revision, leaderTemplateAnnotations)
+	if err != nil {
+		return nil, err
+	}
+	migrated, err = revisionutils.CreateRevision(ctx, r.Client, migrated)
+	if err != nil {
+		return nil, err
+	}
+	// GetRevision returns the highest revision for a key, which is the new one,
+	// so removing the old one only avoids keeping two revisions for one key.
+	if err := r.Delete(ctx, revision); err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	ctrl.LoggerFrom(ctx).V(2).Info("Recorded placement in controller revision", "revisionKey", revisionutils.GetRevisionKey(migrated), "revision", klog.KObj(migrated))
+	return migrated, nil
+}
+
 func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	currentRevision, err := revisionutils.NewRevision(ctx, r.Client, lws, "")
 	if err != nil {
@@ -1147,42 +1185,13 @@ func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws 
 
 	if !revisionutils.EqualRevision(currentRevision, revision) {
 		// If raw bytes differ but the revision is semantically equivalent, avoid triggering a spurious rolling update.
-		if !revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
-			return currentRevision, nil
+		if revisionutils.SetMatchesRevision(lws, currentRevision, revision, r.revisionEqualityCache) {
+			return nil, nil
 		}
+		return currentRevision, nil
 	}
 
-	return nil, r.recordPlacementInRevision(ctx, lws, revision)
-}
-
-// recordPlacementInRevision re-records a revision created before revisions
-// recorded placement, once the LeaderWorkerSet matches it. Such a revision
-// keeps the live exclusive-topology annotations when applied, so it matches
-// any later change to them, and that change would replace every group under
-// the same revision key instead of rolling out. The re-recorded revision keeps
-// the revision key, so the leader StatefulSet, its partition and the pods'
-// revision labels do not change. It records the live annotations, which the
-// controller already put into the leader template under this key.
-func (r *LeaderWorkerSetReconciler) recordPlacementInRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) error {
-	recorded, err := revisionutils.RecordsPlacement(revision)
-	if err != nil || recorded {
-		return err
-	}
-	revisionKey := revisionutils.GetRevisionKey(revision)
-	migrated, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
-	if err != nil {
-		return err
-	}
-	// Create before delete: GetRevision returns the highest revision for a key,
-	// so the re-recorded one is used even if the delete below fails.
-	if _, err := revisionutils.CreateRevision(ctx, r.Client, migrated); err != nil {
-		return err
-	}
-	if err := r.Delete(ctx, revision); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	ctrl.LoggerFrom(ctx).V(2).Info("Re-recorded revision with placement", "revisionKey", revisionKey, "revision", klog.KObj(migrated))
-	return nil
+	return nil, nil
 }
 
 // buildLeaderPodTemplateApplyConfiguration constructs the leader pod template

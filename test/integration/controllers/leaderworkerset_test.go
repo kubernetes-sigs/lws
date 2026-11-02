@@ -812,6 +812,57 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			}
 		}()),
+		ginkgo.Entry("after a controller upgrade, moving the annotation to an equal spec.placementPolicy in one update keeps the revision", func() *testCase {
+			var oldKey string
+			var workerSpecs map[string]appsv1.StatefulSetSpec
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).ExclusivePlacement()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 2)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+							workerSpecs = workerStatefulSetSpecs(lws)
+							gomega.Expect(workerSpecs).To(gomega.HaveLen(2))
+						},
+					},
+					{
+						// The upgraded controller first reconciles the LeaderWorkerSet
+						// after the annotation was already moved to the field.
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							replaceWithLegacyRevision(lws)
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) {
+								lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+									Type:     leaderworkerset.PlacementExclusiveTopology,
+									Topology: lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+								}
+								setExclusiveAnnotation(lws, "")
+							})
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							gomega.Expect(lws.Spec.PlacementPolicy).NotTo(gomega.BeNil())
+							expectRevisionRecordsPlacement(lws, oldKey)
+							expectRevisionKeyStays(lws, oldKey)
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+							gomega.Consistently(func(g gomega.Gomega) {
+								got := workerStatefulSetSpecs(lws)
+								g.Expect(got).To(gomega.HaveLen(len(workerSpecs)))
+								for name, spec := range workerSpecs {
+									g.Expect(apiequality.Semantic.DeepEqual(got[name], spec)).To(gomega.BeTrue(), "worker StatefulSet %s spec changed", name)
+								}
+							}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
+						},
+					},
+				},
+			}
+		}()),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(4)

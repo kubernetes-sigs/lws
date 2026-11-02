@@ -310,7 +310,9 @@ worker StatefulSet is rebuilt.
 
 Revisions created before this change carry no placement in their data. The
 worker StatefulSet takes its key from the group's leader pod in every case, so a
-group on such a revision also keeps the key it was created with.
+group on such a revision also keeps the key it was created with. The controller
+records placement in such a revision the first time it reconciles the
+LeaderWorkerSet after the upgrade, as described in Update Semantics item 2.
 
 ### Interaction With Workload-Aware Scheduling
 
@@ -400,20 +402,27 @@ annotation. Both sources produce the same revision, so:
 
 1. Moving a value between the annotation and the field, in one update or two,
    keeps the revision and replaces no group.
-2. Upgrading the controller keeps the revision. `SetMatchesRevision` applies the
-   existing revision to the live object and regenerates the patch, which picks
-   up the live annotation, so it matches the new patch even though the stored
-   bytes lack placement.
+2. Upgrading the controller keeps the revision. The first time the controller
+   reconciles a LeaderWorkerSet whose current revision does not record
+   placement, it creates a revision under the same revision key that records
+   the placement the groups run with. It reads that placement from the
+   exclusive-topology annotations on the pod template of the leader
+   StatefulSet (or Deployment), which the previous controller set, and removes
+   the old revision. The key is unchanged, so the partition and the revision
+   labels on pods and StatefulSets do not move, and no group is replaced.
+   Reading the leader template rather than the live annotation means that an
+   annotation changed while the controller was being upgraded still rolls out.
 3. Changing the effective placement, through either source, creates a new
    revision and rolls out under `maxUnavailable` and `maxSurge`, replacing the
    untracked rollout above.
 4. `ApplyRevision` restores placement from the revision itself and ignores
    the live annotations, so a revision without placement stays without it.
    When the revision predates this change and carries no `placementPolicy`, the
-   restored object keeps the live field and annotations, as placement was not
-   part of the revision then. Moving between the annotation and the field
-   therefore keeps such a revision too, and a placement change on it behaves as
-   it does today until the next template change records a new revision.
+   restored object clears the field and keeps the live annotations, as the
+   annotations were the only way to set placement then. The controller replaces
+   such a revision before it compares revisions (item 2), so after an upgrade
+   moving between the annotation and the field keeps the revision, and a
+   placement change creates a new revision, as on any other revision.
 
 The field is not defaulted when absent, and an absent policy hashes the same as
 `type: None`, so objects without placement keep their revision.
@@ -487,7 +496,11 @@ None identified.
   the same revision as one that uses only the annotation.
 - Moving the value from the annotation to the field, in one update and in two,
   replaces no group.
-- Changing the annotation value rolls out through a new revision.
+- Changing the annotation value, or the field, rolls out through a new revision
+  under `maxUnavailable`.
+- After an upgrade, a LeaderWorkerSet whose revision does not record placement
+  keeps its leader and worker StatefulSets, and a later annotation change rolls
+  out through a new revision.
 
 ##### e2e tests
 
