@@ -30,14 +30,20 @@
   .trace-player-tabs {gap: 6px; font-size: .8125rem;}
   .trace-player-toolbar {margin-left: auto; font-size: .8125rem;}
   .trace-player-exports {margin-left: auto; min-height: 36px;}
-  .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, .trace-player-sidebar button, [data-trace-choose] {font: inherit; color: inherit; border-radius: 6px; cursor: pointer;}
-  .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, [data-trace-choose] {background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); padding: 6px 10px;}
+  .trace-player-tabs button, .trace-player-toolbar button, .trace-player-sidebar button, [data-trace-choose] {font: inherit; color: inherit; border-radius: 6px; cursor: pointer;}
+  .trace-player-tabs button, .trace-player-toolbar button, [data-trace-choose] {background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); padding: 6px 10px;}
   .trace-player-tabs button[aria-pressed="true"] {background: var(--bs-primary); border-color: var(--bs-primary); color: #fff;}
-  .trace-player-exports .dropdown-item {
+  .trace-player-toolbar .dropdown-item {
     border: 0; border-radius: 0; padding: 6px 16px; background: none; font-size: .8125rem;
     &:hover, &:focus-visible {background: var(--bs-tertiary-bg);}
   }
-  .trace-player-exports .dropdown-menu {min-width: 8rem;}
+  .trace-player-toolbar .dropdown-menu {min-width: 8rem; max-height: 60vh; overflow-y: auto;}
+  [data-trace-theme] {display: flex; align-items: center; justify-content: space-between; min-width: 10rem; gap: 10px;}
+  [data-trace-theme-option] {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    svg {width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; visibility: hidden;}
+    &[aria-checked="true"] svg {visibility: visible;}
+  }
   button:disabled {opacity: .5; cursor: default;}
   button:focus-visible, select:focus-visible, input:focus-visible, [data-trace-export-status]:focus-visible {outline: 2px solid var(--bs-primary); outline-offset: 3px;}
   [data-trace-import] {

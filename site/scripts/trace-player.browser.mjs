@@ -15,6 +15,7 @@ const requests = [], errors = [];
 page.on('request', request => requests.push(request.url()));
 page.on('pageerror', error => errors.push(error.message));
 const status = page.locator('[data-trace-status]'), surface = page.locator('[data-animation-svg]');
+const themeMenu = page.locator('[data-trace-theme]');
 const ready = () => page.waitForFunction(() => !document.querySelector('[data-trace-export]').disabled);
 const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 async function visit(suffix = '') {
@@ -28,6 +29,14 @@ async function select(group, entry) {
   await page.waitForFunction(title => document.querySelector('[data-trace-status]').textContent === title, entry.title);
   assert.equal(await page.locator(`[data-trace-scenario="${entry.id}"]`).getAttribute('aria-current'), 'true');
   assert.equal(await page.locator('[data-animation-error]').isVisible(), false);
+}
+async function selectTheme(theme) {
+  await themeMenu.click();
+  const option = page.locator(`[data-trace-theme-option][value="${theme}"]`);
+  await option.click();await settle();
+  assert.equal(await option.getAttribute('aria-checked'), 'true');
+  assert.equal((await themeMenu.textContent()).trim(), (await option.textContent()).trim(), 'Theme button displays the selected theme');
+  assert.equal(await themeMenu.getAttribute('aria-expanded'), 'false', 'Choosing a theme dismisses the menu');
 }
 async function imageHash() {
   return createHash('sha256').update(await surface.screenshot()).digest('hex');
@@ -408,7 +417,20 @@ try {
   // Extra themes require an explicit query flag, retain state, and use distinct real palettes.
   await visit('?themes=all#suite=docs&theme=mistral-dark');
   assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), true);
-  assert.equal(await page.locator('[data-trace-theme]').inputValue(), 'mistral-dark');
+  assert.equal(await themeMenu.evaluate(node => node.value), 'mistral-dark');
+  await themeMenu.focus();await themeMenu.press('ArrowDown');
+  const themeOptions = page.locator('[data-trace-theme-option]');
+  await themeOptions.first().waitFor({state: 'visible'});
+  assert.equal(await themeOptions.first().evaluate(node => node === document.activeElement), true,
+    'Theme menu keyboard navigation focuses its first option');
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await themeOptions.nth(1).evaluate(node => node === document.activeElement), true);
+  const menuProperties = ['font-family','font-size','padding-top','padding-bottom','border-radius','box-shadow','background-color'];
+  assert.deepEqual(await styles(page, '[data-trace-theme-control] .dropdown-menu', menuProperties),
+    await styles(page, '.trace-player-exports .dropdown-menu', menuProperties), 'Theme menu matches the Export to menu');
+  await page.keyboard.press('Escape');
+  assert.equal(await themeMenu.getAttribute('aria-expanded'), 'false', 'Escape dismisses the theme menu');
+  assert.equal(await themeMenu.evaluate(node => node === document.activeElement), true, 'Escape restores focus to the theme button');
   await page.setViewportSize({width: 1024, height: 768});await assertViewportFit('Extra theme controls');
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   for (const group of [catalog[0], catalog[1], catalog[2]]) {
@@ -416,7 +438,7 @@ try {
     await page.locator('[data-animation-next]').click();await page.locator('[data-animation-speed]').selectOption('2');
     const original = await state(), hashes = new Set();
     for (const theme of themes) {
-      await page.locator('[data-trace-theme]').selectOption(theme);await settle();
+      await selectTheme(theme);
       assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), theme);
       assert.deepEqual(await state(), original, `${group.id}: theme changes preserve playback state`);
       hashes.add(await imageHash());
@@ -426,16 +448,16 @@ try {
     assert.equal(new URLSearchParams(url.hash.slice(1)).get('theme'), 'llm-d-dark');
   }
   await page.locator('[data-trace-suite="small"]').click();await ready();
-  assert.equal(await page.locator('[data-trace-theme]').inputValue(), 'llm-d-dark', 'Theme survives suite changes');
+  assert.equal(await themeMenu.evaluate(node => node.value), 'llm-d-dark', 'Theme survives suite changes');
   await page.reload();await ready();
   assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), 'llm-d-dark', 'Theme survives URL restore');
   await visit('?themes=all#suite=docs&theme=not-a-theme');
-  assert.equal(await page.locator('[data-trace-theme]').inputValue(), '');
+  assert.equal(await themeMenu.evaluate(node => node.value), '');
   assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), null);
   assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).has('theme'), false, 'Unknown URL theme is removed');
-  const fallback = await imageHash();await page.locator('[data-trace-theme]').selectOption('lws');await settle();
+  const fallback = await imageHash();await selectTheme('lws');
   assert.equal(await imageHash(), fallback, 'Invalid theme falls back to normal site light palette');
-  await page.locator('[data-trace-theme]').selectOption('mistral-dark');
+  await selectTheme('mistral-dark');
   await page.locator('[data-trace-suite="import"]').click();
   const legacy = {version: 1, width: 1920, height: 1080, title: 'Legacy pair',
     primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: ['#ff0000', '#00ff00']}],
@@ -456,12 +478,12 @@ try {
   await page.locator('[data-trace-export-status]').evaluate(node => {node.hidden = true;delete node.dataset.state;node.removeAttribute('title');node.removeAttribute('aria-label');});
   await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = true;});
   await page.setViewportSize({width: 1600, height: 1200});await settle();
-  assert.equal(await page.locator('[data-trace-theme]').inputValue(), '', 'Unsupported current theme clears on legacy import');
-  for (const name of themes.slice(2)) assert.equal(await page.locator(`[data-trace-theme] option[value="${name}"]`).evaluate(option => option.disabled), true);
+  assert.equal(await themeMenu.evaluate(node => node.value), '', 'Unsupported current theme clears on legacy import');
+  for (const name of themes.slice(2)) assert.equal(await page.locator(`[data-trace-theme-option][value="${name}"]`).isDisabled(), true);
   const pixel = () => surface.locator('defs > rect').first().getAttribute('fill');
-  await page.locator('[data-trace-theme]').selectOption('lws-dark');await settle();
+  await selectTheme('lws-dark');
   assert.deepEqual(await pixel(), '#00ff00', 'Explicit legacy LWS dark overrides global light');
-  await page.locator('[data-trace-theme]').selectOption('lws');await settle();
+  await selectTheme('lws');
   assert.deepEqual(await pixel(), '#ff0000');
   await visit('#suite=docs&theme=mistral-dark');
   assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), false);

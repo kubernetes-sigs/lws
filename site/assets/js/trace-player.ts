@@ -5,7 +5,8 @@ type Group = {id: string; title: string; scenarios: Entry[]};
 const groups: Group[] = JSON.parse(document.querySelector('#trace-player-catalog')!.textContent!);
 const figure = document.querySelector<HTMLElement>('[data-animation-source]')!;
 const scenarios = document.querySelector<HTMLElement>('[data-trace-scenarios]')!;
-const theme = document.querySelector<HTMLSelectElement>('[data-trace-theme]')!;
+const theme = document.querySelector<HTMLButtonElement>('[data-trace-theme]')!;
+const themeOptions = [...document.querySelectorAll<HTMLButtonElement>('[data-trace-theme-option]')];
 const allThemes = new URLSearchParams(location.search).get('themes') === 'all';
 const fileInput = document.querySelector<HTMLInputElement>('[data-trace-file]')!;
 const importPanel = document.querySelector<HTMLElement>('[data-trace-import]')!;
@@ -37,7 +38,11 @@ function updateHash() {
 }
 
 function applyTheme(value: string) {
-  theme.value = allThemes && [...theme.options].some(option => option.value === value) ? value : '';
+  const selected = themeOptions.find(option => option.value === (allThemes ? value : '')) ?? themeOptions[0];
+  theme.value = selected.value;
+  theme.textContent = selected.textContent!.trim();
+  theme.setAttribute('aria-label', `Animation theme: ${theme.textContent}`);
+  themeOptions.forEach(option => option.setAttribute('aria-checked', String(option === selected)));
   if (theme.value) figure.dataset.animationTheme = theme.value; else delete figure.dataset.animationTheme;
 }
 
@@ -113,7 +118,9 @@ function selectSuite(id: string, scenario?: string) {
 }
 
 tabs.forEach(tab => tab.addEventListener('click', () => selectSuite(tab.dataset.traceSuite!)));
-theme.addEventListener('change', () => {applyTheme(theme.value); updateHash();});
+themeOptions.forEach(option => option.addEventListener('click', () => {
+  applyTheme(option.value); updateHash(); theme.focus();
+}));
 chooseFile.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
@@ -129,7 +136,7 @@ figure.addEventListener('animation-ready', event => {
   current = {drawing: detail.drawing, name: pendingName};
   loading = false;
   const available = current.drawing.themes ?? ['lws', 'lws-dark'];
-  [...theme.options].forEach(option => {option.disabled = !!option.value && !available.includes(option.value);});
+  themeOptions.forEach(option => {option.disabled = !!option.value && !available.includes(option.value);});
   if (theme.value && !available.includes(theme.value)) {applyTheme(''); updateHash();}
   if (suite === 'import') imported = current;
   syncImport();
@@ -177,7 +184,7 @@ mediaButtons.forEach(button => button.addEventListener('click', async () => {
   const format = button.dataset.traceMedia === 'gif' ? 'gif' : 'video';
   const speed = Number(figure.querySelector<HTMLSelectElement>('[data-animation-speed]')!.value);
   const palette = figure.dataset.animationTheme, dark = document.documentElement.dataset.bsTheme === 'dark';
-  const themeName = palette ? theme.selectedOptions[0].textContent : dark ? 'LWS dark' : 'LWS light';
+  const themeName = palette ? theme.textContent : dark ? 'LWS dark' : 'LWS light';
   syncExports();
   reportExport('progress', format === 'gif' ? 'GIF' : 'MP4', 'Preparing export…');
   try {

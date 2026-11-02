@@ -22,13 +22,15 @@
         <button type="button" data-trace-suite="import" aria-pressed="false">Import JSON</button>
       </div>
     <div class="trace-player-toolbar">
-      <div data-trace-theme-control hidden>
-        <select data-trace-theme aria-label="Animation theme">
-          <option value="">Follow site theme</option>
-          <option value="lws">LWS light</option><option value="lws-dark">LWS dark</option>
-          <option value="mistral-light">Mistral light</option><option value="mistral-dark">Mistral dark</option>
-          <option value="llm-d-light">llm-d light</option><option value="llm-d-dark">llm-d dark</option>
-        </select>
+      <div class="dropdown" data-trace-theme-control hidden>
+        <button type="button" class="dropdown-toggle" data-trace-theme value="" data-bs-toggle="dropdown" aria-haspopup="menu" aria-expanded="false">Follow site theme</button>
+        <div class="dropdown-menu dropdown-menu-end" role="menu" aria-label="Animation theme">
+          {{- range slice (slice "" "Follow site theme") (slice "lws" "LWS light") (slice "lws-dark" "LWS dark") (slice "mistral-light" "Mistral light") (slice "mistral-dark" "Mistral dark") (slice "llm-d-light" "llm-d light") (slice "llm-d-dark" "llm-d dark") }}
+          <button type="button" class="dropdown-item" data-trace-theme-option value="{{ index . 0 }}" role="menuitemradio" aria-checked="{{ eq (index . 0) "" }}">
+            {{ index . 1 }}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          </button>
+          {{- end }}
+        </div>
       </div>
       <div class="trace-player-exports" role="group" aria-label="Export">
         <div class="dropdown">
