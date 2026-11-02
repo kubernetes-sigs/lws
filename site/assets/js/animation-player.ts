@@ -104,31 +104,6 @@ export function parseDrawing(value: unknown): Drawing {
   return legacyHits ? {...data, hits, frames: legacyFrames} as Drawing : value as Drawing;
 }
 
-function drawPrimitive(ctx: CanvasRenderingContext2D, p: Primitive, dark: boolean) {
-  const ink = (value: Color) => typeof value === 'string' ? value : value[dark ? 1 : 0];
-  ctx.save(); ctx.globalAlpha = p.opacity ?? 1;
-  if (p.fill) ctx.fillStyle = ink(p.fill);
-  if (p.stroke) ctx.strokeStyle = ink(p.stroke);
-  ctx.lineWidth = p.lineWidth ?? 1;
-  if (p.type === 'text') {
-    ctx.font = `${p.bold ? 700 : 400} ${p.size}px ${p.font === 'mono' ? 'Menlo, monospace' : 'Arial, sans-serif'}`;
-    ctx.textAlign = p.align ?? 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText(p.text, p.x, p.y);
-  } else {
-    ctx.beginPath();
-    if (p.type === 'rect') ctx.roundRect(p.x, p.y, p.width, p.height, p.radius ?? 0);
-    else if (p.type === 'circle') ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-    else {
-      ctx.moveTo(...p.points[0]);
-      for (const point of p.points.slice(1)) ctx.lineTo(...point);
-      if (p.close) ctx.closePath();
-    }
-    if (p.fill) ctx.fill();
-    if (p.stroke) ctx.stroke();
-  }
-  ctx.restore();
-}
-
 /** Binary search for the last entry at or before time. */
 function position(starts: readonly number[], time: number): number {
   let low = 0, high = starts.length;
@@ -155,11 +130,8 @@ class AnimationPlayer {
   private intent = !matchMedia('(prefers-reduced-motion: reduce)').matches;
   private request = 0;
   private lastTick = 0;
-  private canvas: HTMLCanvasElement;
   private vector: SVGSVGElement;
   private svg?: SvgDrawing;
-  private renderer: HTMLSelectElement;
-  private context: CanvasRenderingContext2D | null;
   private seek: HTMLInputElement;
   private play: HTMLButtonElement;
   private speed: HTMLSelectElement;
@@ -172,22 +144,14 @@ class AnimationPlayer {
   constructor(root: HTMLElement) {
     this.root = root;
     const get = <T extends HTMLElement | SVGElement = HTMLElement>(name: string) => root.querySelector<T>(`[data-animation-${name}]`)!;
-    this.canvas = get('canvas'); this.context = this.canvas.getContext('2d');
-    this.vector = get('svg'); this.renderer = get('renderer');
-    const preferred = new URLSearchParams(location.search).get('renderer');
-    if (preferred === 'canvas' || preferred === 'svg') this.renderer.value = preferred;
-    this.renderer.addEventListener('change', () => {
-      this.lastFrame = -1; this.tooltip.hidden = true; this.render();
-    });
+    this.vector = get('svg');
     this.seek = get('seek'); this.play = get('play'); this.speed = get('speed'); this.loop = get('loop');
     this.fullscreen = get('fullscreen'); this.fullscreen.hidden = !document.fullscreenEnabled;
     this.tooltip = get('tooltip');
     this.clockEl = get('clock'); this.summaryEl = get('summary');
-    for (const surface of [this.canvas, this.vector]) {
-      surface.addEventListener('pointermove', event => this.inspect(event as PointerEvent));
-      surface.addEventListener('pointerdown', event => this.inspect(event as PointerEvent));
-      surface.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
-    }
+    this.vector.addEventListener('pointermove', event => this.inspect(event));
+    this.vector.addEventListener('pointerdown', event => this.inspect(event));
+    this.vector.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
     this.play.addEventListener('click', () => {
       if (!this.data) {void this.load(); return;}
       this.intent = !this.playing;
@@ -235,7 +199,7 @@ class AnimationPlayer {
   private get playing() {return !!this.data && this.intent && this.visible && !document.hidden;}
   private inspect(event: PointerEvent) {
     if (!this.data) return;
-    const bounds = (this.renderer.value === 'svg' ? this.vector : this.canvas).getBoundingClientRect();
+    const bounds = this.vector.getBoundingClientRect();
     const x = (event.clientX - bounds.left) * this.data.width / bounds.width;
     const y = (event.clientY - bounds.top) * this.data.height / bounds.height;
     const references = this.data.frames[position(this.starts, this.time)].hits ?? [];
@@ -262,7 +226,6 @@ class AnimationPlayer {
     this.root.setAttribute('aria-busy', 'true');
     this.sync();
     try {
-      if (!this.context && this.renderer.value === 'canvas') throw new Error('Canvas is unavailable in this browser.');
       const response = await fetch(this.root.dataset.animationSource!);
       if (!response.ok) throw new Error(`Animation could not load (${response.status}).`);
       this.data = parseDrawing(await response.json());
@@ -271,8 +234,7 @@ class AnimationPlayer {
       this.lastRenderTime = -1; this.wasMoving = false;
       this.starts = this.data.frames.map(frame => {const start = this.duration; this.duration += frame.duration; return start;});
       this.motionTimes = (this.data.motions ?? []).map(track => track.keyframes.map(key => key[0]));
-      this.canvas.width = this.data.width; this.canvas.height = this.data.height;
-      this.canvas.setAttribute('aria-label', this.data.title);
+      this.svg = new SvgDrawing(this.vector, this.data);
       this.vector.setAttribute('aria-label', this.data.title);
       this.root.style.setProperty('--animation-ratio', `${this.data.width} / ${this.data.height}`);
       this.root.style.setProperty('--animation-width-ratio', String(this.data.width / this.data.height));
@@ -314,12 +276,8 @@ class AnimationPlayer {
     if (this.playing) this.request = requestAnimationFrame(this.tick); else this.sync();
   };
   private render() {
-    if (!this.data) return;
-    const vector = this.renderer.value === 'svg';
-    this.canvas.hidden = vector; this.vector.classList.toggle('d-none', !vector);
-    if (vector && !this.svg) this.svg = new SvgDrawing(this.vector, this.data);
-    if (!vector && !this.context) return;
-    const ctx = this.context, dark = document.documentElement.dataset.bsTheme === 'dark';
+    if (!this.data || !this.svg) return;
+    const dark = document.documentElement.dataset.bsTheme === 'dark';
     const index = position(this.starts, this.time), frame = this.data.frames[index];
     const activeMotions = this.motionTimes.flatMap((times, i) =>
       this.time >= times[0] && this.time <= times[times.length - 1] ? [i] : []);
@@ -332,15 +290,7 @@ class AnimationPlayer {
         const a = motion.keyframes[key], b = motion.keyframes[key + 1], t = (this.time - a[0]) / (b[0] - a[0]);
         return {track: i, x: a[1] + (b[1] - a[1]) * t, y: a[2] + (b[2] - a[2]) * t};
       });
-      if (vector) this.svg!.draw(index, dark, positions);
-      else {
-        ctx!.clearRect(0, 0, this.data.width, this.data.height);
-        for (const id of frame.items) drawPrimitive(ctx!, this.data.primitives[id], dark);
-        for (const {track, x, y} of positions) {
-          ctx!.save(); ctx!.translate(x, y);
-          drawPrimitive(ctx!, this.data.primitives[this.data.motions![track].primitive], dark); ctx!.restore();
-        }
-      }
+      this.svg.draw(index, dark, positions);
       this.lastDark = dark; this.wasMoving = moving; this.lastRenderTime = this.time;
     }
     this.seek.value = String(this.time);

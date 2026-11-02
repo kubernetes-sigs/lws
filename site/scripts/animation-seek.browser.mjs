@@ -4,7 +4,6 @@ import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
-const renderer = process.env.LWS_RENDERER || 'svg';
 const drawing = {
   version: 1, width: 1920, height: 1080, title: 'Fractional seeking regression',
   primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: '#ffffff'}],
@@ -24,7 +23,7 @@ const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.route('**/animations/fractional.json', route => route.fulfill({json: drawing}));
-  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/?renderer=${renderer}`);
+  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/`);
   assert.equal(response.status(), 200);
   const figure = page.locator('[data-animation-source]').first();
   await figure.scrollIntoViewIfNeeded();

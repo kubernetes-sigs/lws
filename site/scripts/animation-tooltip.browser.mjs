@@ -4,7 +4,6 @@ import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
-const renderer = process.env.LWS_RENDERER || 'svg';
 const drawing = {
   version: 1, width: 1920, height: 1080, title: 'Tooltip sizing regression',
   primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: '#ffffff'}],
@@ -23,17 +22,17 @@ const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.route('**/animations/fractional.json', route => route.fulfill({json: drawing}));
-  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/?renderer=${renderer}`);
+  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/`);
   assert.equal(response.status(), 200);
   const figure = page.locator('[data-animation-source]').first();
   await figure.scrollIntoViewIfNeeded();
   const play = figure.locator('[data-animation-play]');
   await page.waitForFunction(button => !button.disabled, await play.elementHandle());
-  const canvas = figure.locator(renderer === 'svg' ? '[data-animation-svg]' : 'canvas'), tooltip = figure.locator('[data-animation-tooltip]');
+  const surface = figure.locator('[data-animation-svg]'), tooltip = figure.locator('[data-animation-tooltip]');
   for (const width of [1600, 1100]) {
     await page.setViewportSize({width, height: 1100});
     await figure.scrollIntoViewIfNeeded();
-    const bounds = await canvas.boundingBox();
+    const bounds = await surface.boundingBox();
     const hover = async x => {
       await page.mouse.move(bounds.x + x / drawing.width * bounds.width,
         bounds.y + 250 / drawing.height * bounds.height);

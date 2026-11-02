@@ -15,13 +15,14 @@ const drawing = () => ({version: 1, width: 1920, height: 1080, title: 'Example',
 
 function fixture(data = drawing(), {intersection = true, reducedMotion = true} = {}) {
   const observers = [], mutations = [], queries = [], responses = [data];
-  const ctx = {clears: 0, translations: [], clearRect() {this.clears++;},
-    translate(...point) {this.translations.push(point);}, save() {}, restore() {},
-    beginPath() {}, roundRect() {}, arc() {}, fill() {}, stroke() {}};
+  const draws = [];
+  class SvgDrawing {
+    draw(index, dark, positions) {draws.push(structuredClone({index, dark, positions}));}
+  }
   const element = () => {
     let content = '';
     return {handlers: {}, attrs: {}, writes: {}, hidden: false, disabled: true,
-      style: {setProperty() {}}, classList: {toggle() {}}, value: '1', checked: true,
+      style: {setProperty() {}}, value: '1', checked: true,
       get textContent() {return content;},
       set textContent(value) {content = value; this.writes.textContent = (this.writes.textContent ?? 0) + 1;},
       addEventListener(name, callback) {this.handlers[name] = callback;},
@@ -30,11 +31,9 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
       offsetWidth: 100, offsetHeight: 50,
     };
   };
-  const names = ['canvas', 'svg', 'renderer', 'seek', 'play', 'speed', 'loop', 'fullscreen', 'tooltip', 'clock', 'summary',
+  const names = ['svg', 'seek', 'play', 'speed', 'loop', 'fullscreen', 'tooltip', 'clock', 'summary',
     'previous', 'next', 'player', 'controls', 'error'];
   const nodes = Object.fromEntries(names.map(name => [name, element()]));
-  nodes.canvas.getContext = () => ctx;
-  nodes.renderer.value = 'canvas';
   nodes.error.hidden = true;
   const root = {...element(), dataset: {animationSource: '/example.json'},
     querySelector(selector) {queries.push(selector); return nodes[selector.match(/data-animation-([^\]]+)/)[1]];},
@@ -48,7 +47,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
     observe() {}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
-  const sandbox = {document, console, Error, URLSearchParams, location: {search: ''}, performance: {now: () => 0},
+  const sandbox = {document, console, Error, SvgDrawing, performance: {now: () => 0},
     matchMedia: () => ({matches: reducedMotion, addEventListener() {}}),
     ResizeObserver: class {observe() {}},
     MutationObserver: class {constructor(callback) {mutations.push(callback);} observe() {}},
@@ -63,7 +62,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
   };
   vm.runInNewContext(`${source}\nthis.Player = AnimationPlayer;`, sandbox);
   new sandbox.Player(root);
-  return {nodes, ctx, queries, observers, mutations, responses, document,
+  return {nodes, draws, queries, observers, mutations, responses, document,
     fetches: () => fetches,
     ready: () => new Promise(resolve => setImmediate(resolve)),
     seek(time) {nodes.seek.value = String(time); nodes.seek.handlers.input();},
@@ -76,9 +75,9 @@ test('static playback caches drawing and DOM nodes; clock text changes once per 
   const f = fixture(); await f.ready();
   const {clock, seek, summary} = f.nodes;
   const initialQueries = f.queries.length;
-  assert.equal(f.ctx.clears, 1);
+  assert.equal(f.draws.length, 1);
   f.seek(.2); f.seek(.9);
-  assert.equal(f.ctx.clears, 1);
+  assert.equal(f.draws.length, 1);
   assert.equal(clock.writes.textContent, 1);
   assert.equal(seek.writes['aria-valuetext'], 1);
   f.seek(1); f.seek(1.9);
@@ -86,17 +85,17 @@ test('static playback caches drawing and DOM nodes; clock text changes once per 
   assert.equal(clock.writes.textContent, 2);
   assert.equal(seek.writes['aria-valuetext'], 2);
   assert.equal(summary.writes.textContent, 1);
-  assert.equal(f.ctx.clears, 1);
+  assert.equal(f.draws.length, 1);
   assert.equal(f.queries.length, initialQueries, 'Rendering does not look up clock or summary again');
   f.seek(2);
-  assert.equal(f.ctx.clears, 2);
+  assert.equal(f.draws.length, 2);
   assert.equal(summary.textContent, 'Second state');
   f.theme('dark');
-  assert.equal(f.ctx.clears, 3, 'A paused frame repaints when its theme changes');
+  assert.equal(f.draws.length, 3, 'A paused frame repaints when its theme changes');
   f.theme('dark');
-  assert.equal(f.ctx.clears, 3, 'An unchanged theme does not repaint');
+  assert.equal(f.draws.length, 3, 'An unchanged theme does not repaint');
   f.seek(.5);
-  assert.equal(f.ctx.clears, 4);
+  assert.equal(f.draws.length, 4);
   assert.equal(summary.textContent, 'First state');
   assert.equal(clock.textContent, '0:00 / 0:04');
 });
@@ -105,15 +104,16 @@ test('motion entry, advancement, exit and backward seeks repaint without leaving
   const data = drawing();
   data.motions = [{primitive: 1, keyframes: [[.5, 10, 10], [1.5, 30, 30]]}];
   const f = fixture(data); await f.ready();
-  f.seek(.4); assert.equal(f.ctx.clears, 1);
-  f.seek(.5); assert.equal(f.ctx.clears, 2);
-  f.seek(1); assert.equal(f.ctx.clears, 3);
-  assert.deepEqual(f.ctx.translations.at(-1), [20, 20]);
-  f.seek(1); assert.equal(f.ctx.clears, 3, 'A paused motion at the same position is cached');
-  f.seek(1.6); assert.equal(f.ctx.clears, 4, 'Leaving a motion clears its last position');
-  f.seek(1.8); assert.equal(f.ctx.clears, 4);
-  f.seek(.6); assert.equal(f.ctx.clears, 5);
-  f.theme('dark'); assert.equal(f.ctx.clears, 6);
+  f.seek(.4); assert.equal(f.draws.length, 1);
+  f.seek(.5); assert.equal(f.draws.length, 2);
+  f.seek(1); assert.equal(f.draws.length, 3);
+  assert.deepEqual(f.draws.at(-1).positions, [{track: 0, x: 20, y: 20}]);
+  f.seek(1); assert.equal(f.draws.length, 3, 'A paused motion at the same position is cached');
+  f.seek(1.6); assert.equal(f.draws.length, 4, 'Leaving a motion clears its last position');
+  assert.deepEqual(f.draws.at(-1).positions, []);
+  f.seek(1.8); assert.equal(f.draws.length, 4);
+  f.seek(.6); assert.equal(f.draws.length, 5);
+  f.theme('dark'); assert.equal(f.draws.length, 6);
 });
 
 test('offscreen figures load immediately but autoplay only while visible', async () => {
@@ -149,7 +149,7 @@ test('failed loads remain accessible and can be retried without reloading the pa
   assert.equal(f.nodes.error.hidden, true);
   assert.equal(f.nodes.play.textContent, 'Play');
   assert.equal(f.nodes.play.disabled, false);
-  assert.equal(f.ctx.clears, 1);
+  assert.equal(f.draws.length, 1);
 });
 
 test('browsers without IntersectionObserver load immediately with usable paused controls', async () => {
@@ -169,7 +169,7 @@ test('pointer inspection resolves shared hit indices in reverse paint order', as
   ];
   data.frames[0].hits = [0, 1]; data.frames[1].hits = [0];
   const f = fixture(data); await f.ready();
-  const inspect = (x, y) => f.nodes.canvas.handlers.pointermove({clientX: x, clientY: y});
+  const inspect = (x, y) => f.nodes.svg.handlers.pointermove({clientX: x, clientY: y});
   inspect(20, 20);
   assert.equal(f.nodes.tooltip.hidden, false);
   assert.equal(f.nodes.tooltip.textContent, 'Top group\nLater evidence');

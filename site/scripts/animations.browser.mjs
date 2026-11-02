@@ -4,7 +4,6 @@ import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
-const renderer = process.env.LWS_RENDERER || 'svg';
 const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
 const browser = await engine.launch({ headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
@@ -22,10 +21,10 @@ let examples = 0;
 try {
   for (const slug of ['rollout-strategy', 'llm-d-integration', 'scaling-during-rollout']) {
     downloads.length = 0;
-    const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/?renderer=${renderer}`);
+    const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/`);
     assert.equal(response.status(), 200);
     const figures = page.locator('[data-animation-source]');
-    assert.ok(await figures.count() > 0, `${slug}: missing Canvas`);
+    assert.ok(await figures.count() > 0, `${slug}: missing animation`);
     await page.waitForFunction(() => [...document.querySelectorAll('[data-animation-play]')].every(button => !button.disabled));
     for (const figure of await figures.all()) {
       const url = new URL(await figure.getAttribute('data-animation-source'), origin).href;
@@ -39,20 +38,20 @@ try {
       await page.waitForFunction(button => !button.disabled, await play.elementHandle());
       assert.equal(await play.textContent(), 'Play', 'Reduced motion starts paused');
       assert.equal(await figure.locator('[data-animation-loop]').isChecked(), true, 'Looping is enabled on a fresh page');
-      const canvas = figure.locator('canvas'), seek = figure.locator('[data-animation-seek]');
-      const surface = figure.locator(renderer === 'svg' ? '[data-animation-svg]' : 'canvas');
+      const seek = figure.locator('[data-animation-seek]');
+      const surface = figure.locator('[data-animation-svg]');
       assert.ok(await surface.isVisible());
       const asset = await (await page.request.get(new URL(await figure.getAttribute('data-animation-source'), origin).href)).json();
       const duration = asset.frames.reduce((total, frame) => total + frame.duration, 0);
       assert.ok(Math.abs(Number(await seek.getAttribute('max')) - duration) < .001);
-      assert.equal(await canvas.getAttribute('width'), String(asset.width));
+      assert.equal(await surface.getAttribute('viewBox'), `0 0 ${asset.width} ${asset.height}`);
       let time = 0;
       for (const frame of asset.frames) {
         const sampleTime = time + frame.duration / 2;
         await seekTo(seek, sampleTime);
         assert.equal(await figure.locator('[data-animation-summary]').textContent(), frame.caption);
-        if (renderer === 'svg') assert.equal(await surface.locator(':scope > g').first().locator('use').count(), frame.items.length);
-        if (renderer === 'svg' && asset.motions?.length) {
+        assert.equal(await surface.locator(':scope > g').first().locator('use').count(), frame.items.length);
+        if (asset.motions?.length) {
           const renderedTime = await value(seek); // Range inputs may round their assigned value.
           const actual = await surface.locator(':scope > g').last().locator('use').evaluateAll(nodes => nodes
             .filter(node => node.getAttribute('display') !== 'none').map(node => {
@@ -75,24 +74,15 @@ try {
       assert.ok(Math.abs(await value(seek) - asset.frames[0].duration) < .011);
       await figure.locator('[data-animation-previous]').click();
       assert.equal(await value(seek), 0);
-      const pixel = () => renderer === 'svg' ? surface.locator('defs > *').first().getAttribute('fill')
-        : canvas.evaluate(node => [...node.getContext('2d').getImageData(0, 0, 1, 1).data]);
+      const background = () => surface.locator('defs > *').first().getAttribute('fill');
       await page.evaluate(() => { document.documentElement.dataset.bsTheme = 'light'; });
-      const light = await pixel();
+      const light = await background();
       await page.evaluate(() => { document.documentElement.dataset.bsTheme = 'dark'; });
-      assert.notDeepEqual(await pixel(), light, 'Theme changes the drawing');
+      assert.notDeepEqual(await background(), light, 'Theme changes the drawing');
       if (process.env.LWS_SCREENSHOT_DIR) {
         const name = (await figure.getAttribute('data-animation-source')).split('/').at(-1).replace('.json', '');
-        await surface.screenshot({ path: `${process.env.LWS_SCREENSHOT_DIR}/${name}-${renderer}-dark.png` });
+        await surface.screenshot({ path: `${process.env.LWS_SCREENSHOT_DIR}/${name}-svg-dark.png` });
       }
-      const sameTime = await value(seek), sameSummary = await figure.locator('[data-animation-summary]').textContent();
-      const switcher = figure.locator('[data-animation-renderer]');
-      await switcher.selectOption(renderer === 'svg' ? 'canvas' : 'svg');
-      assert.equal(await surface.isVisible(), false);
-      assert.equal(await value(seek), sameTime, 'Switching renderer preserves presentation time');
-      assert.equal(await figure.locator('[data-animation-summary]').textContent(), sameSummary);
-      await switcher.selectOption(renderer);
-      assert.ok(await surface.isVisible());
       await figure.locator('[data-animation-speed]').selectOption('4');
       await play.click();
       await page.waitForTimeout(300);
@@ -164,7 +154,7 @@ try {
     await page.waitForFunction(node => document.fullscreenElement === node, await player.elementHandle());
     await page.waitForFunction(button => button.getAttribute('aria-label') === 'Exit fullscreen', await fullscreen.elementHandle());
     assert.equal(await fullscreen.getAttribute('aria-label'), 'Exit fullscreen');
-    assert.ok(await player.evaluate(node => node.scrollHeight <= innerHeight + 1), 'Fullscreen fits Canvas and controls');
+    assert.ok(await player.evaluate(node => node.scrollHeight <= innerHeight + 1), 'Fullscreen fits drawing and controls');
     await fullscreen.click();
     await page.waitForFunction(() => !document.fullscreenElement);
     await page.waitForFunction(button => button.getAttribute('aria-label') === 'Enter fullscreen', await fullscreen.elementHandle());
@@ -177,7 +167,7 @@ try {
   await first.scrollIntoViewIfNeeded();
   assert.ok(await first.locator('[data-animation-play]').isVisible());
   assert.deepEqual(errors, []);
-  console.log(`Verified ${examples} ${renderer} examples: all captions/states, themes, renderer switching, controls, autoplay, offscreen/manual pause, loop, fullscreen, reduced motion, and 320px layout.`);
+  console.log(`Verified ${examples} SVG examples: all captions/states, themes, controls, autoplay, offscreen/manual pause, loop, fullscreen, reduced motion, and 320px layout.`);
 } finally {
   await browser.close();
 }
