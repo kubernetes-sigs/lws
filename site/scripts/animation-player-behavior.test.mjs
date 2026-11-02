@@ -12,7 +12,7 @@ const drawing = () => ({version: 1, width: 1920, height: 1080, title: 'Example',
   frames: [{duration: 2, caption: 'First state', items: [0]}, {duration: 2, caption: 'Second state', items: [0]}],
 });
 
-function fixture(data = drawing(), {intersection = true, near = true, reducedMotion = true} = {}) {
+function fixture(data = drawing(), {intersection = true, reducedMotion = true} = {}) {
   const observers = [], mutations = [], queries = [], responses = [data];
   const ctx = {clears: 0, translations: [], clearRect() {this.clears++;},
     translate(...point) {this.translations.push(point);}, save() {}, restore() {},
@@ -42,9 +42,8 @@ function fixture(data = drawing(), {intersection = true, near = true, reducedMot
     querySelectorAll: () => [], addEventListener() {}, fullscreenEnabled: false};
   let fetches = 0;
   class Observer {
-    constructor(callback, options) {this.callback = callback; this.options = options; observers.push(this);}
+    constructor(callback) {this.callback = callback; observers.push(this);}
     observe() {}
-    disconnect() {}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
   const sandbox = {document, console, Error, performance: {now: () => 0},
@@ -62,7 +61,6 @@ function fixture(data = drawing(), {intersection = true, near = true, reducedMot
   };
   vm.runInNewContext(`${source}\nthis.Player = AnimationPlayer;`, sandbox);
   new sandbox.Player(root);
-  if (near) observers.find(observer => observer.options?.rootMargin)?.fire(true);
   return {nodes, ctx, queries, observers, mutations, responses, document,
     fetches: () => fetches,
     ready: () => new Promise(resolve => setImmediate(resolve)),
@@ -116,28 +114,24 @@ test('motion entry, advancement, exit and backward seeks repaint without leaving
   f.theme('dark'); assert.equal(f.ctx.clears, 6);
 });
 
-test('offscreen figures load only near the viewport and do not autoplay while merely near', async () => {
-  const f = fixture(drawing(), {near: false, reducedMotion: false}); await f.ready();
-  assert.equal(f.fetches(), 0);
-  assert.equal(f.nodes.play.disabled, true);
-  const preload = f.observers.find(observer => observer.options?.rootMargin);
-  preload.fire(false); await f.ready();
-  assert.equal(f.fetches(), 0);
-  preload.fire(true); preload.fire(true);
+test('offscreen figures load immediately but autoplay only while visible', async () => {
+  const f = fixture(drawing(), {reducedMotion: false});
+  assert.equal(f.fetches(), 1, 'Loading starts without a visibility callback');
   assert.equal(f.root.attrs['aria-busy'], 'true');
+  assert.equal(f.nodes.play.disabled, true);
   await f.ready();
-  assert.equal(f.fetches(), 1, 'Overlapping observer callbacks cannot start duplicate fetches');
   assert.equal(f.root.attrs['aria-busy'], 'false');
   assert.equal(f.nodes.play.disabled, false);
   assert.equal(f.nodes.play.textContent, 'Play');
-  f.observers.find(observer => !observer.options).fire(true);
+  f.observers[0].fire(true);
   assert.equal(f.nodes.play.textContent, 'Pause', 'Autoplay begins only when the figure is actually visible');
+  f.observers[0].fire(false);
+  assert.equal(f.nodes.play.textContent, 'Play', 'Playback pauses when the figure leaves the viewport');
+  assert.equal(f.fetches(), 1, 'Scrolling never downloads the same drawing again');
 });
 
-test('failed lazy loads remain accessible and can be retried without reloading the page', async () => {
-  const f = fixture(drawing(), {near: false});
-  f.responses.splice(0, 1, new Error('Network unavailable'), drawing());
-  f.observers.find(observer => observer.options?.rootMargin).fire(true);
+test('failed loads remain accessible and can be retried without reloading the page', async () => {
+  const f = fixture(new Error('Network unavailable'));
   await f.ready();
   assert.equal(f.nodes.error.hidden, false);
   assert.equal(f.nodes.error.textContent, 'Network unavailable');
@@ -145,6 +139,7 @@ test('failed lazy loads remain accessible and can be retried without reloading t
   assert.equal(f.nodes.play.attrs['aria-label'], 'Retry animation');
   assert.equal(f.nodes.play.disabled, false);
   assert.equal(f.root.attrs['aria-busy'], 'false');
+  f.responses.splice(0, 1, drawing());
   f.nodes.play.handlers.click();
   assert.equal(f.nodes.play.disabled, true);
   await f.ready();

@@ -9,6 +9,8 @@ const browser = await chromium.launch({ headless: true,
 const page = await browser.newPage({ reducedMotion: 'reduce', viewport: { width: 1600, height: 1100 } });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
+const downloads = [];
+page.on('request', request => {if (new URL(request.url()).pathname.match(/\/animations\/.*\.json$/)) downloads.push(request.url());});
 const seekTo = (seek, time) => seek.evaluate((input, value) => {
   input.value = String(value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -17,10 +19,16 @@ const value = seek => seek.evaluate(input => Number(input.value));
 let examples = 0;
 try {
   for (const slug of ['rollout-strategy', 'llm-d-integration', 'scaling-during-rollout']) {
+    downloads.length = 0;
     const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/`);
     assert.equal(response.status(), 200);
     const figures = page.locator('[data-animation-source]');
     assert.ok(await figures.count() > 0, `${slug}: missing Canvas`);
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-animation-play]')].every(button => !button.disabled));
+    for (const figure of await figures.all()) {
+      const url = new URL(await figure.getAttribute('data-animation-source'), origin).href;
+      assert.equal(downloads.filter(request => request === url).length, 1, 'Each drawing downloads once before scrolling; fetch reuses its preload');
+    }
     for (const figure of await figures.all()) {
       examples++;
       await figure.scrollIntoViewIfNeeded();

@@ -208,21 +208,16 @@ class AnimationPlayer {
       `${Math.ceil(entries[0].target.getBoundingClientRect().height)}px`)).observe(get('controls'));
     if (typeof IntersectionObserver !== 'undefined') {
       new IntersectionObserver(entries => {this.visible = entries[0].isIntersecting; this.sync();}).observe(root);
-      const preload = new IntersectionObserver(entries => {
-        if (!entries[0].isIntersecting) return;
-        preload.disconnect();
-        void this.load();
-      }, {rootMargin: '300px'});
-      preload.observe(root);
     } else {
       this.visible = true;
-      void this.load();
     }
     document.addEventListener('visibilitychange', () => this.sync());
     matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', event => {
       if (event.matches) {this.intent = false; this.sync();}
     });
     new MutationObserver(() => this.render()).observe(document.documentElement, {attributes: true, attributeFilter: ['data-bs-theme']});
+    // Fetch on page load; visibility only controls playback.
+    void this.load();
   }
 
   private get playing() {return !!this.data && this.intent && this.visible && !document.hidden;}

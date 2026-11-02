@@ -3,6 +3,8 @@
   {{- errorf "canvas-animation requires a local JSON data path at %s" .Position -}}
 {{- end -}}
 {{- $id := printf "lws-animation-%d" .Ordinal -}}
+{{/* Start the JSON request while parsing HTML, before the player module runs. */}}
+<link rel="preload" href="{{ $data | relURL }}" as="fetch" type="application/json" crossorigin="anonymous">
 <figure class="lws-animation td-max-width-on-larger-screens" data-animation-source="{{ $data | relURL }}">
   <div data-animation-player>
     <div class="lws-animation__stage">
