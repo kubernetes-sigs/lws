@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -30,8 +31,7 @@ func run(args []string) int {
 	dry := f.Bool("dry-run", false, "validate and describe selected cases without cluster access")
 	validate := f.Bool("validate", false, "validate selection only")
 	group := f.Bool("process-group", false, "isolate child process group (launcher only)")
-	interactive := f.Bool("interactive", false, "Enter-to-trigger checkpoints; a switches to auto; q cancels")
-	f.BoolVar(&o.Auto, "auto", true, "automatic checkpoints")
+	checkpointFlags(f, &o.Auto)
 	f.BoolVar(&o.FailFast, "fail-fast", false, "stop on first failed case")
 	f.StringVar(&o.Kubeconfig, "kubeconfig", "", "owned private kubeconfig")
 	f.StringVar(&o.Context, "context", "", "owned private context")
@@ -103,15 +103,6 @@ func run(args []string) int {
 			return 2
 		}
 	}
-	o.Auto = !*interactive && o.Auto
-	for _, arg := range args {
-		if arg == "--interactive" {
-			o.Auto = false
-		}
-		if arg == "--auto" {
-			o.Auto = true
-		}
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	_, err = harness.ExecuteSuite(ctx, o, selected)
@@ -123,4 +114,22 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func checkpointFlags(f *flag.FlagSet, auto *bool) {
+	*auto = true
+	f.BoolFunc("auto", "automatic checkpoints", func(v string) error {
+		b, err := strconv.ParseBool(v)
+		if err == nil {
+			*auto = b
+		}
+		return err
+	})
+	f.BoolFunc("interactive", "Enter-to-trigger checkpoints; a switches to auto; q cancels", func(v string) error {
+		b, err := strconv.ParseBool(v)
+		if err == nil {
+			*auto = !b
+		}
+		return err
+	})
 }
