@@ -173,7 +173,13 @@ elif [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.o
   (cd "$RUN_DIR/source"
     CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOMAXPROCS=2 go build -mod=readonly -p=2 -trimpath \
       -ldflags "-X sigs.k8s.io/lws/pkg/version.GitCommit=$COMMIT" -o "$RUN_DIR/build/manager" ./cmd)
-  docker build --platform "linux/$ARCH" --provenance=false --build-arg "REVISION=$COMMIT" \
+  local build_flags=(--platform "linux/$ARCH")
+  # The legacy Docker builder has no provenance flag. Keep the same source
+  # label and image contents with either builder, without changing global config.
+  if docker build --help 2>/dev/null | grep -F -- '--provenance' >/dev/null; then
+    build_flags+=(--provenance=false)
+  fi
+  docker build "${build_flags[@]}" --build-arg "REVISION=$COMMIT" \
     -t "$IMAGE" -f - "$RUN_DIR/build" <<'DOCKERFILE'
 FROM gcr.io/distroless/static:nonroot
 ARG REVISION

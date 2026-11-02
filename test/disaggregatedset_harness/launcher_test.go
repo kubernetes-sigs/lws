@@ -198,6 +198,30 @@ exit 91
 	}
 }
 
+func TestSourceBuildSupportsBothDockerBuilders(t *testing.T) {
+	for _, provenance := range []string{"0", "1"} {
+		root := t.TempDir()
+		requireNoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
+		testExecutable(t, root, "go", "exit 0\n")
+		testExecutable(t, root, "docker", `case "$*" in
+  "image inspect "*) exit 1 ;;
+  "build --help") if [ "$TEST_PROVENANCE" = 1 ]; then printf '  --provenance string\n'; fi; exit 0 ;;
+  "build "*) printf 'BUILD %s\n' "$*"; cat >/dev/null ;;
+  *) echo "Unexpected Docker command: $*" >&2; exit 91 ;;
+esac
+`)
+		commit := strings.Repeat("a", 40)
+		output, err := shell(t, root, []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"RUN_DIR=" + root, "RELEASE_IMAGE=", "COMMIT=" + commit, "ARCH=arm64", "IMAGE=local-controller:" + commit,
+			"TEST_PROVENANCE=" + provenance}, "-c", scriptFunction(t, "prepare_image"))
+		requireNoError(t, err)
+		if strings.Contains(string(output), "--provenance=false") != (provenance == "1") ||
+			!strings.Contains(string(output), "--platform linux/arm64") || !strings.Contains(string(output), "--build-arg REVISION="+commit) {
+			t.Fatalf("builder provenance=%s: %s", provenance, output)
+		}
+	}
+}
+
 func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required to prepare observer overlays")
