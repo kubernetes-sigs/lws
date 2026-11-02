@@ -15,13 +15,13 @@
   <div class="td-main trace-player-shell">
     <section class="trace-player-subheader" aria-labelledby="trace-player-title">
       <h1 id="trace-player-title">{{ .Title }}</h1>
-      {{ .Content }}
       <div class="trace-player-tabs" role="group" aria-label="Trace libraries">
         {{- range $catalog }}
         <button type="button" data-trace-suite="{{ .id }}" aria-pressed="{{ eq .id $initial.id }}">{{ .title }}</button>
         {{- end }}
         <button type="button" data-trace-suite="import" aria-pressed="false">Import JSON</button>
       </div>
+      <div class="trace-player-help">{{ .Content }}</div>
     </section>
     <div class="trace-player-layout">
     <aside class="td-sidebar trace-player-sidebar">

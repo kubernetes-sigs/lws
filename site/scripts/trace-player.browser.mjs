@@ -40,8 +40,8 @@ const state = () => page.evaluate(() => ({
 }));
 async function assertResponsiveSizing() {
   const viewport = page.viewportSize();
-  for (const width of [2048, 1280, 390]) {
-    await page.setViewportSize({width, height: 900});await settle();
+  for (const [width, height] of [[2048, 900], [1600, 1200], [1280, 900], [1024, 768], [390, 900]]) {
+    await page.setViewportSize({width, height});await settle();
     const geometry = await page.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
       const surface = document.querySelector('[data-animation-svg]');
@@ -49,21 +49,69 @@ async function assertResponsiveSizing() {
         figure: rect('.lws-animation'), surface: rect('[data-animation-svg]'), native: [surface.viewBox.baseVal.width, surface.viewBox.baseVal.height],
         scrollWidth: document.documentElement.scrollWidth};
     });
-    const expected = Math.min(1200, geometry.layout.right - geometry.main.x);
-    assert.ok(Math.abs(geometry.main.width - expected) < 1, `${width}px: main must cap at 1200px and fill narrower columns`);
+    assert.ok(geometry.main.x >= geometry.layout.x - 1 && geometry.main.right <= geometry.layout.right + 1,
+      `${width}px: main must stay inside its content column`);
     for (const name of ['toolbar', 'figure']) {
-      assert.ok(Math.abs(geometry[name].x - geometry.main.x) < 1 && Math.abs(geometry[name].width - expected) < 1,
-        `${width}px: ${name} must align with the capped main column`);
+      assert.ok(geometry[name].x >= geometry.main.x - 1 && geometry[name].right <= geometry.main.right + 1,
+        `${width}px: ${name} must stay inside the main column`);
     }
-    assert.ok(geometry.surface.width <= expected && geometry.surface.width >= expected - 2,
-      `${width}px: SVG must fill the player inside its border`);
+    assert.ok(geometry.surface.width > 0 && geometry.surface.width <= geometry.figure.width + 1,
+      `${width}px: drawing must fit its player`);
     assert.ok(Math.abs(geometry.surface.width / geometry.surface.height - 16 / 9) < .01, `${width}px: preserve SVG aspect ratio`);
     assert.deepEqual(geometry.native, [1920, 1080], `${width}px: CSS sizing must not reduce drawing resolution`);
     assert.ok(geometry.scrollWidth <= width + 1, `${width}px: no horizontal overflow`);
+    if (width >= 1024) await assertViewportFit(`${width}×${height}`);
   }
   await page.setViewportSize(viewport);await settle();
 }
-async function assertLayout(label, mobile = false) {
+async function assertViewportFit(label) {
+  await page.evaluate(() => window.scrollTo({top: 0, behavior: 'instant'}));await settle();
+  const geometry = await page.evaluate(() => {
+    const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+    const main = document.querySelector('main');
+    const sidebar = document.querySelector('#td-section-nav');
+    return {width: innerWidth, height: innerHeight, scrollY, scrollWidth: document.documentElement.scrollWidth,
+      scrollHeight: document.documentElement.scrollHeight, mainScrollHeight: main.scrollHeight, mainHeight: main.clientHeight,
+      sidebarOverflows: sidebar.scrollHeight > sidebar.clientHeight + 1,
+      gutter: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      header: rect('.td-navbar'), logo: rect('.navbar-logo'), subheader: rect('.trace-player-subheader'),
+      title: rect('h1'), tabs: rect('.trace-player-tabs'), sidebar: rect('#td-section-nav'), aside: rect('.trace-player-sidebar'),
+      main: rect('main'), toolbar: rect('.trace-player-toolbar'), figure: rect('.lws-animation'),
+      surface: rect('[data-animation-svg]'), stage: rect('.lws-animation__stage'), controls: rect('[data-animation-controls]'),
+      footer: rect('footer'), buttons: [...document.querySelectorAll('.trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, [data-animation-controls] button, [data-animation-controls] select, [data-animation-seek]')]
+        .filter(node => node.getClientRects().length).map(node => ({name: node.getAttribute('aria-label') || node.textContent.trim(), ...node.getBoundingClientRect().toJSON()}))};
+  });
+  assert.ok(geometry.scrollWidth <= geometry.width + 1, `${label}: no horizontal document overflow`);
+  assert.ok(geometry.scrollHeight <= geometry.height + 1, `${label}: entire player page must fit without document scrolling`);
+  assert.ok(geometry.mainScrollHeight <= geometry.mainHeight + 1, `${label}: main content must fit without an inner scrollbar`);
+  assert.equal(geometry.scrollY, 0, `${label}: document stays at its initial position`);
+  assert.ok(geometry.subheader.x <= geometry.aside.x + 1 && geometry.subheader.right >= geometry.main.right - 1,
+    `${label}: subheader spans both columns`);
+  assert.ok(geometry.subheader.y >= geometry.header.bottom - 1 && geometry.title.y >= geometry.logo.bottom - 1,
+    `${label}: compact subheader clears the global header and logo`);
+  assert.ok(geometry.tabs.bottom - geometry.title.y <= 120, `${label}: title, description and tabs form a compact subheader`);
+  assert.ok(geometry.aside.y - geometry.subheader.bottom <= 12 && geometry.main.y - geometry.subheader.bottom <= 12,
+    `${label}: both columns start directly beneath the subheader`);
+  for (const name of ['main', 'aside', 'toolbar', 'figure', 'surface', 'controls']) {
+    assert.ok(geometry[name].y >= geometry.subheader.bottom - 1, `${label}: ${name} is not covered by the subheader`);
+    assert.ok(geometry[name].bottom <= geometry.footer.y + 1, `${label}: ${name} clears the footer`);
+  }
+  assert.ok(geometry.surface.x >= geometry.stage.x - 1 && geometry.surface.right <= geometry.stage.right + 1 &&
+    geometry.surface.y >= geometry.stage.y - 1 && geometry.surface.bottom <= geometry.stage.bottom + 1,
+    `${label}: complete SVG fits inside the stage`);
+  assert.ok(geometry.surface.bottom <= geometry.controls.y + 1, `${label}: playback controls do not cover the drawing`);
+  assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1 && geometry.sidebar.bottom <= geometry.footer.y + 1,
+    `${label}: scenario list stays between subheader and footer`);
+  if (geometry.sidebarOverflows) assert.ok(geometry.footer.y - geometry.sidebar.bottom <= geometry.gutter + 1,
+    `${label}: long scenario lists use the remaining screen height`);
+  assert.ok(Math.abs(geometry.footer.x) < 1 && Math.abs(geometry.footer.right - geometry.width) < 1 && geometry.footer.bottom <= geometry.height + 1,
+    `${label}: complete shared footer stays visible`);
+  for (const button of geometry.buttons) {
+    assert.ok(button.x >= -1 && button.right <= geometry.width + 1 && button.y >= geometry.header.bottom - 1 && button.bottom <= geometry.footer.y + 1,
+      `${label}: ${button.name || 'timeline'} is fully visible and reachable`);
+  }
+}
+async function assertMobileLayout(label) {
   await page.waitForFunction(() => ['--lws-header-height', '--lws-logo-bottom', '--lws-footer-height', '--lws-subheader-height']
     .every(name => Number.parseFloat(document.documentElement.style.getPropertyValue(name)) > 0));
   let subheaderTop;
@@ -95,14 +143,7 @@ async function assertLayout(label, mobile = false) {
     assert.ok(geometry.title.y >= geometry.subheader.y && geometry.tabs.bottom <= geometry.subheader.bottom + 1,
       `${label}: title and tabs must remain inside the full-width subheader`);
     assert.ok(geometry.tabs.bottom <= geometry.height, `${label}: pinned tabs must remain visible`);
-    if (!mobile) {
-      assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1, `${label}: sidebar hidden under subheader at scroll ${fraction}`);
-      assert.ok(geometry.sidebar.bottom <= geometry.footer.y + 1, `${label}: sidebar overlaps footer at scroll ${fraction}`);
-      assert.ok(geometry.sidebar.bottom <= geometry.height + 1, `${label}: sidebar end is clipped below viewport at scroll ${fraction}`);
-      const availableBottom = Math.min(geometry.height, geometry.footer.y);
-      assert.ok(availableBottom - geometry.sidebar.bottom <= geometry.gutter + 1,
-        `${label}: sidebar must use available height, reserving at most one text line of bottom gutter at scroll ${fraction}`);
-    } else if (fraction === 0) {
+    if (fraction === 0) {
       assert.ok(geometry.title.y >= geometry.header.bottom - 1, `${label}: title under header`);
       assert.ok(geometry.title.y - geometry.header.bottom < 70, `${label}: excessive gap below mobile header`);
     }
@@ -123,7 +164,7 @@ async function settledScroll() {
     requestAnimationFrame(check);
   }));
 }
-async function assertNaturalScrolling() {
+async function assertContainedScrolling() {
   await page.evaluate(() => {window.scrollTo({top: 0, behavior: 'instant'});document.querySelector('#td-section-nav').scrollTop = 0;});
   await settledScroll();
   const navigation = page.locator('#td-section-nav'), box = await navigation.boundingBox();
@@ -144,9 +185,9 @@ async function assertNaturalScrolling() {
   await page.mouse.wheel(0, 100);await settledScroll();
   const after = await page.evaluate(() => ({y: scrollY, heading: document.querySelector('.trace-player-subheader').getBoundingClientRect().y,
     main: document.querySelector('main').getBoundingClientRect().y}));
-  assert.ok(after.y > before.y, 'Wheel over main must scroll the document normally');
-  assert.ok(Math.abs(before.heading - after.heading) < 1, 'Title and tabs must stay pinned during main scrolling');
-  assert.ok(Math.abs(before.main - after.main - (after.y - before.y)) < 1, 'Main cannot jump during document scrolling');
+  assert.equal(after.y, before.y, 'Wheel over the fitted player must not scroll the document');
+  assert.ok(Math.abs(before.heading - after.heading) < 1 && Math.abs(before.main - after.main) < 1,
+    'Title, tabs and player must stay in place while the scenario list scrolls');
 }
 
 try {
@@ -186,12 +227,15 @@ try {
   await ready();assert.equal(await status.textContent(), 'Imported: my-scenario');
   assert.equal(requests.length, beforeImport, 'Local JSON import must not upload or fetch anything');
   assert.equal(await surface.getAttribute('aria-label'), exported.title);
-  const previousImage = await imageHash();
+  await page.setViewportSize({width: 1024, height: 768});await assertViewportFit('Imported drawing with file picker');
+  await page.setViewportSize({width: 1600, height: 1200});await settle();
+  const previousDrawing = await surface.innerHTML(), previousState = await state();
   for (const invalid of ['{broken', JSON.stringify({version: 1, scenarios: []})]) {
     await page.locator('[data-trace-file]').setInputFiles({name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(invalid)});
     await page.waitForFunction(() => /not valid JSON|Unsupported animation/.test(document.querySelector('[data-trace-status]').textContent));
     assert.equal(await page.locator('[data-animation-error]').isVisible(), true, 'Failed imports show a visible error');
-    assert.equal(await imageHash(), previousImage, 'Bad import preserves last-good drawing');
+    assert.equal(await surface.innerHTML(), previousDrawing, 'Bad import preserves last-good drawing even when its error message changes available height');
+    assert.deepEqual(await state(), previousState, 'Bad import preserves playback state');
   }
   await page.locator('[data-trace-suite="docs"]').click();await ready();
   await page.locator('[data-trace-suite="import"]').click();await ready();
@@ -229,8 +273,8 @@ try {
   const darkScrollStyle = await styles(docs, '#td-section-nav', scrollProperties);
   assert.notEqual(darkScrollStyle['scrollbar-color'], scrollStyle['scrollbar-color'], 'Shared scrollbar must follow the site color theme');
   await docs.close();
-  await select(catalog[0], catalog[0].scenarios[0]);await assertLayout('Desktop 1200px');
-  await page.setViewportSize({width: 1600, height: 900});await assertLayout('Desktop 900px');await assertNaturalScrolling();
+  await select(catalog[0], catalog[0].scenarios[0]);await assertViewportFit('Desktop 1200px');
+  await page.setViewportSize({width: 1600, height: 900});await assertViewportFit('Desktop 900px');await assertContainedScrolling();
   const documentScroll = await page.evaluate(() => scrollY);
   await page.locator('[data-trace-suite="large"]').click();await ready();
   assert.equal(await page.locator('#td-section-nav').evaluate(node => node.scrollTop), 0, 'Switching suites resets only the sidebar list');
@@ -250,6 +294,8 @@ try {
   await visit('?themes=all#suite=docs&theme=mistral-dark');
   assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), true);
   assert.equal(await page.locator('[data-trace-theme]').inputValue(), 'mistral-dark');
+  await page.setViewportSize({width: 1024, height: 768});await assertViewportFit('Extra theme controls');
+  await page.setViewportSize({width: 1600, height: 1200});await settle();
   for (const group of [catalog[0], catalog[1], catalog[2]]) {
     await select(group, group.scenarios[0]);
     await page.locator('[data-animation-next]').click();await page.locator('[data-animation-speed]').selectOption('2');
@@ -281,6 +327,15 @@ try {
     frames: [{duration: 4, caption: 'Legacy palette compatibility.', items: [0]}]};
   await page.locator('[data-trace-file]').setInputFiles({name: 'legacy.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(legacy))});
   await ready();
+  await page.setViewportSize({width: 1024, height: 768});
+  await assertViewportFit('Imported drawing with theme controls');
+  // Reserve room for the real exporter progress/cancellation UI without encoding a video in this layout test.
+  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = 'Video exported at 1080p using the selected theme and 4× speed.';});
+  await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = false;});
+  await assertViewportFit('Imported drawing with export status and controls');
+  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = '';});
+  await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = true;});
+  await page.setViewportSize({width: 1600, height: 1200});await settle();
   assert.equal(await page.locator('[data-trace-theme]').inputValue(), '', 'Unsupported current theme clears on legacy import');
   for (const name of themes.slice(2)) assert.equal(await page.locator(`[data-trace-theme] option[value="${name}"]`).evaluate(option => option.disabled), true);
   const pixel = () => surface.locator('defs > rect').first().getAttribute('fill');
@@ -295,7 +350,7 @@ try {
   // Mobile uses the existing header toggle; sidebar scrolling does not widen or cover the page.
   await page.setViewportSize({width: 390, height: 844});await visit();
   const navigation = page.locator('#td-section-nav'), toggle = page.locator('.docs-section-toggle');
-  assert.equal(await navigation.isVisible(), false);await assertLayout('Mobile', true);
+  assert.equal(await navigation.isVisible(), false);await assertMobileLayout('Mobile');
   await page.evaluate(() => window.scrollTo({top: 0, behavior: 'instant'}));
   await toggle.click();await navigation.waitFor({state: 'visible'});
   await page.waitForFunction(() => document.querySelector('.docs-section-toggle').getAttribute('aria-expanded') === 'true');
@@ -303,8 +358,8 @@ try {
   const last = catalog[0].scenarios.at(-1);
   await page.locator(`[data-trace-scenario="${last.id}"]`).click();
   await page.waitForFunction(title => document.querySelector('[data-trace-status]').textContent === title, last.title);
-  await toggle.click();await navigation.waitFor({state: 'hidden'});await assertLayout('Mobile selected', true);
+  await toggle.click();await navigation.waitFor({state: 'hidden'});await assertMobileLayout('Mobile selected');
   assert.deepEqual(errors, []);
   if (process.env.LWS_SCREENSHOT_DIR) await page.screenshot({path: `${process.env.LWS_SCREENSHOT_DIR}/hidden-trace-player-mobile.png`, fullPage: true});
-  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, responsive 1200px cap with native 1080p drawing, pinned full-width subheader, shared controls and thin scrollbars, full-height contained sidebar scrolling, natural main scrolling, footer clearance, and mobile navigation.');
+  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, viewport-fitted native 1080p drawing, compact full-width subheader, shared controls and thin scrollbars, independent full-height scenario scrolling, visible footer, and mobile navigation.');
 } finally {await browser.close();}
