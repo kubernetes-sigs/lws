@@ -52,7 +52,7 @@ test('Light/Dark persists; Auto follows the system; blocked storage is harmless'
 test('documentation pages embed all four prepared animations', async () => {
   const scenes = {
     'rollout-strategy': ['fractional'],
-    'scaling-during-rollout': ['scaling-up', 'scaling'],
+    'scaling-during-rollout': ['scaling-up', 'scaling-down'],
     'llm-d-integration': ['gating'],
   };
   for (const [page, assets] of Object.entries(scenes)) {

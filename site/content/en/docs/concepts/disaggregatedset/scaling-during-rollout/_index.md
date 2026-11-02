@@ -55,7 +55,7 @@ The scale-down policy controls reductions independently of the scale-up policy. 
 
 The animation below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares the two **scale-down** policies using autoscaler requests, with both rollout budgets set to 10%. Scale-up remains Deferred in both examples.
 
-{{< canvas-animation data="/animations/scaling.json" title="Deferred versus Immediate scale-down during a rollout" >}}
+{{< canvas-animation data="/animations/scaling-down.json" title="Deferred versus Immediate scale-down during a rollout" >}}
 Two recorded Kubernetes runs with controlled model-loading readiness. Panels are aligned at the replica change; each shows its own observed state. Playback is compressed.
 {{< /canvas-animation >}}
 
