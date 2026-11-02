@@ -5,6 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../assets/js/animation-player.ts', import.meta.url), 'utf8'))
+  .replace(/^import .*$/gm, '')
   .replace(/^export /gm, '');
 const drawing = () => ({version: 1, width: 1920, height: 1080, title: 'Example',
   primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: ['#ffffff', '#101720']},
@@ -20,7 +21,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
   const element = () => {
     let content = '';
     return {handlers: {}, attrs: {}, writes: {}, hidden: false, disabled: true,
-      style: {setProperty() {}}, value: '1', checked: true,
+      style: {setProperty() {}}, classList: {toggle() {}}, value: '1', checked: true,
       get textContent() {return content;},
       set textContent(value) {content = value; this.writes.textContent = (this.writes.textContent ?? 0) + 1;},
       addEventListener(name, callback) {this.handlers[name] = callback;},
@@ -29,10 +30,11 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
       offsetWidth: 100, offsetHeight: 50,
     };
   };
-  const names = ['canvas', 'seek', 'play', 'speed', 'loop', 'fullscreen', 'tooltip', 'clock', 'summary',
+  const names = ['canvas', 'svg', 'renderer', 'seek', 'play', 'speed', 'loop', 'fullscreen', 'tooltip', 'clock', 'summary',
     'previous', 'next', 'player', 'controls', 'error'];
   const nodes = Object.fromEntries(names.map(name => [name, element()]));
   nodes.canvas.getContext = () => ctx;
+  nodes.renderer.value = 'canvas';
   nodes.error.hidden = true;
   const root = {...element(), dataset: {animationSource: '/example.json'},
     querySelector(selector) {queries.push(selector); return nodes[selector.match(/data-animation-([^\]]+)/)[1]];},
@@ -46,7 +48,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
     observe() {}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
-  const sandbox = {document, console, Error, performance: {now: () => 0},
+  const sandbox = {document, console, Error, URLSearchParams, location: {search: ''}, performance: {now: () => 0},
     matchMedia: () => ({matches: reducedMotion, addEventListener() {}}),
     ResizeObserver: class {observe() {}},
     MutationObserver: class {constructor(callback) {mutations.push(callback);} observe() {}},

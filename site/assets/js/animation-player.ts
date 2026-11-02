@@ -1,4 +1,5 @@
 /** Playback of packaged, precomputed drawings. No controller or routing logic. */
+import {SvgDrawing} from './animation-svg.ts';
 type Color = string | [string, string];
 type Point = [number, number];
 interface Hit {x: number; y: number; width: number; height: number; label: string; detail: string}
@@ -155,6 +156,9 @@ class AnimationPlayer {
   private request = 0;
   private lastTick = 0;
   private canvas: HTMLCanvasElement;
+  private vector: SVGSVGElement;
+  private svg?: SvgDrawing;
+  private renderer: HTMLSelectElement;
   private context: CanvasRenderingContext2D | null;
   private seek: HTMLInputElement;
   private play: HTMLButtonElement;
@@ -167,15 +171,23 @@ class AnimationPlayer {
 
   constructor(root: HTMLElement) {
     this.root = root;
-    const get = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[data-animation-${name}]`)!;
+    const get = <T extends HTMLElement | SVGElement = HTMLElement>(name: string) => root.querySelector<T>(`[data-animation-${name}]`)!;
     this.canvas = get('canvas'); this.context = this.canvas.getContext('2d');
+    this.vector = get('svg'); this.renderer = get('renderer');
+    const preferred = new URLSearchParams(location.search).get('renderer');
+    if (preferred === 'canvas' || preferred === 'svg') this.renderer.value = preferred;
+    this.renderer.addEventListener('change', () => {
+      this.lastFrame = -1; this.tooltip.hidden = true; this.render();
+    });
     this.seek = get('seek'); this.play = get('play'); this.speed = get('speed'); this.loop = get('loop');
     this.fullscreen = get('fullscreen'); this.fullscreen.hidden = !document.fullscreenEnabled;
     this.tooltip = get('tooltip');
     this.clockEl = get('clock'); this.summaryEl = get('summary');
-    this.canvas.addEventListener('pointermove', event => this.inspect(event));
-    this.canvas.addEventListener('pointerdown', event => this.inspect(event));
-    this.canvas.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
+    for (const surface of [this.canvas, this.vector]) {
+      surface.addEventListener('pointermove', event => this.inspect(event as PointerEvent));
+      surface.addEventListener('pointerdown', event => this.inspect(event as PointerEvent));
+      surface.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
+    }
     this.play.addEventListener('click', () => {
       if (!this.data) {void this.load(); return;}
       this.intent = !this.playing;
@@ -223,7 +235,7 @@ class AnimationPlayer {
   private get playing() {return !!this.data && this.intent && this.visible && !document.hidden;}
   private inspect(event: PointerEvent) {
     if (!this.data) return;
-    const bounds = this.canvas.getBoundingClientRect();
+    const bounds = (this.renderer.value === 'svg' ? this.vector : this.canvas).getBoundingClientRect();
     const x = (event.clientX - bounds.left) * this.data.width / bounds.width;
     const y = (event.clientY - bounds.top) * this.data.height / bounds.height;
     const references = this.data.frames[position(this.starts, this.time)].hits ?? [];
@@ -250,7 +262,7 @@ class AnimationPlayer {
     this.root.setAttribute('aria-busy', 'true');
     this.sync();
     try {
-      if (!this.context) throw new Error('Canvas is unavailable in this browser.');
+      if (!this.context && this.renderer.value === 'canvas') throw new Error('Canvas is unavailable in this browser.');
       const response = await fetch(this.root.dataset.animationSource!);
       if (!response.ok) throw new Error(`Animation could not load (${response.status}).`);
       this.data = parseDrawing(await response.json());
@@ -261,6 +273,7 @@ class AnimationPlayer {
       this.motionTimes = (this.data.motions ?? []).map(track => track.keyframes.map(key => key[0]));
       this.canvas.width = this.data.width; this.canvas.height = this.data.height;
       this.canvas.setAttribute('aria-label', this.data.title);
+      this.vector.setAttribute('aria-label', this.data.title);
       this.root.style.setProperty('--animation-ratio', `${this.data.width} / ${this.data.height}`);
       this.root.style.setProperty('--animation-width-ratio', String(this.data.width / this.data.height));
       this.seek.max = String(this.duration);
@@ -301,7 +314,11 @@ class AnimationPlayer {
     if (this.playing) this.request = requestAnimationFrame(this.tick); else this.sync();
   };
   private render() {
-    if (!this.data || !this.context) return;
+    if (!this.data) return;
+    const vector = this.renderer.value === 'svg';
+    this.canvas.hidden = vector; this.vector.classList.toggle('d-none', !vector);
+    if (vector && !this.svg) this.svg = new SvgDrawing(this.vector, this.data);
+    if (!vector && !this.context) return;
     const ctx = this.context, dark = document.documentElement.dataset.bsTheme === 'dark';
     const index = position(this.starts, this.time), frame = this.data.frames[index];
     const activeMotions = this.motionTimes.flatMap((times, i) =>
@@ -309,14 +326,20 @@ class AnimationPlayer {
     const moving = activeMotions.length > 0;
     if (index !== this.lastFrame || dark !== this.lastDark || moving !== this.wasMoving
       || moving && this.time !== this.lastRenderTime) {
-      ctx.clearRect(0, 0, this.data.width, this.data.height);
-      for (const id of frame.items) drawPrimitive(ctx, this.data.primitives[id], dark);
-      for (const i of activeMotions) {
+      const positions = activeMotions.map(i => {
         const motion = this.data.motions![i], times = this.motionTimes[i];
         const key = Math.min(position(times, this.time), times.length - 2);
         const a = motion.keyframes[key], b = motion.keyframes[key + 1], t = (this.time - a[0]) / (b[0] - a[0]);
-        ctx.save(); ctx.translate(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t);
-        drawPrimitive(ctx, this.data.primitives[motion.primitive], dark); ctx.restore();
+        return {track: i, x: a[1] + (b[1] - a[1]) * t, y: a[2] + (b[2] - a[2]) * t};
+      });
+      if (vector) this.svg!.draw(index, dark, positions);
+      else {
+        ctx!.clearRect(0, 0, this.data.width, this.data.height);
+        for (const id of frame.items) drawPrimitive(ctx!, this.data.primitives[id], dark);
+        for (const {track, x, y} of positions) {
+          ctx!.save(); ctx!.translate(x, y);
+          drawPrimitive(ctx!, this.data.primitives[this.data.motions![track].primitive], dark); ctx!.restore();
+        }
       }
       this.lastDark = dark; this.wasMoving = moving; this.lastRenderTime = this.time;
     }

@@ -1,10 +1,12 @@
 // Run against the versioned Hugo preview: LWS_SITE_URL=... npm run test:animations
 import assert from 'node:assert/strict';
-import { chromium } from '@playwright/test';
+import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
-const browser = await chromium.launch({ headless: true,
+const renderer = process.env.LWS_RENDERER || 'svg';
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({ headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
 const page = await browser.newPage({ reducedMotion: 'reduce', viewport: { width: 1600, height: 1100 } });
 const errors = [];
@@ -20,7 +22,7 @@ let examples = 0;
 try {
   for (const slug of ['rollout-strategy', 'llm-d-integration', 'scaling-during-rollout']) {
     downloads.length = 0;
-    const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/`);
+    const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/?renderer=${renderer}`);
     assert.equal(response.status(), 200);
     const figures = page.locator('[data-animation-source]');
     assert.ok(await figures.count() > 0, `${slug}: missing Canvas`);
@@ -36,15 +38,31 @@ try {
       await play.waitFor();
       await page.waitForFunction(button => !button.disabled, await play.elementHandle());
       assert.equal(await play.textContent(), 'Play', 'Reduced motion starts paused');
+      assert.equal(await figure.locator('[data-animation-loop]').isChecked(), true, 'Looping is enabled on a fresh page');
       const canvas = figure.locator('canvas'), seek = figure.locator('[data-animation-seek]');
+      const surface = figure.locator(renderer === 'svg' ? '[data-animation-svg]' : 'canvas');
+      assert.ok(await surface.isVisible());
       const asset = await (await page.request.get(new URL(await figure.getAttribute('data-animation-source'), origin).href)).json();
       const duration = asset.frames.reduce((total, frame) => total + frame.duration, 0);
       assert.ok(Math.abs(Number(await seek.getAttribute('max')) - duration) < .001);
       assert.equal(await canvas.getAttribute('width'), String(asset.width));
       let time = 0;
       for (const frame of asset.frames) {
-        await seekTo(seek, time + frame.duration / 2);
+        const sampleTime = time + frame.duration / 2;
+        await seekTo(seek, sampleTime);
         assert.equal(await figure.locator('[data-animation-summary]').textContent(), frame.caption);
+        if (renderer === 'svg') assert.equal(await surface.locator(':scope > g').first().locator('use').count(), frame.items.length);
+        if (renderer === 'svg' && asset.motions?.length) {
+          const actual = await surface.locator(':scope > g').last().locator('use').evaluateAll(nodes => nodes
+            .filter(node => node.getAttribute('display') !== 'none').map(node => node.getAttribute('transform')));
+          const expected = asset.motions.flatMap(({keyframes}) => {
+            if (sampleTime < keyframes[0][0] || sampleTime > keyframes.at(-1)[0]) return [];
+            const i = Math.min(keyframes.findLastIndex(key => key[0] <= sampleTime), keyframes.length - 2);
+            const [a, b] = [keyframes[i], keyframes[i + 1]], t = (sampleTime - a[0]) / (b[0] - a[0]);
+            return [`translate(${a[1] + (b[1] - a[1]) * t} ${a[2] + (b[2] - a[2]) * t})`];
+          });
+          assert.deepEqual(actual, expected, 'SVG motion positions and visibility follow the shared timeline');
+        }
         time += frame.duration;
       }
       await seekTo(seek, 0);
@@ -52,15 +70,24 @@ try {
       assert.ok(Math.abs(await value(seek) - asset.frames[0].duration) < .011);
       await figure.locator('[data-animation-previous]').click();
       assert.equal(await value(seek), 0);
-      const pixel = () => canvas.evaluate(node => [...node.getContext('2d').getImageData(0, 0, 1, 1).data]);
+      const pixel = () => renderer === 'svg' ? surface.locator('defs > *').first().getAttribute('fill')
+        : canvas.evaluate(node => [...node.getContext('2d').getImageData(0, 0, 1, 1).data]);
       await page.evaluate(() => { document.documentElement.dataset.bsTheme = 'light'; });
       const light = await pixel();
       await page.evaluate(() => { document.documentElement.dataset.bsTheme = 'dark'; });
       assert.notDeepEqual(await pixel(), light, 'Theme changes the drawing');
       if (process.env.LWS_SCREENSHOT_DIR) {
         const name = (await figure.getAttribute('data-animation-source')).split('/').at(-1).replace('.json', '');
-        await canvas.screenshot({ path: `${process.env.LWS_SCREENSHOT_DIR}/${name}-dark.png` });
+        await surface.screenshot({ path: `${process.env.LWS_SCREENSHOT_DIR}/${name}-${renderer}-dark.png` });
       }
+      const sameTime = await value(seek), sameSummary = await figure.locator('[data-animation-summary]').textContent();
+      const switcher = figure.locator('[data-animation-renderer]');
+      await switcher.selectOption(renderer === 'svg' ? 'canvas' : 'svg');
+      assert.equal(await surface.isVisible(), false);
+      assert.equal(await value(seek), sameTime, 'Switching renderer preserves presentation time');
+      assert.equal(await figure.locator('[data-animation-summary]').textContent(), sameSummary);
+      await switcher.selectOption(renderer);
+      assert.ok(await surface.isVisible());
       await figure.locator('[data-animation-speed]').selectOption('4');
       await play.click();
       await page.waitForTimeout(300);
@@ -115,7 +142,8 @@ try {
   await automatic.scrollIntoViewIfNeeded();
 
   const loop = automatic.locator('[data-animation-loop]');
-  assert.equal(await loop.isChecked(), true, 'Automatic playback loops by default');
+  // Firefox restores the earlier unchecked form state on reload.
+  await loop.check();
   const end = Number(await seek.getAttribute('max'));
   await seekTo(seek, end - .05);
   await play.click();
@@ -144,7 +172,7 @@ try {
   await first.scrollIntoViewIfNeeded();
   assert.ok(await first.locator('[data-animation-play]').isVisible());
   assert.deepEqual(errors, []);
-  console.log(`Verified ${examples} inline examples: all captions/states, themes, controls, autoplay, offscreen/manual pause, loop, fullscreen, reduced motion, and 320px layout.`);
+  console.log(`Verified ${examples} ${renderer} examples: all captions/states, themes, renderer switching, controls, autoplay, offscreen/manual pause, loop, fullscreen, reduced motion, and 320px layout.`);
 } finally {
   await browser.close();
 }

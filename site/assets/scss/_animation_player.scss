@@ -11,7 +11,7 @@
     overflow: hidden;
   }
   .lws-animation__stage {position: relative; overflow: hidden; width: 100%; aspect-ratio: var(--animation-ratio);}
-  canvas {display: block; width: 100%; height: 100%; object-fit: contain;}
+  canvas, [data-animation-svg] {display: block; width: 100%; height: 100%; object-fit: contain;}
   [data-animation-controls] {padding: 8px 14px 12px; border-top: 1px solid var(--bs-border-color, #bdc1c6);}
   [data-animation-seek] {display: block; width: 100%; height: 20px; margin: 0 0 6px; accent-color: #326ce5;}
   .lws-animation__row, .lws-animation__actions, .lws-animation__options {display: flex; align-items: center; gap: 8px;}

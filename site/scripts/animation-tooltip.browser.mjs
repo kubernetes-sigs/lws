@@ -1,9 +1,10 @@
 // Run against a Hugo preview: LWS_SITE_URL=... node scripts/animation-tooltip.browser.mjs
 import assert from 'node:assert/strict';
-import { chromium } from '@playwright/test';
+import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
+const renderer = process.env.LWS_RENDERER || 'svg';
 const drawing = {
   version: 1, width: 1920, height: 1080, title: 'Tooltip sizing regression',
   primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: '#ffffff'}],
@@ -14,20 +15,21 @@ const drawing = {
   ],
   frames: [{duration: 2, caption: 'Inspect a short label, then a longer explanation.', items: [0], hits: [0, 1]}],
 };
-const browser = await chromium.launch({headless: true,
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? {channel: process.env.PLAYWRIGHT_CHANNEL} : {})});
 const page = await browser.newPage({reducedMotion: 'reduce', viewport: {width: 1600, height: 1100}});
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.route('**/animations/fractional.json', route => route.fulfill({json: drawing}));
-  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/`);
+  const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/rollout-strategy/?renderer=${renderer}`);
   assert.equal(response.status(), 200);
   const figure = page.locator('[data-animation-source]').first();
   await figure.scrollIntoViewIfNeeded();
   const play = figure.locator('[data-animation-play]');
   await page.waitForFunction(button => !button.disabled, await play.elementHandle());
-  const canvas = figure.locator('canvas'), tooltip = figure.locator('[data-animation-tooltip]');
+  const canvas = figure.locator(renderer === 'svg' ? '[data-animation-svg]' : 'canvas'), tooltip = figure.locator('[data-animation-tooltip]');
   for (const width of [1600, 1100]) {
     await page.setViewportSize({width, height: 1100});
     await figure.scrollIntoViewIfNeeded();

@@ -10,6 +10,8 @@
     <div class="lws-animation__stage">
       <canvas data-animation-canvas width="1920" height="1080" role="img"
         aria-label="{{ .Get "title" }}" aria-describedby="{{ $id }}-summary"></canvas>
+      <svg data-animation-svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img"
+        aria-label="{{ .Get "title" }}" aria-describedby="{{ $id }}-summary" class="d-none"></svg>
       <div data-animation-tooltip role="tooltip" hidden></div>
     </div>
     <div data-animation-controls>
@@ -23,6 +25,9 @@
           <span data-animation-clock>0:00 / 0:00</span>
         </div>
         <div class="lws-animation__options">
+          <label>Renderer<select data-animation-renderer data-animation-control aria-label="Drawing renderer" disabled>
+            <option value="svg" selected>SVG (PoC)</option><option value="canvas">Canvas</option>
+          </select></label>
           <label><input data-animation-loop type="checkbox" checked>Loop</label>
           <label>Speed<select data-animation-speed data-animation-control aria-label="Playback speed" disabled>
             <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
