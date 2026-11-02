@@ -4,18 +4,21 @@ import test from 'node:test';
 import {gunzipSync} from 'node:zlib';
 import {parseDrawing} from '../assets/js/animation-player.ts';
 
-test('prepared harness scenarios retain valid drawings without release or PR labels', async () => {
-  for (const suite of ['small', 'large']) {
-    const directory = new URL(`../static/trace-player/scenarios/${suite}/`, import.meta.url);
-    const files = (await readdir(directory)).filter(name => name.endsWith('.json.gz'));
+test('prepared animations retain valid drawings without release, PR or capture-tool labels', async () => {
+  for (const path of ['animations', 'trace-player/scenarios/small', 'trace-player/scenarios/large']) {
+    const directory = new URL(`../static/${path}/`, import.meta.url);
+    const files = (await readdir(directory)).filter(name => /\.json(\.gz)?$/.test(name));
     assert.ok(files.length > 0);
     for (const name of files) {
-      const drawing = parseDrawing(JSON.parse(gunzipSync(await readFile(new URL(name, directory)))));
+      const bytes = await readFile(new URL(name, directory));
+      const drawing = parseDrawing(JSON.parse(name.endsWith('.gz') ? gunzipSync(bytes) : bytes));
+      const notes = Array.isArray(drawing.provenance) ? drawing.provenance : drawing.provenance?.notes ?? [];
       const labels = [drawing.title, ...drawing.primitives.map(item => item.text),
-        ...drawing.frames.flatMap(frame => [frame.caption,
-          ...(frame.hits ?? []).flatMap(index => [drawing.hits[index].label, drawing.hits[index].detail])])].filter(Boolean);
+        ...drawing.frames.map(frame => frame.caption),
+        ...(drawing.hits ?? []).flatMap(hit => [hit.label, hit.detail]),
+        ...notes].filter(Boolean);
       for (const label of labels) assert.doesNotMatch(label,
-        /\bLWS\s+(?:v(?:ersion)?\s*)?\d|\bPR\b|\bpull request\b/i, name);
+        /\bLWS\s+(?:v(?:ersion)?\s*)?\d|(?:^|\s)v\d+(?:\.\d+)*\b|\bversion\s+\d|\bPR\b|\bpull request\b|\bk9s\b/i, name);
     }
   }
 });
