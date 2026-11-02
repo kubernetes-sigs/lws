@@ -3,15 +3,13 @@
   .trace-player-subheader {
     // Stay below Docsy's navbar (32), including its hanging logo and dropdowns.
     position: sticky; top: var(--lws-header-height, 5rem); z-index: 30;
-    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 20px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px;
     padding-block: calc(var(--lws-logo-bottom, 6.55rem) - var(--lws-header-height, 5rem) + .5rem) 8px;
     margin-bottom: 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-body-bg);
   }
-  .trace-player-help {width: 100%; font-size: .8125rem; color: var(--bs-secondary-color);}
-  .trace-player-help p {margin: 0;}
   .trace-player-layout {display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 24px;}
   main {width: 100%; max-width: 1200px; min-width: 0; padding-block: 0 2rem;}
-  h1 {font-size: 1.25rem; margin: 0;}
+  h1 {font-size: 1.125rem; margin: 0;}
   .trace-player-sidebar {padding: 0 12px 0 0; border-right: 0;}
   .trace-player-sidebar nav {margin: 0;}
   @media (min-width: 768px) {
@@ -28,7 +26,8 @@
   [data-trace-scenarios] small {display: block; margin-top: 4px; color: var(--bs-secondary-color);}
   [data-trace-scenarios] button[aria-current="true"] {background: var(--bs-primary-bg-subtle); box-shadow: inset 3px 0 var(--bs-primary);}
   .trace-player-tabs, .trace-player-toolbar, .trace-player-exports {display: flex; align-items: center; gap: 10px; flex-wrap: wrap;}
-  .trace-player-tabs {margin-left: auto; gap: 6px; font-size: .875rem;}
+  .trace-player-tabs {gap: 6px; font-size: .8125rem;}
+  .trace-player-toolbar {margin-left: auto; font-size: .8125rem;}
   .trace-player-exports {margin-left: auto;}
   .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, .trace-player-sidebar button {font: inherit; color: inherit; border-radius: 6px; cursor: pointer;}
   .trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select {background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); padding: 6px 10px;}
@@ -38,7 +37,8 @@
   .trace-player-toolbar label {display: flex; align-items: center; gap: 10px; margin: 0;}
   [data-trace-import] {width: 100%;}
   [data-trace-import] small {display: block; margin-top: 6px;}
-  [data-trace-status], [data-trace-export-status] {display: block; font-size: .875rem; margin-top: 10px;}
+  [data-trace-status], [data-trace-export-status] {display: block; font-size: .8125rem;}
+  [data-trace-status]:not(.visually-hidden) {width: 100%;}
   [data-trace-export-status]:empty {display: none;}
   .lws-animation {width: 100%; max-width: none; margin-block: 16px 0;}
   [hidden] {display: none !important;}
@@ -52,19 +52,17 @@
     .trace-player-sidebar {min-height: 0;}
     .trace-player-sidebar .td-sidebar__inner {position: static; height: 100%; max-height: none;}
     main {display: flex; flex-direction: column; max-width: none; min-height: 0; padding-bottom: 0;}
-    main > :not(.lws-animation) {flex: none;}
-    .lws-animation {display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 8px;}
-    .lws-animation figcaption {margin-top: 6px; font-size: .8125rem; flex: none;}
-    [data-animation-player]:not(:fullscreen) {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
+    .lws-animation {display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 0;}
+    .lws-animation__viewport {
+      display: flex; align-items: center; justify-content: center;
       flex: 1; min-height: 0; container-type: size;
-      // Keep the stage itself at 16:9, not just the SVG inside it, so hover
-      // coordinates still map directly to the drawing without letterbox offsets.
-      .lws-animation__stage {
-        flex: none;
-        width: unquote("min(100cqw, calc((100cqh - var(--animation-controls-height, 90px)) * var(--animation-width-ratio)))");
-      }
-      [data-animation-controls] {width: 100%; flex: none;}
+    }
+    [data-animation-error] {flex: none;}
+    [data-animation-player]:not(:fullscreen) {
+      // Size the whole player, not just the SVG, so its border and controls
+      // follow the drawing without empty side panels. Include both borders.
+      flex: none;
+      width: unquote("min(100cqw, calc((100cqh - var(--animation-controls-height, 90px) - 2px) * var(--animation-width-ratio) + 2px))");
     }
   }
   @media (max-width: 767.98px) {
@@ -72,7 +70,7 @@
     .td-outer {min-height: calc(100dvh - var(--lws-header-height, 10rem));}
     .trace-player-shell {padding-top: 0;}
     .trace-player-subheader {padding-top: 12px;}
-    .trace-player-tabs {margin-left: 0;}
+    .trace-player-toolbar {margin-left: 0;}
     .trace-player-layout {display: block;}
     .trace-player-sidebar {padding: 0;}
     .trace-player-sidebar nav {max-height: 45vh; overflow-y: auto;}

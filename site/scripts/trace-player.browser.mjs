@@ -45,16 +45,14 @@ async function assertResponsiveSizing() {
     const geometry = await page.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
       const surface = document.querySelector('[data-animation-svg]');
-      return {layout: rect('.trace-player-layout'), main: rect('main'), toolbar: rect('.trace-player-toolbar'),
+      return {layout: rect('.trace-player-layout'), main: rect('main'),
         figure: rect('.lws-animation'), surface: rect('[data-animation-svg]'), native: [surface.viewBox.baseVal.width, surface.viewBox.baseVal.height],
         scrollWidth: document.documentElement.scrollWidth};
     });
     assert.ok(geometry.main.x >= geometry.layout.x - 1 && geometry.main.right <= geometry.layout.right + 1,
       `${width}px: main must stay inside its content column`);
-    for (const name of ['toolbar', 'figure']) {
-      assert.ok(geometry[name].x >= geometry.main.x - 1 && geometry[name].right <= geometry.main.right + 1,
-        `${width}px: ${name} must stay inside the main column`);
-    }
+    assert.ok(geometry.figure.x >= geometry.main.x - 1 && geometry.figure.right <= geometry.main.right + 1,
+      `${width}px: figure must stay inside the main column`);
     assert.ok(geometry.surface.width > 0 && geometry.surface.width <= geometry.figure.width + 1,
       `${width}px: drawing must fit its player`);
     assert.ok(Math.abs(geometry.surface.width / geometry.surface.height - 16 / 9) < .01, `${width}px: preserve SVG aspect ratio`);
@@ -66,20 +64,36 @@ async function assertResponsiveSizing() {
 }
 async function assertViewportFit(label) {
   await page.evaluate(() => window.scrollTo({top: 0, behavior: 'instant'}));await settle();
+  const sizes = await page.evaluate(() => new Promise(resolve => {
+    const samples = [];
+    const measure = () => {
+      const stage = document.querySelector('.lws-animation__stage').getBoundingClientRect();
+      samples.push([stage.width, stage.height]);
+      if (samples.length === 8) resolve(samples.slice(-3));else requestAnimationFrame(measure);
+    };
+    requestAnimationFrame(measure);
+  }));
+  assert.ok(sizes.every(size => size.every((value, index) => Math.abs(value - sizes[0][index]) < 1)),
+    `${label}: responsive control wrapping must settle without a repeated shrinking loop`);
   const geometry = await page.evaluate(() => {
     const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
     const main = document.querySelector('main');
     const sidebar = document.querySelector('#td-section-nav');
+    const player = document.querySelector('[data-animation-player]'), controls = document.querySelector('[data-animation-controls]');
+    const playerStyle = getComputedStyle(player);
     return {width: innerWidth, height: innerHeight, scrollY, scrollWidth: document.documentElement.scrollWidth,
       scrollHeight: document.documentElement.scrollHeight, mainScrollHeight: main.scrollHeight, mainHeight: main.clientHeight,
       sidebarOverflows: sidebar.scrollHeight > sidebar.clientHeight + 1,
+      playerBorder: Number.parseFloat(playerStyle.borderLeftWidth) + Number.parseFloat(playerStyle.borderRightWidth),
+      controlsScrollWidth: controls.scrollWidth, controlsWidth: controls.clientWidth,
       gutter: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       header: rect('.td-navbar'), logo: rect('.navbar-logo'), subheader: rect('.trace-player-subheader'),
       title: rect('h1'), tabs: rect('.trace-player-tabs'), sidebar: rect('#td-section-nav'), aside: rect('.trace-player-sidebar'),
       main: rect('main'), toolbar: rect('.trace-player-toolbar'), figure: rect('.lws-animation'),
-      surface: rect('[data-animation-svg]'), stage: rect('.lws-animation__stage'), controls: rect('[data-animation-controls]'),
+      exportStatus: rect('[data-trace-export-status]'),
+      player: rect('[data-animation-player]'), surface: rect('[data-animation-svg]'), stage: rect('.lws-animation__stage'), controls: rect('[data-animation-controls]'),
       footer: rect('footer'), buttons: [...document.querySelectorAll('.trace-player-tabs button, .trace-player-toolbar button, .trace-player-toolbar select, [data-animation-controls] button, [data-animation-controls] select, [data-animation-seek]')]
-        .filter(node => node.getClientRects().length).map(node => ({name: node.getAttribute('aria-label') || node.textContent.trim(), ...node.getBoundingClientRect().toJSON()}))};
+        .filter(node => node.getClientRects().length).map(node => ({name: node.getAttribute('aria-label') || node.textContent.trim(), playback: controls.contains(node), ...node.getBoundingClientRect().toJSON()}))};
   });
   assert.ok(geometry.scrollWidth <= geometry.width + 1, `${label}: no horizontal document overflow`);
   assert.ok(geometry.scrollHeight <= geometry.height + 1, `${label}: entire player page must fit without document scrolling`);
@@ -92,13 +106,26 @@ async function assertViewportFit(label) {
   assert.ok(geometry.tabs.bottom - geometry.title.y <= 120, `${label}: title, description and tabs form a compact subheader`);
   assert.ok(geometry.aside.y - geometry.subheader.bottom <= 12 && geometry.main.y - geometry.subheader.bottom <= 12,
     `${label}: both columns start directly beneath the subheader`);
-  for (const name of ['main', 'aside', 'toolbar', 'figure', 'surface', 'controls']) {
+  for (const name of ['main', 'aside', 'figure', 'surface', 'controls']) {
     assert.ok(geometry[name].y >= geometry.subheader.bottom - 1, `${label}: ${name} is not covered by the subheader`);
     assert.ok(geometry[name].bottom <= geometry.footer.y + 1, `${label}: ${name} clears the footer`);
+  }
+  for (const name of ['toolbar', 'exportStatus']) {
+    if (geometry[name].height > 0) assert.ok(geometry[name].y >= geometry.subheader.y - 1 &&
+      geometry[name].bottom <= geometry.subheader.bottom + 1 && geometry[name].x >= geometry.subheader.x - 1 &&
+      geometry[name].right <= geometry.subheader.right + 1, `${label}: ${name} stays inside the compact subheader`);
   }
   assert.ok(geometry.surface.x >= geometry.stage.x - 1 && geometry.surface.right <= geometry.stage.right + 1 &&
     geometry.surface.y >= geometry.stage.y - 1 && geometry.surface.bottom <= geometry.stage.bottom + 1,
     `${label}: complete SVG fits inside the stage`);
+  assert.ok(geometry.stage.width > 0 && Math.abs(geometry.stage.width / geometry.stage.height - 16 / 9) < .01,
+    `${label}: fitting must preserve a nonzero 16:9 drawing`);
+  assert.ok(Math.abs(geometry.player.width - geometry.stage.width - geometry.playerBorder) <= 1,
+    `${label}: player frame hugs the drawing without empty side panels`);
+  assert.ok(Math.abs(geometry.controls.x - geometry.stage.x) <= 1 && Math.abs(geometry.controls.width - geometry.stage.width) <= 1,
+    `${label}: playback controls align with the drawing width`);
+  assert.ok(geometry.controlsScrollWidth <= geometry.controlsWidth + 1,
+    `${label}: playback controls fit the narrower player without horizontal clipping`);
   assert.ok(geometry.surface.bottom <= geometry.controls.y + 1, `${label}: playback controls do not cover the drawing`);
   assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1 && geometry.sidebar.bottom <= geometry.footer.y + 1,
     `${label}: scenario list stays between subheader and footer`);
@@ -109,6 +136,9 @@ async function assertViewportFit(label) {
   for (const button of geometry.buttons) {
     assert.ok(button.x >= -1 && button.right <= geometry.width + 1 && button.y >= geometry.header.bottom - 1 && button.bottom <= geometry.footer.y + 1,
       `${label}: ${button.name || 'timeline'} is fully visible and reachable`);
+    if (button.playback) assert.ok(button.x >= geometry.controls.x - 1 && button.right <= geometry.controls.right + 1 &&
+      button.y >= geometry.controls.y - 1 && button.bottom <= geometry.controls.bottom + 1,
+      `${label}: ${button.name || 'timeline'} remains inside the playback controls`);
   }
 }
 async function assertMobileLayout(label) {

@@ -1,5 +1,6 @@
 {{- $id := .id -}}
 <figure class="lws-animation td-max-width-on-larger-screens" data-animation-source="{{ .data | relURL }}">
+  <div class="lws-animation__viewport">
   <div data-animation-player>
     <div class="lws-animation__stage">
       <svg data-animation-svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img"
@@ -28,9 +29,10 @@
       </div>
     </div>
     <p data-animation-summary class="lws-animation__summary" id="{{ $id }}-summary"></p>
-    <p data-animation-error role="alert" hidden></p>
   </div>
-  <figcaption>{{ .caption | markdownify }}</figcaption>
+  </div>
+  <p data-animation-error role="alert" hidden></p>
+  {{ with .caption }}<figcaption>{{ . | markdownify }}</figcaption>{{ end }}
   <noscript>The interactive illustration requires JavaScript. The surrounding explanation describes the same behavior.</noscript>
 </figure>
 {{- if not (.page.Store.Get "lws-animation-script") -}}

@@ -44,6 +44,7 @@ function load(detail: object, name = selected?.id ?? imported?.name ?? 'imported
   pendingName = name;
   loading = true;
   status.textContent = 'Loading…';
+  status.classList.remove('visually-hidden');
   syncExports();
   figure.dispatchEvent(new CustomEvent('animation-load', {detail: {...detail, requestId: ++requestId}}));
 }
@@ -82,6 +83,7 @@ function selectSuite(id: string, scenario?: string) {
     figure.hidden = true;
     syncExports();
     status.textContent = 'Choose a prepared drawing JSON file to play it locally.';
+    status.classList.remove('visually-hidden');
   }
   scenarios.querySelectorAll<HTMLElement>('[data-trace-scenario]').forEach(button =>
     button.setAttribute('aria-current', String(button.dataset.traceScenario === selected?.id)));
@@ -110,6 +112,7 @@ figure.addEventListener('animation-ready', event => {
   figure.hidden = false;
   syncExports();
   status.textContent = selected?.title ?? `Imported: ${current.name}`;
+  status.classList.add('visually-hidden');
 });
 figure.addEventListener('animation-error', event => {
   const detail = (event as CustomEvent).detail;
@@ -117,6 +120,7 @@ figure.addEventListener('animation-error', event => {
   loading = false;
   syncExports();
   status.textContent = `${detail.message} The last successfully loaded drawing is unchanged.`;
+  status.classList.remove('visually-hidden');
 });
 function download(blob: Blob, name: string, extension: string) {
   const link = document.createElement('a');
