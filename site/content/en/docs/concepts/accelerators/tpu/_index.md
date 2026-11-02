@@ -14,18 +14,18 @@ Whenever a Pod managed by a `LeaderWorkerSet` — whether standalone (in `Ordina
 
 When at least one container or init container in a Pod requests or limits `google.com/tpu > 0`, the LWS mutating pod webhook injects the following environment variables into the TPU container(s):
 
-| Variable | Description | Example (`size: 2`, `UniquePerReplica` default subdomain) |
+| Variable | Description | Example (`size: 2`, default `Shared` subdomain policy) |
 | :--- | :--- | :--- |
 | `TPU_WORKER_ID` | Zero-based rank of the TPU worker within the group (or within its [subgroup](../../leaderworkerset/subgroups/) when `subGroupPolicy` is configured). | `0` |
-| `TPU_WORKER_HOSTNAMES` | Comma-separated `<hostname>.<subdomain>` DNS names of all TPU workers in the group (or subgroup), ordered by `TPU_WORKER_ID`. | `tpu-serve-0.tpu-serve-0,tpu-serve-0-1.tpu-serve-0` |
-| `TPU_PROCESS_ADDRESSES` | Comma-separated `<hostname>.<subdomain>:<port>` coordination endpoints matching `TPU_WORKER_HOSTNAMES`. | `tpu-serve-0.tpu-serve-0:8476,tpu-serve-0-1.tpu-serve-0:8476` |
+| `TPU_WORKER_HOSTNAMES` | Comma-separated `<hostname>.<subdomain>` DNS names of all TPU workers in the group (or subgroup), ordered by `TPU_WORKER_ID`. | `tpu-serve-0.tpu-serve,tpu-serve-0-1.tpu-serve` |
+| `TPU_PROCESS_ADDRESSES` | Comma-separated `<hostname>.<subdomain>:<port>` coordination endpoints matching `TPU_WORKER_HOSTNAMES`. | `tpu-serve-0.tpu-serve:8476,tpu-serve-0-1.tpu-serve:8476` |
 | `TPU_PROCESS_PORT` | Coordination port for the container. Defaults to `8476` if not already set on the container. | `8476` |
 | `TPU_NAME` | Identifier for the group's leader hostname (`<lws-name>-<ordinal>` in `Ordinal` mode, or `<lws-name>-<hash>` in `Hash` mode). | `tpu-serve-0` |
 
 ### Customizing or Overriding Injection
 
-- **Custom coordination port (`TPU_PROCESS_PORT`):** If you set `TPU_PROCESS_PORT` on a container (for example, `8478`), LWS preserves your port value and uses it when constructing `TPU_PROCESS_ADDRESSES`.
-- **Full manual override:** If a container already defines `TPU_WORKER_ID` or `TPU_WORKER_HOSTNAMES`, LWS skips TPU environment variable injection on that Pod so user-defined values are left untouched.
+- **Custom coordination port (`TPU_PROCESS_PORT`):** If you set `TPU_PROCESS_PORT` on a TPU container (for example, `8478`), LWS preserves your port value and uses it when constructing `TPU_PROCESS_ADDRESSES`. Each Pod derives peer endpoints from its own container configuration, so corresponding TPU containers across Pods in the same group (or subgroup) must configure the same port.
+- **Full manual override:** If the first TPU-requesting container already defines `TPU_WORKER_ID` or `TPU_WORKER_HOSTNAMES`, LWS skips TPU environment variable injection on that Pod so user-defined values are left untouched. Defining those variables only on a non-TPU sidecar or a later TPU container does not disable injection.
 
 ## Homogeneous vs. Heterogeneous (CPU Leader) Topologies
 
@@ -73,8 +73,10 @@ A single TPU pod slice provides high-speed Inter-Chip Interconnect (ICI) within 
 When [Subgroups](../../leaderworkerset/subgroups/) (`spec.leaderWorkerTemplate.subGroupPolicy`) are configured:
 
 - `TPU_WORKER_ID` (`0 .. subGroupSize-1`), `TPU_WORKER_HOSTNAMES`, and `TPU_PROCESS_ADDRESSES` are scoped **to each Pod's own subgroup** rather than the entire replica, matching the physical TPU slice boundary expected by `libtpu`.
+- Compatible subgroup layouts require every TPU subgroup to contain `subGroupSize` TPU-requesting Pods so injected peer lists match subgroup placement:
+  - **TPU leader:** use `subGroupPolicyType: LeaderWorker` (default) with `size` divisible by `subGroupSize` (for example, `size: 8`, `subGroupSize: 4` for two 4-host TPU slices).
+  - **CPU-only leader:** `size - 1` must be divisible by `subGroupSize` (typically with `subGroupPolicyType: LeaderExcluded`, such as `size: 9`, `subGroupSize: 4` where the CPU leader is excluded from all TPU slice subgroups and the 8 worker Pods form two 4-host TPU slices with `TPU_WORKER_ID = 0..3` in each subgroup).
 - Pair `subGroupPolicy` with `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology: cloud.google.com/gke-nodepool` so each subgroup lands on a dedicated TPU slice node pool, while Pods discover the replica-wide coordinator via `LWS_LEADER_ADDRESS`.
-- With `subGroupPolicyType: LeaderExcluded` (for example, `size: 9`, `subGroupSize: 4` with a CPU-only `leaderTemplate`), the CPU leader is excluded from all TPU slice subgroups and the 8 worker Pods form two 4-host TPU slices (`TPU_WORKER_ID = 0..3` in each subgroup).
 
 ```yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
