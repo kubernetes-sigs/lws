@@ -191,6 +191,7 @@ func main() {
 
 	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
+		os.Exit(1)
 	}
 	if cfg.GangSchedulingManagement != nil &&
 		cfg.GangSchedulingManagement.SchedulerProvider != nil &&
