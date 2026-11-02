@@ -87,14 +87,13 @@ func scaleDown(l *Lab) {
 	l.Checkpoint("Let remaining Decode become Ready; finish at exactly 2+2.", "Open all B readiness files.")
 	l.Converge("B", pair(2, 2), 0)
 }
-func handoffPreserved(l *Lab, s, before Snapshot) bool {
+func handoffPreserved(l *Lab, s, before Snapshot) {
 	l.Assert(sameSet(uidSet(s.Pods), uidSet(before.Pods)), "Static→External deleted/replaced an existing Pod")
 	l.Assert(sameSet(uidSet(s.LWS), uidSet(before.LWS)), "Replica source change created/deleted workload revision")
 	for r, old := range l.Counts(before, "A") {
 		now := l.Count(s, "A", r)
 		l.Assert(now.Spec == old.Spec && now.Ready == old.Ready, "Static→External changed "+r+" requested or Ready count")
 	}
-	return true
 }
 func autoscalerHandoff(l *Lab) {
 	l.Create(3, 2, CreateOptions{Size: 2})
