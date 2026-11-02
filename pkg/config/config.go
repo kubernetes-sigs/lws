@@ -117,10 +117,6 @@ func addLeaderElectionTo(o *ctrl.Options, cfg *configapi.Configuration) {
 		o.LeaderElectionResourceLock = cfg.LeaderElection.ResourceLock
 	}
 
-	if o.LeaderElectionNamespace == "" && cfg.LeaderElection.ResourceNamespace != "" {
-		o.LeaderElectionNamespace = cfg.LeaderElection.ResourceNamespace
-	}
-
 	if o.LeaderElectionID == "" && cfg.LeaderElection.ResourceName != "" {
 		o.LeaderElectionID = cfg.LeaderElection.ResourceName
 	}
