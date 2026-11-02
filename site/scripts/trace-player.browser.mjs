@@ -300,6 +300,14 @@ try {
   assert.equal(await page.locator('[data-trace-export-done]').isVisible(), true, 'JSON export reports completion');
   assert.equal(exported.version, 1);assert.deepEqual(exported.themes, themes);
   assert.deepEqual([exported.width, exported.height], [1920, 1080], 'Prepared JSON retains native 1080p dimensions');
+  const nextScenario = catalog.find(group => group.id === 'docs').scenarios[0];
+  assert.notEqual(await surface.getAttribute('aria-label'), nextScenario.title);
+  await page.locator(`[data-trace-scenario="${nextScenario.id}"]`).click();await ready();
+  assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'Changing scenarios clears completed export feedback');
+  assert.equal(await page.locator('[data-trace-export-message]').textContent(), '', 'Changing scenarios also clears the stale live announcement');
+  await exportMenu.click();
+  const nextDownload = page.waitForEvent('download');await page.locator('[data-trace-export]').click();await nextDownload;
+  assert.equal(await page.locator('[data-trace-export-done]').isVisible(), true, 'The next scenario can report a new completed export');
   await page.locator('[data-trace-suite="import"]').click();
   assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'Changing tabs clears completed export feedback');
   assert.equal(await page.locator('[data-trace-export-message]').textContent(), '', 'Changing tabs also clears the stale live announcement');
