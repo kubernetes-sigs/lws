@@ -22,6 +22,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
+
+	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 // applyErrWithDefaults calls apply with placeholder flag values and returns only
@@ -115,4 +121,29 @@ metrics:
 			t.Errorf("metrics bind address = %s, want :9999 from the flag", opts.Metrics.BindAddress)
 		}
 	})
+}
+
+func TestApplyConfiguresReplicaSetCacheSelector(t *testing.T) {
+	flagsSet = map[string]bool{}
+	opts, _, err := apply("", ":8081", false, time.Minute, time.Minute, time.Minute, "leases", "lws", ":8080")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var rsCacheOpts *ctrlcache.ByObject
+	for obj, byObj := range opts.Cache.ByObject {
+		if _, ok := obj.(*appsv1.ReplicaSet); ok {
+			copied := byObj
+			rsCacheOpts = &copied
+			break
+		}
+	}
+	if rsCacheOpts == nil || rsCacheOpts.Label == nil {
+		t.Fatalf("expected apply() to configure a label selector for *appsv1.ReplicaSet in opts.Cache.ByObject, got %#v", opts.Cache.ByObject)
+	}
+	if !rsCacheOpts.Label.Matches(labels.Set{leaderworkersetv1.SetNameLabelKey: "example"}) {
+		t.Errorf("ReplicaSet cache selector %q must match LWS-labeled ReplicaSets", rsCacheOpts.Label)
+	}
+	if rsCacheOpts.Label.Matches(labels.Set{"app": "unrelated"}) {
+		t.Errorf("ReplicaSet cache selector %q must exclude non-LWS ReplicaSets", rsCacheOpts.Label)
+	}
 }
