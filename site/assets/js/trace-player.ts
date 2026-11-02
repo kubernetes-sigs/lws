@@ -8,6 +8,8 @@ const scenarios = document.querySelector<HTMLElement>('[data-trace-scenarios]')!
 const theme = document.querySelector<HTMLSelectElement>('[data-trace-theme]')!;
 const allThemes = new URLSearchParams(location.search).get('themes') === 'all';
 const fileInput = document.querySelector<HTMLInputElement>('[data-trace-file]')!;
+const importPanel = document.querySelector<HTMLElement>('[data-trace-import]')!;
+const chooseFile = document.querySelector<HTMLButtonElement>('[data-trace-choose]')!;
 const save = document.querySelector<HTMLButtonElement>('[data-trace-export]')!;
 const status = document.querySelector<HTMLElement>('[data-trace-status]')!;
 const tabs = [...document.querySelectorAll<HTMLButtonElement>('[data-trace-suite]')];
@@ -46,6 +48,13 @@ function syncExports() {
   cancel.hidden = !exporting;
 }
 
+function syncImport() {
+  importPanel.hidden = suite !== 'import';
+  importPanel.dataset.loaded = String(!!imported);
+  importPanel.querySelector<HTMLElement>('[data-trace-import-name]')!.textContent = imported?.name ?? 'Import a prepared drawing';
+  chooseFile.textContent = imported ? 'Replace JSON' : 'Choose JSON file';
+}
+
 function load(detail: object, name = selected?.id ?? imported?.name ?? 'imported-animation') {
   pendingName = name;
   loading = true;
@@ -80,8 +89,8 @@ function selectSuite(id: string, scenario?: string) {
   suite = group?.id ?? 'import';
   tabs.forEach(tab => tab.setAttribute('aria-pressed', String(tab.dataset.traceSuite === suite)));
   document.querySelector('[data-trace-list-title]')!.textContent = group ? `${group.title} scenarios` : 'Import JSON';
-  document.querySelector<HTMLElement>('[data-trace-empty]')!.hidden = !!group;
-  fileInput.closest<HTMLElement>('[data-trace-import]')!.hidden = !!group;
+  document.querySelector<HTMLElement>('.trace-player-sidebar')!.hidden = !group;
+  syncImport();
   selected = group?.scenarios.find(entry => entry.id === scenario) ?? group?.scenarios[0];
   if (selected) {
     figure.hidden = false;
@@ -96,7 +105,7 @@ function selectSuite(id: string, scenario?: string) {
     figure.hidden = true;
     syncExports();
     status.textContent = 'Choose a prepared drawing JSON file to play it locally.';
-    status.classList.remove('visually-hidden');
+    status.classList.add('visually-hidden');
   }
   scenarios.querySelectorAll<HTMLElement>('[data-trace-scenario]').forEach(button =>
     button.setAttribute('aria-current', String(button.dataset.traceScenario === selected?.id)));
@@ -105,6 +114,7 @@ function selectSuite(id: string, scenario?: string) {
 
 tabs.forEach(tab => tab.addEventListener('click', () => selectSuite(tab.dataset.traceSuite!)));
 theme.addEventListener('change', () => {applyTheme(theme.value); updateHash();});
+chooseFile.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
   if (file) {
@@ -122,6 +132,7 @@ figure.addEventListener('animation-ready', event => {
   [...theme.options].forEach(option => {option.disabled = !!option.value && !available.includes(option.value);});
   if (theme.value && !available.includes(theme.value)) {applyTheme(''); updateHash();}
   if (suite === 'import') imported = current;
+  syncImport();
   figure.hidden = false;
   syncExports();
   status.textContent = selected?.title ?? `Imported: ${current.name}`;

@@ -38,17 +38,22 @@ const state = () => page.evaluate(() => ({
   play: document.querySelector('[data-animation-play]').textContent,
   caption: document.querySelector('[data-animation-summary]').textContent,
 }));
-async function assertImportPlacement() {
+async function assertImportPlacement(filename) {
   await settle();
-  const {inside, picker, main, header} = await page.evaluate(() => {
+  const {inside, picker, main, header, layout} = await page.evaluate(() => {
     const picker = document.querySelector('[data-trace-import]'), main = document.querySelector('main');
     return {inside: main.contains(picker), picker: picker.getBoundingClientRect().toJSON(),
-      main: main.getBoundingClientRect().toJSON(), header: document.querySelector('.trace-player-subheader').getBoundingClientRect().toJSON()};
+      main: main.getBoundingClientRect().toJSON(), header: document.querySelector('.trace-player-subheader').getBoundingClientRect().toJSON(),
+      layout: document.querySelector('.trace-player-layout').getBoundingClientRect().toJSON()};
   });
-  assert.ok(inside && picker.width > 0 && picker.height > 0, 'Import picker and help are visible in the main workspace');
+  assert.ok(inside && picker.width > 0 && picker.height > 0, 'Import controls are visible in the main workspace');
   assert.ok(picker.x >= main.x - 1 && picker.right <= main.right + 1 && picker.y >= main.y - 1 && picker.bottom <= main.bottom + 1,
     'Import controls fit inside the main workspace');
   assert.ok(picker.y >= header.bottom - 1, 'Import controls stay below the subheader');
+  assert.equal(await page.locator('#td-section-nav').isVisible(), false, 'Import has no empty scenario sidebar');
+  assert.ok(Math.abs(main.x - layout.x) < 1 && Math.abs(main.right - layout.right) < 1, 'Import uses the full workspace width');
+  assert.equal(await page.locator('[data-trace-import]').getByRole('button', {name: filename ? /replace.*json/i : /choose.*json/i}).isVisible(), true);
+  if (filename) assert.equal(await page.locator('[data-trace-import]').getByText(filename, {exact: true}).isVisible(), true);
 }
 async function assertResponsiveSizing() {
   const viewport = page.viewportSize();
@@ -95,7 +100,7 @@ async function assertViewportFit(label) {
     const playerStyle = getComputedStyle(player);
     return {width: innerWidth, height: innerHeight, scrollY, scrollWidth: document.documentElement.scrollWidth,
       scrollHeight: document.documentElement.scrollHeight, mainScrollHeight: main.scrollHeight, mainHeight: main.clientHeight,
-      sidebarOverflows: sidebar.scrollHeight > sidebar.clientHeight + 1,
+      sidebarVisible: sidebar.getClientRects().length > 0, sidebarOverflows: sidebar.scrollHeight > sidebar.clientHeight + 1,
       playerBorder: Number.parseFloat(playerStyle.borderLeftWidth) + Number.parseFloat(playerStyle.borderRightWidth),
       controlsScrollWidth: controls.scrollWidth, controlsWidth: controls.clientWidth,
       gutter: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
@@ -111,14 +116,14 @@ async function assertViewportFit(label) {
   assert.ok(geometry.scrollHeight <= geometry.height + 1, `${label}: entire player page must fit without document scrolling`);
   assert.ok(geometry.mainScrollHeight <= geometry.mainHeight + 1, `${label}: main content must fit without an inner scrollbar`);
   assert.equal(geometry.scrollY, 0, `${label}: document stays at its initial position`);
-  assert.ok(geometry.subheader.x <= geometry.aside.x + 1 && geometry.subheader.right >= geometry.main.right - 1,
+  assert.ok(geometry.subheader.x <= (geometry.sidebarVisible ? geometry.aside.x : geometry.main.x) + 1 && geometry.subheader.right >= geometry.main.right - 1,
     `${label}: subheader spans both columns`);
   assert.ok(geometry.subheader.y >= geometry.header.bottom - 1 && geometry.title.y >= geometry.logo.bottom - 1,
     `${label}: compact subheader clears the global header and logo`);
   assert.ok(geometry.tabs.bottom - geometry.title.y <= 120, `${label}: title, description and tabs form a compact subheader`);
   assert.ok(geometry.aside.y - geometry.subheader.bottom <= 12 && geometry.main.y - geometry.subheader.bottom <= 12,
     `${label}: both columns start directly beneath the subheader`);
-  for (const name of ['main', 'aside', 'figure', 'surface', 'controls']) {
+  for (const name of ['main', 'figure', 'surface', 'controls', ...(geometry.sidebarVisible ? ['aside'] : [])]) {
     assert.ok(geometry[name].y >= geometry.subheader.bottom - 1, `${label}: ${name} is not covered by the subheader`);
     assert.ok(geometry[name].bottom <= geometry.footer.y + 1, `${label}: ${name} clears the footer`);
   }
@@ -139,7 +144,7 @@ async function assertViewportFit(label) {
   assert.ok(geometry.controlsScrollWidth <= geometry.controlsWidth + 1,
     `${label}: playback controls fit the narrower player without horizontal clipping`);
   assert.ok(geometry.surface.bottom <= geometry.controls.y + 1, `${label}: playback controls do not cover the drawing`);
-  assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1 && geometry.sidebar.bottom <= geometry.footer.y + 1,
+  if (geometry.sidebarVisible) assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1 && geometry.sidebar.bottom <= geometry.footer.y + 1,
     `${label}: scenario list stays between subheader and footer`);
   if (geometry.sidebarOverflows) assert.ok(geometry.footer.y - geometry.sidebar.bottom <= geometry.gutter + 1,
     `${label}: long scenario lists use the remaining screen height`);
@@ -326,11 +331,12 @@ try {
   assert.equal(await surface.isVisible(), false);assert.equal(await page.locator('[data-trace-scenario]').count(), 0);
   await assertImportPlacement();
   const beforeImport = requests.length;
-  await page.locator('[data-trace-file]').setInputFiles({name: 'my-scenario.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))});
+  const firstChooser = page.waitForEvent('filechooser');await page.getByRole('button', {name: /choose.*json/i}).click();
+  await (await firstChooser).setFiles({name: 'my-scenario.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))});
   await ready();assert.equal(await status.textContent(), 'Imported: my-scenario');
   assert.equal(requests.length, beforeImport, 'Local JSON import must not upload or fetch anything');
   assert.equal(await surface.getAttribute('aria-label'), exported.title);
-  await assertImportPlacement();
+  await assertImportPlacement('my-scenario');
   await page.setViewportSize({width: 1024, height: 768});await assertViewportFit('Imported drawing with file picker');
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   const previousDrawing = await surface.innerHTML(), previousState = await state();
@@ -340,15 +346,19 @@ try {
     assert.equal(await page.locator('[data-animation-error]').isVisible(), true, 'Failed imports show a visible error');
     assert.equal(await surface.innerHTML(), previousDrawing, 'Bad import preserves last-good drawing even when its error message changes available height');
     assert.deepEqual(await state(), previousState, 'Bad import preserves playback state');
+    assert.equal(await page.locator('[data-trace-import]').getByText('my-scenario', {exact: true}).isVisible(), true, 'Bad import preserves the loaded file name');
   }
   await page.locator('[data-trace-suite="docs"]').click();await ready();
+  assert.equal(await page.locator('#td-section-nav').isVisible(), true, 'Returning to a library restores its scenario sidebar');
   await page.locator('[data-trace-suite="import"]').click();await ready();
   assert.equal(await status.textContent(), 'Imported: my-scenario', 'Import has its own retained workspace');
   assert.equal(await page.locator('[data-animation-error]').isVisible(), false);
   const gzip = await readFile(new URL('../static/trace-player/scenarios/small/ordinary--Ordinal--Deferred.json.gz', import.meta.url));
-  await page.locator('[data-trace-file]').setInputFiles({name: 'second-scenario.json.gz', mimeType: 'application/gzip', buffer: gzip});
+  const replacementChooser = page.waitForEvent('filechooser');await page.getByRole('button', {name: /replace.*json/i}).click();
+  await (await replacementChooser).setFiles({name: 'second-scenario.json.gz', mimeType: 'application/gzip', buffer: gzip});
   await page.waitForFunction(() => document.querySelector('[data-trace-status]').textContent === 'Imported: second-scenario');
   assert.notEqual(await surface.getAttribute('aria-label'), exported.title);
+  await assertImportPlacement('second-scenario');
 
   // The unlisted page uses the same real header/footer partials and fonts as docs.
   const docs = await browser.newPage({viewport: {width: 1600, height: 1200}});

@@ -61,14 +61,15 @@
       <nav id="td-section-nav" class="td-sidebar-nav collapse d-md-block" aria-label="Scenarios">
         <h2 data-trace-list-title>Small Harness scenarios</h2>
         <div data-trace-scenarios></div>
-        <p data-trace-empty hidden>Imported drawings stay in this workspace.</p>
       </nav>
       </div>
     </aside>
     <main>
     <div data-trace-import hidden>
-      <label>Prepared drawing file <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-describedby="trace-import-help"></label>
+      <strong data-trace-import-name>Import a prepared drawing</strong>
       <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON. Files stay in your browser; nothing is uploaded.</small>
+      <button type="button" data-trace-choose aria-describedby="trace-import-help">Choose JSON file</button>
+      <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-label="Prepared drawing file" hidden>
     </div>
     {{ partial "animation-player.html" (dict "page" . "id" "lws-trace" "data" $scenario.source "title" $scenario.title) }}
     </main>
