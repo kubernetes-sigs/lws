@@ -194,3 +194,42 @@ versioned preview running, set `LWS_SITE_URL` and optionally
 
 Do not commit compiled JavaScript, generated media, `site/_generated/`, or
 `site/public/`.
+
+## Unlisted trace player
+
+`/disaggregated-set-trace-visualizer/` provides Small Harness, Large Harness,
+Documentation, and Import JSON workspaces using the same player, with the shared
+documentation header/footer and a scenario sidebar. It is omitted
+from navigation, search, and the sitemap and requests `noindex`; the URL is
+unlisted, **not access-controlled**.
+
+The 48 historical harness scenarios are prepared drawings, gzip-compressed and
+loaded one at a time. Events, explanations, metrics, and inspection details are
+preserved. See [provenance and regeneration](static/trace-player/README.md).
+Documentation illustrations reuse the existing data files.
+
+Import/download accepts the prepared drawing format (`.json` or `.json.gz`),
+with a 16 MiB decoded limit; files stay in the browser. Raw/normalized trace
+conversion remains in the separate authoring tool.
+
+The normal page follows the site's LWS Light/Dark/Auto setting. Add `?themes=all`
+**before** the hash to reveal the optional animation palettes, for example:
+`/disaggregated-set-trace-visualizer/?themes=all#suite=small&theme=mistral-dark`.
+The six original palettes share geometry; semantic metric colors stay green/red.
+Older two-color imports remain supported and only offer their LWS palettes.
+
+Export GIF or video saves **only the selected scenario** at 1920×1080 with the
+selected theme and speed. Playback and export share one SVG renderer. The browser
+decodes each SVG directly into a WebCodecs `VideoFrame`, without Canvas or screen
+capture. Video frames carry explicit timestamps: slow encoding cannot skip states.
+MP4 is preferred, with a clearly labeled WebM fallback where H.264 encoding is
+unavailable. Mediabunny muxes video and is loaded only for video export; GIF uses
+a locally bundled `gifenc` worker. Static holds are encoded once; motion is sampled.
+Current Chrome/Firefox are supported; unavailable WebCodecs/encoders produce a
+clear error, with scenario JSON download still available.
+Exports have cancellation and resource limits: 10 minutes; 128 MiB for video;
+64 MiB and 1,200 encoded frames for GIF. Increase speed or use video if needed.
+No generated media is committed and no frame or trace is uploaded.
+
+Hugo bundles this with the existing site build. Run `site/scripts/trace-player.browser.mjs`
+with `LWS_SITE_URL` and optionally `PLAYWRIGHT_CHANNEL=chrome` to test it.

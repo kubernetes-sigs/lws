@@ -1,0 +1,280 @@
+[
+  {
+    "id": "small",
+    "title": "Small Harness",
+    "scenarios": [
+      {
+        "id": "ordinary--Ordinal--Deferred",
+        "title": "Classical scaling and rolling update · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/ordinary--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "ordinary--Hash--Deferred",
+        "title": "Classical scaling and rolling update · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/ordinary--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "scale-up--Ordinal--Deferred",
+        "title": "Scale up during a rolling update · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/scale-up--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "scale-up--Hash--Deferred",
+        "title": "Scale up during a rolling update · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/scale-up--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "scale-down--Ordinal--Deferred",
+        "title": "Scale down during rollout: Deferred · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/scale-down--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "scale-down--Ordinal--Immediate",
+        "title": "Scale down during rollout: Immediate · Ordinal · Immediate · A → B",
+        "source": "/trace-player/scenarios/small/scale-down--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "scale-down--Hash--Deferred",
+        "title": "Scale down during rollout: Deferred · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/scale-down--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "scale-down--Hash--Immediate",
+        "title": "Scale down during rollout: Immediate · Hash · Immediate · A → B",
+        "source": "/trace-player/scenarios/small/scale-down--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "autoscaler-handoff--Ordinal--Deferred",
+        "title": "Static to autoscaler handoff · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/small/autoscaler-handoff--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "autoscaler-handoff--Hash--Deferred",
+        "title": "Static to autoscaler handoff · Hash · Deferred",
+        "source": "/trace-player/scenarios/small/autoscaler-handoff--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "rename--Ordinal--Deferred",
+        "title": "Rename both roles with no spare capacity · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/rename--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "rename--Hash--Deferred",
+        "title": "Rename both roles with no spare capacity · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/rename--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "rename-outage--Ordinal--Deferred",
+        "title": "Rename both roles with 100% unavailability · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/rename-outage--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "rename-outage--Hash--Deferred",
+        "title": "Rename both roles with 100% unavailability · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/rename-outage--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "restart-rollback--Ordinal--Deferred",
+        "title": "Interrupted rollout, restart and rollback · Ordinal · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/small/restart-rollback--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "restart-rollback--Hash--Deferred",
+        "title": "Interrupted rollout, restart and rollback · Hash · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/small/restart-rollback--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "subroles--Ordinal--Deferred",
+        "title": "Virtual roles: reassignment, scaling and rollout · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/subroles--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "subroles--Hash--Deferred",
+        "title": "Virtual roles: reassignment, scaling and rollout · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/subroles--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "native-restart--Ordinal--Deferred",
+        "title": "Leader and worker crash recovery · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/small/native-restart--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "native-restart--Hash--Deferred",
+        "title": "Leader and worker crash recovery · Hash · Deferred",
+        "source": "/trace-player/scenarios/small/native-restart--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "outage-integer--Ordinal--Deferred",
+        "title": "1P/2D rollout: maxSurge=0, maxUnavailable=1 · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/outage-integer--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "outage-percentage--Ordinal--Deferred",
+        "title": "1P/2D rollout: Prefill maxUnavailable=100% · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/outage-percentage--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "outage-integer--Hash--Deferred",
+        "title": "1P/2D rollout: maxSurge=0, maxUnavailable=1 · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/outage-integer--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "outage-percentage--Hash--Deferred",
+        "title": "1P/2D rollout: Prefill maxUnavailable=100% · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/outage-percentage--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "emergency--Ordinal--Deferred",
+        "title": "Emergency surge and availability fallback · Ordinal · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/small/emergency--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "emergency--Hash--Deferred",
+        "title": "Emergency surge and availability fallback · Hash · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/small/emergency--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-rename--Ordinal--Deferred",
+        "title": "Larger rename with independent old budgets · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/large-rename--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-rename--Hash--Deferred",
+        "title": "Larger rename with independent old budgets · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/small/large-rename--Hash--Deferred.json.gz"
+      }
+    ]
+  },
+  {
+    "id": "large",
+    "title": "Large Harness",
+    "scenarios": [
+      {
+        "id": "large-scale-up-ab--Ordinal--Immediate",
+        "title": "Scale up during a rollout · Ordinal · Immediate · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-up-ab--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-up-abc--Ordinal--Immediate",
+        "title": "Scale up during a rollout · Ordinal · Immediate · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-up-abc--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-up-ab--Hash--Immediate",
+        "title": "Scale up during a rollout · Hash · Immediate · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-up-ab--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-up-abc--Hash--Immediate",
+        "title": "Scale up during a rollout · Hash · Immediate · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-up-abc--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-down-ab--Ordinal--Deferred",
+        "title": "Scale down during a rollout · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-down-ab--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-scale-down-abc--Ordinal--Deferred",
+        "title": "Scale down during a rollout · Ordinal · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-down-abc--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-scale-down-ab--Ordinal--Immediate",
+        "title": "Scale down during a rollout · Ordinal · Immediate · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-down-ab--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-down-abc--Ordinal--Immediate",
+        "title": "Scale down during a rollout · Ordinal · Immediate · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-down-abc--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-down-ab--Hash--Deferred",
+        "title": "Scale down during a rollout · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-down-ab--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-scale-down-abc--Hash--Deferred",
+        "title": "Scale down during a rollout · Hash · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-down-abc--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-scale-down-ab--Hash--Immediate",
+        "title": "Scale down during a rollout · Hash · Immediate · A → B",
+        "source": "/trace-player/scenarios/large/large-scale-down-ab--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "large-scale-down-abc--Hash--Immediate",
+        "title": "Scale down during a rollout · Hash · Immediate · A → B → C",
+        "source": "/trace-player/scenarios/large/large-scale-down-abc--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "large-ordinary-ab--Ordinal--Deferred",
+        "title": "Normal rollout with 37 Prefill and 19 Decode Pods · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-ordinary-ab--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-ordinary-abc--Ordinal--Deferred",
+        "title": "Normal rollout with 37 Prefill and 19 Decode Pods · Ordinal · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-ordinary-abc--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-ordinary-ab--Hash--Deferred",
+        "title": "Normal rollout with 37 Prefill and 19 Decode Pods · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-ordinary-ab--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-ordinary-abc--Hash--Deferred",
+        "title": "Normal rollout with 37 Prefill and 19 Decode Pods · Hash · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-ordinary-abc--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-subroles-ab--Ordinal--Deferred",
+        "title": "Independent fast/bulk virtual roles · Ordinal · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-subroles-ab--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-subroles-abc--Ordinal--Deferred",
+        "title": "Independent fast/bulk virtual roles · Ordinal · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-subroles-abc--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "large-subroles-ab--Hash--Deferred",
+        "title": "Independent fast/bulk virtual roles · Hash · Deferred · A → B",
+        "source": "/trace-player/scenarios/large/large-subroles-ab--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "large-subroles-abc--Hash--Deferred",
+        "title": "Independent fast/bulk virtual roles · Hash · Deferred · A → B → C",
+        "source": "/trace-player/scenarios/large/large-subroles-abc--Hash--Deferred.json.gz"
+      }
+    ]
+  },
+  {
+    "id": "docs",
+    "title": "Documentation",
+    "scenarios": [
+      {
+        "id": "gating",
+        "title": "Revision gating with llm-d",
+        "source": "/animations/gating.json"
+      },
+      {
+        "id": "scaling-down",
+        "title": "Deferred versus Immediate scale-down",
+        "source": "/animations/scaling-down.json"
+      },
+      {
+        "id": "fractional",
+        "title": "Fractional rollout window",
+        "source": "/animations/fractional.json"
+      },
+      {
+        "id": "scaling-up",
+        "title": "Deferred versus Immediate scale-up",
+        "source": "/animations/scaling-up.json"
+      }
+    ]
+  }
+]

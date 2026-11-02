@@ -1,0 +1,302 @@
+// LWS_SITE_URL=http://127.0.0.1:18446 PLAYWRIGHT_CHANNEL=chrome node site/scripts/trace-player.browser.mjs
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {chromium, firefox} from '@playwright/test';
+
+const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
+const route = '/disaggregated-set-trace-visualizer/';
+const themes = ['lws','lws-dark','mistral-light','mistral-dark','llm-d-light','llm-d-dark'];
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({headless: true,
+  ...(process.env.PLAYWRIGHT_CHANNEL ? {channel: process.env.PLAYWRIGHT_CHANNEL} : {})});
+const page = await browser.newPage({reducedMotion: 'reduce', viewport: {width: 1600, height: 1200}});
+const requests = [], errors = [];
+page.on('request', request => requests.push(request.url()));
+page.on('pageerror', error => errors.push(error.message));
+const status = page.locator('[data-trace-status]'), surface = page.locator('[data-animation-svg]');
+const ready = () => page.waitForFunction(() => !document.querySelector('[data-trace-export]').disabled);
+const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+async function visit(suffix = '') {
+  const response = await page.goto(origin + route + suffix);
+  assert.ok([200,304].includes((response ?? await page.reload()).status()));
+  await ready();await page.evaluate(() => document.fonts.ready);await settle();
+}
+async function select(group, entry) {
+  await page.locator(`[data-trace-suite="${group.id}"]`).click();
+  await page.locator(`[data-trace-scenario="${entry.id}"]`).click();
+  await page.waitForFunction(title => document.querySelector('[data-trace-status]').textContent === title, entry.title);
+  assert.equal(await page.locator(`[data-trace-scenario="${entry.id}"]`).getAttribute('aria-current'), 'true');
+  assert.equal(await page.locator('[data-animation-error]').isVisible(), false);
+}
+async function imageHash() {
+  return createHash('sha256').update(await surface.screenshot()).digest('hex');
+}
+const state = () => page.evaluate(() => ({
+  time: document.querySelector('[data-animation-seek]').value,
+  speed: document.querySelector('[data-animation-speed]').value,
+  play: document.querySelector('[data-animation-play]').textContent,
+  caption: document.querySelector('[data-animation-summary]').textContent,
+}));
+async function assertResponsiveSizing() {
+  const viewport = page.viewportSize();
+  for (const width of [2048, 1280, 390]) {
+    await page.setViewportSize({width, height: 900});await settle();
+    const geometry = await page.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+      const surface = document.querySelector('[data-animation-svg]');
+      return {layout: rect('.trace-player-layout'), main: rect('main'), toolbar: rect('.trace-player-toolbar'),
+        figure: rect('.lws-animation'), surface: rect('[data-animation-svg]'), native: [surface.viewBox.baseVal.width, surface.viewBox.baseVal.height],
+        scrollWidth: document.documentElement.scrollWidth};
+    });
+    const expected = Math.min(1200, geometry.layout.right - geometry.main.x);
+    assert.ok(Math.abs(geometry.main.width - expected) < 1, `${width}px: main must cap at 1200px and fill narrower columns`);
+    for (const name of ['toolbar', 'figure']) {
+      assert.ok(Math.abs(geometry[name].x - geometry.main.x) < 1 && Math.abs(geometry[name].width - expected) < 1,
+        `${width}px: ${name} must align with the capped main column`);
+    }
+    assert.ok(geometry.surface.width <= expected && geometry.surface.width >= expected - 2,
+      `${width}px: SVG must fill the player inside its border`);
+    assert.ok(Math.abs(geometry.surface.width / geometry.surface.height - 16 / 9) < .01, `${width}px: preserve SVG aspect ratio`);
+    assert.deepEqual(geometry.native, [1920, 1080], `${width}px: CSS sizing must not reduce drawing resolution`);
+    assert.ok(geometry.scrollWidth <= width + 1, `${width}px: no horizontal overflow`);
+  }
+  await page.setViewportSize(viewport);await settle();
+}
+async function assertLayout(label, mobile = false) {
+  await page.waitForFunction(() => ['--lws-header-height', '--lws-logo-bottom', '--lws-footer-height', '--lws-subheader-height']
+    .every(name => Number.parseFloat(document.documentElement.style.getPropertyValue(name)) > 0));
+  let subheaderDocumentTop;
+  for (const fraction of [0, .5, 1]) {
+    await page.evaluate(fraction => window.scrollTo({top: (document.documentElement.scrollHeight - innerHeight) * fraction, behavior: 'instant'}), fraction);
+    await settle();
+    const geometry = await page.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+      return {width: innerWidth, height: innerHeight, scrollY, scroll: document.documentElement.scrollWidth, footer: rect('footer'),
+        header: rect('.td-navbar'), logo: rect('.navbar-logo'), sidebar: rect('#td-section-nav'), title: rect('h1'),
+        subheader: rect('.trace-player-subheader'), tabs: rect('.trace-player-tabs'), aside: rect('.trace-player-sidebar'), main: rect('main')};
+    });
+    assert.ok(geometry.scroll <= geometry.width + 1, `${label}: horizontal overflow`);
+    assert.ok(Math.abs(geometry.footer.x) < 1 && Math.abs(geometry.footer.right - geometry.width) < 1, `${label}: full-width footer`);
+    if (fraction === 0) {
+      subheaderDocumentTop = geometry.subheader.y;
+      assert.ok(geometry.subheader.x <= geometry.aside.x + 1 && geometry.subheader.right >= geometry.main.right - 1,
+        `${label}: subheader must span both content columns`);
+      assert.ok(geometry.aside.y >= geometry.subheader.bottom && geometry.main.y >= geometry.subheader.bottom,
+        `${label}: both columns must start below the subheader`);
+      assert.ok(geometry.title.y >= geometry.subheader.y && geometry.tabs.bottom <= geometry.subheader.bottom + 1,
+        `${label}: title and tabs must belong to the full-width subheader`);
+    }
+    assert.ok(Math.abs(geometry.subheader.y + geometry.scrollY - subheaderDocumentTop) < 1,
+      `${label}: subheader must scroll naturally, not stick or jump`);
+    if (!mobile) {
+      assert.ok(geometry.sidebar.y >= Math.max(geometry.header.bottom, geometry.logo.bottom) - 1, `${label}: sidebar hidden under header at scroll ${fraction}`);
+      assert.ok(geometry.sidebar.bottom <= geometry.footer.y + 1, `${label}: sidebar overlaps footer at scroll ${fraction}`);
+      assert.ok(geometry.sidebar.bottom <= geometry.height + 1, `${label}: sidebar end is clipped below viewport at scroll ${fraction}`);
+    } else if (fraction === 0) {
+      assert.ok(geometry.title.y >= geometry.header.bottom - 1, `${label}: title under header`);
+      assert.ok(geometry.title.y - geometry.header.bottom < 70, `${label}: excessive gap below mobile header`);
+    }
+  }
+}
+const styles = (target, selector, properties) => target.locator(selector).evaluate((node, properties) => {
+  const computed = getComputedStyle(node);
+  return Object.fromEntries(properties.map(name => [name, computed.getPropertyValue(name)]));
+}, properties);
+async function settledScroll() {
+  await page.evaluate(() => new Promise(resolve => {
+    let previous = '', stable = 0;
+    const check = () => {
+      const current = `${scrollY}/${document.querySelector('#td-section-nav').scrollTop}`;
+      stable = current === previous ? stable + 1 : 0;previous = current;
+      if (stable >= 4) resolve();else requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  }));
+}
+async function assertNaturalScrolling() {
+  await page.evaluate(() => {window.scrollTo({top: 0, behavior: 'instant'});document.querySelector('#td-section-nav').scrollTop = 0;});
+  await settledScroll();
+  const navigation = page.locator('#td-section-nav'), box = await navigation.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 100));
+  await page.mouse.wheel(0, 240);await settledScroll();
+  assert.ok(await navigation.evaluate(node => node.scrollTop > 0), 'Wheel over sidebar scrolls its list');
+  assert.equal(await page.evaluate(() => scrollY), 0, 'Sidebar wheel must not move the document');
+  await navigation.evaluate(node => {node.scrollTop = node.scrollHeight;});await settledScroll();
+  const last = await page.locator('[data-trace-scenario]').last().boundingBox();
+  assert.ok(last.y >= box.y - 1 && last.y + last.height <= Math.min(box.y + box.height, page.viewportSize().height) + 1,
+    'Last sidebar item must be visible after scrolling the list to its end');
+  await page.mouse.wheel(0, 240);await settledScroll();
+  assert.equal(await page.evaluate(() => scrollY), 0, 'Sidebar end must not chain wheel events into the document');
+  const before = await page.evaluate(() => ({y: scrollY, heading: document.querySelector('.trace-player-subheader').getBoundingClientRect().y,
+    main: document.querySelector('main').getBoundingClientRect().y, height: document.querySelector('#td-section-nav').clientHeight}));
+  const main = await page.locator('main').boundingBox();
+  await page.mouse.move(main.x + main.width / 2, Math.min(main.y + 160, page.viewportSize().height - 80));
+  await page.mouse.wheel(0, 100);await settledScroll();
+  const after = await page.evaluate(() => ({y: scrollY, heading: document.querySelector('.trace-player-subheader').getBoundingClientRect().y,
+    main: document.querySelector('main').getBoundingClientRect().y, height: document.querySelector('#td-section-nav').clientHeight}));
+  assert.ok(after.y > before.y, 'Wheel over main must scroll the document normally');
+  assert.ok(Math.abs(before.heading - after.heading - (after.y - before.y)) < 1, 'Subheader cannot jump during document scrolling');
+  assert.ok(Math.abs(before.main - after.main - (after.y - before.y)) < 1, 'Main cannot jump during document scrolling');
+  assert.equal(after.height, before.height, 'Sidebar height must stay stable while scrolling');
+}
+
+try {
+  await visit();
+  assert.equal(await page.locator('h1').textContent(), 'DisaggregatedSet Trace Player');
+  assert.match(await page.locator('meta[name=robots]').getAttribute('content'), /noindex/);
+  assert.doesNotMatch(await (await page.request.get(origin + '/sitemap.xml')).text(), /disaggregated-set-trace-visualizer/);
+  assert.ok(requests.filter(url => url.includes('/scenarios/')).every(url => url.includes('ordinary--Ordinal--Deferred')),
+    'Only the selected scenario is fetched on entry');
+  assert.ok(!requests.some(url => /trace-export\.|trace-gif-worker\./.test(url)), 'Media encoders stay unloaded until export');
+  assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), false, 'Extra themes are hidden on the ordinary URL');
+  await assertResponsiveSizing();
+  const catalog = JSON.parse(await page.locator('#trace-player-catalog').textContent());
+  assert.deepEqual(catalog.map(group => group.scenarios.length), [28, 20, 4]);
+  for (const group of catalog) {
+    await page.locator(`[data-trace-suite="${group.id}"]`).click();
+    assert.equal(await page.locator('[data-trace-scenario]').count(), group.scenarios.length);
+    assert.equal(await page.locator('[data-trace-scenario]').first().evaluate(node => node.tagName), 'BUTTON');
+    for (const entry of group.scenarios) {
+      await page.locator(`[data-trace-scenario="${entry.id}"]`).click();
+      await page.waitForFunction(title => document.querySelector('[data-trace-status]').textContent === title, entry.title);
+      assert.equal(await page.locator('[data-animation-error]').isVisible(), false);
+      assert.ok(Number(await page.locator('[data-animation-seek]').getAttribute('max')) > 0);
+      assert.equal(await page.locator(`[data-trace-scenario="${entry.id}"]`).getAttribute('aria-current'), 'true');
+    }
+  }
+
+  // Download/import is an exact local prepared-JSON round-trip, not an upload.
+  const downloadPromise = page.waitForEvent('download');await page.locator('[data-trace-export]').click();
+  const download = await downloadPromise, exported = JSON.parse(await readFile(await download.path(), 'utf8'));
+  assert.equal(exported.version, 1);assert.deepEqual(exported.themes, themes);
+  assert.deepEqual([exported.width, exported.height], [1920, 1080], 'Prepared JSON retains native 1080p dimensions');
+  await page.locator('[data-trace-suite="import"]').click();
+  assert.equal(await surface.isVisible(), false);assert.equal(await page.locator('[data-trace-scenario]').count(), 0);
+  const beforeImport = requests.length;
+  await page.locator('[data-trace-file]').setInputFiles({name: 'my-scenario.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))});
+  await ready();assert.equal(await status.textContent(), 'Imported: my-scenario');
+  assert.equal(requests.length, beforeImport, 'Local JSON import must not upload or fetch anything');
+  assert.equal(await surface.getAttribute('aria-label'), exported.title);
+  const previousImage = await imageHash();
+  for (const invalid of ['{broken', JSON.stringify({version: 1, scenarios: []})]) {
+    await page.locator('[data-trace-file]').setInputFiles({name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(invalid)});
+    await page.waitForFunction(() => /not valid JSON|Unsupported animation/.test(document.querySelector('[data-trace-status]').textContent));
+    assert.equal(await page.locator('[data-animation-error]').isVisible(), true, 'Failed imports show a visible error');
+    assert.equal(await imageHash(), previousImage, 'Bad import preserves last-good drawing');
+  }
+  await page.locator('[data-trace-suite="docs"]').click();await ready();
+  await page.locator('[data-trace-suite="import"]').click();await ready();
+  assert.equal(await status.textContent(), 'Imported: my-scenario', 'Import has its own retained workspace');
+  assert.equal(await page.locator('[data-animation-error]').isVisible(), false);
+  const gzip = await readFile(new URL('../static/trace-player/scenarios/small/ordinary--Ordinal--Deferred.json.gz', import.meta.url));
+  await page.locator('[data-trace-file]').setInputFiles({name: 'second-scenario.json.gz', mimeType: 'application/gzip', buffer: gzip});
+  await page.waitForFunction(() => document.querySelector('[data-trace-status]').textContent === 'Imported: second-scenario');
+  assert.notEqual(await surface.getAttribute('aria-label'), exported.title);
+
+  // The unlisted page uses the same real header/footer partials and fonts as docs.
+  const docs = await browser.newPage({viewport: {width: 1600, height: 1200}});
+  await docs.goto(origin + (process.env.LWS_DOCS_PREFIX ?? '/main') + '/docs/concepts/disaggregatedset/rollout-strategy/');
+  await docs.evaluate(() => document.fonts.ready);
+  await docs.waitForFunction(() => !document.querySelector('[data-animation-play]').disabled);
+  const shell = target => target.evaluate(() => ({
+    logo: document.querySelector('.navbar-logo').getAttribute('src'),
+    links: [...document.querySelectorAll('.navbar-nav > .nav-item:not(.docs-version-nav) a')].map(node => [node.textContent.trim(), node.getAttribute('href')]),
+    headerFont: getComputedStyle(document.querySelector('.td-navbar')).fontFamily,
+    footerFont: getComputedStyle(document.querySelector('footer')).fontFamily,
+    footer: document.querySelector('footer').textContent.replace(/\s+/g, ' ').trim(),
+  }));
+  assert.deepEqual(await shell(page), await shell(docs));
+  const scrollProperties = ['scrollbar-width','scrollbar-color','scrollbar-gutter','overscroll-behavior-y','padding-right'];
+  const scrollStyle = await styles(page, '#td-section-nav', scrollProperties);
+  assert.deepEqual(scrollStyle, await styles(docs, '#td-section-nav', scrollProperties), 'Scrollbar styling must match shared docs');
+  // The OS may suppress overlay scrollbars; compare with the real docs above.
+  assert.equal(scrollStyle['overscroll-behavior-y'], 'contain');
+  const controlProperties = ['font-family','font-size','padding-top','padding-right','padding-bottom','padding-left','border-radius','min-height'];
+  for (const control of ['play','previous','next','speed','fullscreen']) {
+    assert.deepEqual(await styles(page, `[data-animation-${control}]`, controlProperties),
+      await styles(docs, `[data-animation-${control}]`, controlProperties), `${control}: preserve shared player controls`);
+  }
+  await docs.evaluate(() => {document.documentElement.dataset.bsTheme = 'dark';});
+  const darkScrollStyle = await styles(docs, '#td-section-nav', scrollProperties);
+  assert.notEqual(darkScrollStyle['scrollbar-color'], scrollStyle['scrollbar-color'], 'Shared scrollbar must follow the site color theme');
+  await docs.close();
+  await select(catalog[0], catalog[0].scenarios[0]);await assertLayout('Desktop 1200px');
+  await page.setViewportSize({width: 1600, height: 900});await assertLayout('Desktop 900px');await assertNaturalScrolling();
+  const documentScroll = await page.evaluate(() => scrollY);
+  await page.locator('[data-trace-suite="large"]').click();await ready();
+  assert.equal(await page.locator('#td-section-nav').evaluate(node => node.scrollTop), 0, 'Switching suites resets only the sidebar list');
+  assert.equal(await page.evaluate(() => scrollY), documentScroll, 'Switching suites must not jump the document');
+  await page.setViewportSize({width: 1600, height: 1200});
+  const siteLight = await imageHash();
+  await page.locator('#bd-theme').click();
+  await page.locator('[data-bs-theme-value="dark"]').click();await settle();
+  assert.equal(await page.locator('html').getAttribute('data-bs-theme'), 'dark');
+  assert.deepEqual(await styles(page, '#td-section-nav', scrollProperties), darkScrollStyle, 'Dark scrollbar must match shared docs');
+  assert.notEqual(await imageHash(), siteLight, 'Ordinary URL follows the site dark theme');
+  await page.locator('#bd-theme').click();
+  await page.locator('[data-bs-theme-value="light"]').click();await settle();
+  assert.equal(await imageHash(), siteLight, 'Ordinary URL restores the site light theme');
+
+  // Extra themes require an explicit query flag, retain state, and use distinct real palettes.
+  await visit('?themes=all#suite=docs&theme=mistral-dark');
+  assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), true);
+  assert.equal(await page.locator('[data-trace-theme]').inputValue(), 'mistral-dark');
+  for (const group of [catalog[0], catalog[1], catalog[2]]) {
+    await select(group, group.scenarios[0]);
+    await page.locator('[data-animation-next]').click();await page.locator('[data-animation-speed]').selectOption('2');
+    const original = await state(), hashes = new Set();
+    for (const theme of themes) {
+      await page.locator('[data-trace-theme]').selectOption(theme);await settle();
+      assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), theme);
+      assert.deepEqual(await state(), original, `${group.id}: theme changes preserve playback state`);
+      hashes.add(await imageHash());
+    }
+    assert.equal(hashes.size, themes.length, `${group.id}: all six palettes must be visually distinct`);
+    const url = new URL(page.url());assert.equal(url.searchParams.get('themes'), 'all');
+    assert.equal(new URLSearchParams(url.hash.slice(1)).get('theme'), 'llm-d-dark');
+  }
+  await page.locator('[data-trace-suite="small"]').click();await ready();
+  assert.equal(await page.locator('[data-trace-theme]').inputValue(), 'llm-d-dark', 'Theme survives suite changes');
+  await page.reload();await ready();
+  assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), 'llm-d-dark', 'Theme survives URL restore');
+  await visit('?themes=all#suite=docs&theme=not-a-theme');
+  assert.equal(await page.locator('[data-trace-theme]').inputValue(), '');
+  assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), null);
+  assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).has('theme'), false, 'Unknown URL theme is removed');
+  const fallback = await imageHash();await page.locator('[data-trace-theme]').selectOption('lws');await settle();
+  assert.equal(await imageHash(), fallback, 'Invalid theme falls back to normal site light palette');
+  await page.locator('[data-trace-theme]').selectOption('mistral-dark');
+  await page.locator('[data-trace-suite="import"]').click();
+  const legacy = {version: 1, width: 1920, height: 1080, title: 'Legacy pair',
+    primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: ['#ff0000', '#00ff00']}],
+    frames: [{duration: 4, caption: 'Legacy palette compatibility.', items: [0]}]};
+  await page.locator('[data-trace-file]').setInputFiles({name: 'legacy.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(legacy))});
+  await ready();
+  assert.equal(await page.locator('[data-trace-theme]').inputValue(), '', 'Unsupported current theme clears on legacy import');
+  for (const name of themes.slice(2)) assert.equal(await page.locator(`[data-trace-theme] option[value="${name}"]`).evaluate(option => option.disabled), true);
+  const pixel = () => surface.locator('defs > rect').first().getAttribute('fill');
+  await page.locator('[data-trace-theme]').selectOption('lws-dark');await settle();
+  assert.deepEqual(await pixel(), '#00ff00', 'Explicit legacy LWS dark overrides global light');
+  await page.locator('[data-trace-theme]').selectOption('lws');await settle();
+  assert.deepEqual(await pixel(), '#ff0000');
+  await visit('#suite=docs&theme=mistral-dark');
+  assert.equal(await page.locator('[data-trace-theme-control]').isVisible(), false);
+  assert.equal(await page.locator('[data-animation-source]').getAttribute('data-animation-theme'), null, 'Hash alone cannot enable extra themes');
+
+  // Mobile uses the existing header toggle; sidebar scrolling does not widen or cover the page.
+  await page.setViewportSize({width: 390, height: 844});await visit();
+  const navigation = page.locator('#td-section-nav'), toggle = page.locator('.docs-section-toggle');
+  assert.equal(await navigation.isVisible(), false);await assertLayout('Mobile', true);
+  await page.evaluate(() => window.scrollTo({top: 0, behavior: 'instant'}));
+  await toggle.click();await navigation.waitFor({state: 'visible'});
+  await page.waitForFunction(() => document.querySelector('.docs-section-toggle').getAttribute('aria-expanded') === 'true');
+  assert.ok((await navigation.boundingBox()).height <= 844 * .45 + 1);
+  const last = catalog[0].scenarios.at(-1);
+  await page.locator(`[data-trace-scenario="${last.id}"]`).click();
+  await page.waitForFunction(title => document.querySelector('[data-trace-status]').textContent === title, last.title);
+  await toggle.click();await navigation.waitFor({state: 'hidden'});await assertLayout('Mobile selected', true);
+  assert.deepEqual(errors, []);
+  if (process.env.LWS_SCREENSHOT_DIR) await page.screenshot({path: `${process.env.LWS_SCREENSHOT_DIR}/hidden-trace-player-mobile.png`, fullPage: true});
+  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, responsive 1200px cap with native 1080p drawing, full-width subheader, shared controls and thin scrollbars, contained sidebar wheel, natural main scrolling, footer clearance, and mobile navigation.');
+} finally {await browser.close();}

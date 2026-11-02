@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="{{ .Site.Language.LanguageCode | default "en" }}">
+<head>
+  {{ partial "head.html" . }}
+  {{- $css := resources.Get "scss/_trace_player.scss" | toCSS | minify | fingerprint -}}
+  <link rel="stylesheet" href="{{ $css.RelPermalink }}" integrity="{{ $css.Data.Integrity }}">
+</head>
+<body class="td-page trace-player-page">
+  <header>{{ partial "navbar.html" . }}</header>
+  {{- $catalog := .Site.Data.trace_player -}}
+  {{- if not $catalog }}{{ errorf "Trace visualizer requires site/data/trace_player.json" }}{{ end -}}
+  {{- $initial := index $catalog 0 -}}
+  {{- $scenario := index $initial.scenarios 0 -}}
+  <div class="container-fluid td-outer">
+  <div class="td-main trace-player-shell">
+    <section class="trace-player-subheader" aria-labelledby="trace-player-title">
+      <h1 id="trace-player-title">{{ .Title }}</h1>
+      {{ .Content }}
+      <div class="trace-player-tabs" role="group" aria-label="Trace libraries">
+        {{- range $catalog }}
+        <button type="button" data-trace-suite="{{ .id }}" aria-pressed="{{ eq .id $initial.id }}">{{ .title }}</button>
+        {{- end }}
+        <button type="button" data-trace-suite="import" aria-pressed="false">Import JSON</button>
+      </div>
+    </section>
+    <div class="trace-player-layout">
+    <aside class="td-sidebar trace-player-sidebar">
+      <div class="td-sidebar__inner">
+      <nav id="td-section-nav" class="td-sidebar-nav collapse d-md-block" aria-label="Scenarios">
+        <h2 data-trace-list-title>Small Harness scenarios</h2>
+        <div data-trace-scenarios></div>
+        <p data-trace-empty hidden>Imported drawings stay in this workspace.</p>
+      </nav>
+      </div>
+    </aside>
+    <main>
+    <div class="trace-player-toolbar">
+      <div data-trace-import hidden>
+        <label>Prepared drawing file <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-describedby="trace-import-help"></label>
+        <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON.</small>
+      </div>
+      <label data-trace-theme-control hidden>Animation theme
+        <select data-trace-theme aria-label="Animation theme">
+          <option value="">Follow site theme</option>
+          <option value="lws">LWS light</option><option value="lws-dark">LWS dark</option>
+          <option value="mistral-light">Mistral light</option><option value="mistral-dark">Mistral dark</option>
+          <option value="llm-d-light">llm-d light</option><option value="llm-d-dark">llm-d dark</option>
+        </select>
+      </label>
+      <div class="trace-player-exports" role="group" aria-label="Export scenario">
+        <button type="button" data-trace-export disabled>Download scenario JSON</button>
+        <button type="button" data-trace-media="gif" disabled>Export GIF</button>
+        <button type="button" data-trace-media="video" title="MP4 when supported by your browser; otherwise WebM" disabled>Export video</button>
+      </div>
+      <button type="button" data-trace-cancel hidden>Cancel export</button>
+    </div>
+    <output data-trace-export-status role="status" aria-live="polite"></output>
+    <output data-trace-status role="status" aria-live="polite">Loading {{ $scenario.title }}…</output>
+    {{ partial "animation-player.html" (dict "page" . "id" "lws-trace" "data" $scenario.source "title" $scenario.title "caption" "Values, events, and explanations come from the selected prepared source.") }}
+    </main>
+    </div>
+  </div>
+  {{ partial "footer.html" . }}
+  </div>
+  {{ partial "scripts.html" . }}
+  <script type="application/json" id="trace-player-catalog">{{ $catalog | jsonify | safeJS }}</script>
+  {{- $export := resources.Get "js/trace-export.ts" | js.Build (dict "targetPath" "js/trace-export.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  {{- $worker := resources.Get "js/trace-gif-worker.ts" | js.Build (dict "targetPath" "js/trace-gif-worker.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  {{- $video := resources.Get "js/trace-video.ts" | js.Build (dict "targetPath" "js/trace-video.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  <script type="application/json" id="trace-export-assets">{{ dict "module" $export.RelPermalink "worker" $worker.RelPermalink "video" $video.RelPermalink | jsonify | safeJS }}</script>
+  {{- $app := resources.Get "js/trace-player.ts" | js.Build (dict "targetPath" "js/trace-player.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  <script type="module" src="{{ $app.RelPermalink }}" integrity="{{ $app.Data.Integrity }}"></script>
+</body>
+</html>

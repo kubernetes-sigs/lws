@@ -101,6 +101,12 @@ footer {
   }
 
   .td-sidebar-nav {
+    // Use one unobtrusive native scrollbar for docs and the unlisted player.
+    scrollbar-width: thin;
+    scrollbar-color: var(--bs-secondary-color) transparent;
+    scrollbar-gutter: stable;
+    overscroll-behavior-y: contain;
+
     .td-sidebar-link {
       line-height: 1.25;
       text-wrap: balance;

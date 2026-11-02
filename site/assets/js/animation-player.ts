@@ -1,6 +1,6 @@
 /** Playback of packaged, precomputed drawings. No controller or routing logic. */
-import {SvgDrawing} from './animation-svg.ts';
-type Color = string | [string, string];
+import {SvgDrawing, drawingTimeline, position} from './animation-svg.ts';
+type Color = string | string[];
 type Point = [number, number];
 interface Hit {x: number; y: number; width: number; height: number; label: string; detail: string}
 interface Paint {fill?: Color; stroke?: Color; lineWidth?: number; opacity?: number}
@@ -12,22 +12,55 @@ export type Primitive = Paint & (
 );
 export interface Drawing {
   version: 1; width: number; height: number; title: string;
+  themes?: string[];
   primitives: Primitive[];
   hits?: Hit[];
   frames: {duration: number; caption: string; items: number[]; hits?: number[]}[];
   motions?: {primitive: number; keyframes: [number, number, number][]}[];
 }
+export const MAX_DRAWING_BYTES = 16 * 1024 * 1024;
+type LoadRequest = ({source: string} | {file: File} | {drawing: unknown}) & {requestId?: string | number};
 
-/** Structural bounds for packaged assets, not an arbitrary trace-import format. */
+/** Bound both compressed input and decoded JSON before allocating/parsing text. */
+export async function readDrawingJSON(stream: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<unknown> {
+  const bounded = async (body: ReadableStream<Uint8Array> | null): Promise<Blob> => {
+    if (!body) throw new Error('Animation file is empty.');
+    const reader = (signal ? body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), {signal}) : body).getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) return new Blob(chunks as BlobPart[]);
+        size += value.byteLength;
+        if (size > MAX_DRAWING_BYTES) throw new Error('Animation JSON must fit within 16 MiB.');
+        chunks.push(value);
+      }
+    } catch (error) {await reader.cancel().catch(() => {}); throw error;}
+    finally {reader.releaseLock();}
+  };
+  let blob = await bounded(stream);
+  const magic = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+  if (magic[0] === 0x1f && magic[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser needs an uncompressed JSON file.');
+    blob = await bounded(blob.stream().pipeThrough(new DecompressionStream('gzip')));
+  }
+  try {return JSON.parse(await blob.text());}
+  catch {throw new Error('Animation file is not valid JSON.');}
+}
+
+/** Structural bounds for prepared drawings, not an arbitrary trace-import format. */
 export function parseDrawing(value: unknown): Drawing {
   const fail = (): never => {throw new Error('Unsupported animation drawing.');};
   const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : fail();
   const number = (v: unknown, min = -100_000, max = 100_000): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
   const list = (v: unknown, limit: number): unknown[] => Array.isArray(v) && v.length <= limit ? v : fail();
+  const data = record(value), themes = data.themes === undefined ? undefined : list(data.themes, 8);
+  if (themes && (!themes.length || new Set(themes).size !== themes.length
+    || !themes.every(theme => typeof theme === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(theme)))) fail();
   const color = (v: unknown): boolean => typeof v === 'string' ? /^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(v)
-    : Array.isArray(v) && v.length === 2 && v.every(c => typeof c === 'string' && /^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(c));
+    : Array.isArray(v) && v.length === (themes?.length ?? 2) && v.every(c => typeof c === 'string' && /^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(c));
   const text = (v: unknown, max: number): boolean => typeof v === 'string' && v.length <= max;
-  const data = record(value);
   if (data.version !== 1 || !number(data.width, 1, 4096) || !number(data.height, 1, 4096) || !text(data.title, 500)) fail();
   const primitives = list(data.primitives, 100_000);
   for (const raw of primitives) {
@@ -104,32 +137,28 @@ export function parseDrawing(value: unknown): Drawing {
   return legacyHits ? {...data, hits, frames: legacyFrames} as Drawing : value as Drawing;
 }
 
-/** Binary search for the last entry at or before time. */
-function position(starts: readonly number[], time: number): number {
-  let low = 0, high = starts.length;
-  while (low < high) {const mid = (low + high) >>> 1; if (starts[mid] <= time) low = mid + 1; else high = mid;}
-  return Math.max(0, low - 1);
-}
 const clock = (time: number) => `${Math.floor(time / 60)}:${String(Math.floor(time) % 60).padStart(2, '0')}`;
 
-class AnimationPlayer {
+export class AnimationPlayer {
   private root: HTMLElement;
   private data?: Drawing;
   private starts: number[] = [];
-  private motionTimes: number[][] = [];
   private duration = 0;
   private time = 0;
   private lastFrame = -1;
   private lastSecond = -1;
-  private lastDark?: boolean;
+  private lastPalette?: string;
   private lastRenderTime = -1;
   private wasMoving = false;
   private loading = false;
   private loadFailed = false;
+  private lastInput?: LoadRequest;
   private visible = false;
   private intent = !matchMedia('(prefers-reduced-motion: reduce)').matches;
   private request = 0;
   private lastTick = 0;
+  private loadVersion = 0;
+  private loadAbort?: AbortController;
   private vector: SVGSVGElement;
   private svg?: SvgDrawing;
   private seek: HTMLInputElement;
@@ -143,7 +172,7 @@ class AnimationPlayer {
 
   constructor(root: HTMLElement) {
     this.root = root;
-    const get = <T extends HTMLElement | SVGElement = HTMLElement>(name: string) => root.querySelector<T>(`[data-animation-${name}]`)!;
+    const get = <T extends HTMLElement | SVGElement>(name: string) => root.querySelector<T>(`[data-animation-${name}]`)!;
     this.vector = get('svg');
     this.seek = get('seek'); this.play = get('play'); this.speed = get('speed'); this.loop = get('loop');
     this.fullscreen = get('fullscreen'); this.fullscreen.hidden = !document.fullscreenEnabled;
@@ -153,7 +182,7 @@ class AnimationPlayer {
     this.vector.addEventListener('pointerdown', event => this.inspect(event));
     this.vector.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
     this.play.addEventListener('click', () => {
-      if (!this.data) {void this.load(); return;}
+      if (!this.data) {void this.load(this.lastInput!); return;}
       this.intent = !this.playing;
       if (this.time >= this.duration) this.time = 0;
       this.render(); this.sync();
@@ -163,8 +192,6 @@ class AnimationPlayer {
       const step = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1
         : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
       if (!step) return;
-      // Keep exact fractional positions with step="any", but make keyboard
-      // scrubbing one second per press instead of a browser-dependent fraction.
       event.preventDefault(); this.seekTo(this.time + step);
     });
     this.speed.addEventListener('change', () => {this.lastTick = performance.now();});
@@ -184,16 +211,16 @@ class AnimationPlayer {
       `${Math.ceil(entries[0].target.getBoundingClientRect().height)}px`)).observe(get('controls'));
     if (typeof IntersectionObserver !== 'undefined') {
       new IntersectionObserver(entries => {this.visible = entries[0].isIntersecting; this.sync();}).observe(root);
-    } else {
-      this.visible = true;
-    }
+    } else {this.visible = true;}
     document.addEventListener('visibilitychange', () => this.sync());
     matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', event => {
       if (event.matches) {this.intent = false; this.sync();}
     });
-    new MutationObserver(() => this.render()).observe(document.documentElement, {attributes: true, attributeFilter: ['data-bs-theme']});
-    // Fetch on page load; visibility only controls playback.
-    void this.load();
+    const themes = new MutationObserver(() => this.render());
+    themes.observe(document.documentElement, {attributes: true, attributeFilter: ['data-bs-theme']});
+    themes.observe(root, {attributes: true, attributeFilter: ['data-animation-theme']});
+    root.addEventListener('animation-load', event => {void this.load((event as CustomEvent<LoadRequest>).detail);});
+    void this.load({source: root.dataset.animationSource!});
   }
 
   private get playing() {return !!this.data && this.intent && this.visible && !document.hidden;}
@@ -220,35 +247,61 @@ class AnimationPlayer {
     const error = this.root.querySelector<HTMLElement>('[data-animation-error]')!;
     error.textContent = message; error.hidden = false;
   }
-  private async load() {
-    if (this.loading) return;
-    this.loading = true; this.loadFailed = false;
-    this.root.setAttribute('aria-busy', 'true');
-    this.sync();
+  private async load(input: LoadRequest) {
+    const version = ++this.loadVersion;
+    this.loadAbort?.abort();
+    const abort = this.loadAbort = new AbortController();
+    this.lastInput = input; this.loading = true; this.loadFailed = false;
+    this.root.setAttribute('aria-busy', 'true'); this.sync();
     try {
-      const response = await fetch(this.root.dataset.animationSource!);
-      if (!response.ok) throw new Error(`Animation could not load (${response.status}).`);
-      this.data = parseDrawing(await response.json());
-      this.duration = 0; this.time = 0;
-      this.lastFrame = -1; this.lastSecond = -1; this.lastDark = undefined;
-      this.lastRenderTime = -1; this.wasMoving = false;
-      this.starts = this.data.frames.map(frame => {const start = this.duration; this.duration += frame.duration; return start;});
-      this.motionTimes = (this.data.motions ?? []).map(track => track.keyframes.map(key => key[0]));
-      this.svg = new SvgDrawing(this.vector, this.data);
-      this.vector.setAttribute('aria-label', this.data.title);
-      this.root.style.setProperty('--animation-ratio', `${this.data.width} / ${this.data.height}`);
-      this.root.style.setProperty('--animation-width-ratio', String(this.data.width / this.data.height));
-      this.seek.max = String(this.duration);
-      this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-animation-control]').forEach(control => {control.disabled = false;});
+      if (!input || typeof input !== 'object' || ['source', 'file', 'drawing'].filter(key => key in input).length !== 1)
+        throw new Error('Choose a prepared animation JSON file.');
+      let raw: unknown;
+      if ('drawing' in input) raw = input.drawing;
+      else if ('file' in input) {
+        if (!(input.file instanceof Blob)) throw new Error('Choose a prepared animation JSON file.');
+        raw = await readDrawingJSON(input.file.stream(), abort.signal);
+      } else {
+        if (typeof input.source !== 'string' || !input.source) throw new Error('Choose an animation source.');
+        const response = await fetch(input.source, {signal: abort.signal});
+        if (!response.ok) throw new Error(`Animation could not load (${response.status}).`);
+        if (Number(response.headers.get('content-length')) > MAX_DRAWING_BYTES) {
+          await response.body?.cancel();
+          throw new Error('Animation JSON must fit within 16 MiB.');
+        }
+        raw = await readDrawingJSON(response.body, abort.signal);
+      }
+      if (version !== this.loadVersion) return;
+      const data = parseDrawing(raw);
+      const {duration, starts} = drawingTimeline(data, true);
+      // Commit only validated data; a failed import leaves the last-good drawing intact.
+      if (this.request) cancelAnimationFrame(this.request);
+      this.request = 0; this.time = 0; this.lastFrame = -1; this.lastTick = 0;
+      this.lastSecond = -1; this.lastPalette = undefined; this.lastRenderTime = -1; this.wasMoving = false;
+      this.data = data; this.duration = duration; this.starts = starts;
+      this.tooltip.hidden = true;
       this.root.querySelector<HTMLElement>('[data-animation-error]')!.hidden = true;
-      this.render();
+      this.svg = new SvgDrawing(this.vector, data);
+      this.vector.setAttribute('aria-label', data.title);
+      this.root.style.setProperty('--animation-ratio', `${data.width} / ${data.height}`);
+      this.root.style.setProperty('--animation-width-ratio', String(data.width / data.height));
+      this.seek.max = String(duration);
+      this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-animation-control]').forEach(control => {control.disabled = false;});
+      this.render(); this.sync();
+      this.root.dispatchEvent(new CustomEvent('animation-ready', {bubbles: true, detail: {
+        drawing: data, source: 'source' in input ? input.source : undefined, requestId: input.requestId,
+      }}));
     } catch (error) {
+      if (version !== this.loadVersion) return;
       this.loadFailed = true;
-      this.error(error instanceof Error ? error.message : 'Animation could not load.');
+      const message = error instanceof Error ? error.message : 'Animation could not load.';
+      this.error(message);
+      this.root.dispatchEvent(new CustomEvent('animation-error', {bubbles: true, detail: {message, requestId: input?.requestId}}));
     } finally {
-      this.loading = false;
-      this.root.setAttribute('aria-busy', 'false');
-      this.sync();
+      if (version === this.loadVersion) {
+        this.loadAbort = undefined; this.loading = false;
+        this.root.setAttribute('aria-busy', 'false'); this.sync();
+      }
     }
   }
   private seekTo(time: number) {
@@ -260,7 +313,7 @@ class AnimationPlayer {
     const label = !this.data && this.loadFailed ? 'Retry' : active ? 'Pause' : 'Play';
     this.play.textContent = label;
     this.play.setAttribute('aria-label', `${label} animation`);
-    this.play.disabled = this.loading || !this.data && !this.loadFailed;
+    this.play.disabled = !this.data && (this.loading || !this.loadFailed);
     if (active && !this.request) {this.lastTick = performance.now(); this.request = requestAnimationFrame(this.tick);}
     if (!active && this.request) {cancelAnimationFrame(this.request); this.request = 0;}
   }
@@ -277,21 +330,14 @@ class AnimationPlayer {
   };
   private render() {
     if (!this.data || !this.svg) return;
-    const dark = document.documentElement.dataset.bsTheme === 'dark';
     const index = position(this.starts, this.time), frame = this.data.frames[index];
-    const activeMotions = this.motionTimes.flatMap((times, i) =>
-      this.time >= times[0] && this.time <= times[times.length - 1] ? [i] : []);
-    const moving = activeMotions.length > 0;
-    if (index !== this.lastFrame || dark !== this.lastDark || moving !== this.wasMoving
+    const theme = this.root.dataset.animationTheme, dark = document.documentElement.dataset.bsTheme === 'dark';
+    const palette = `${theme ?? ''}:${dark}`;
+    const moving = drawingTimeline(this.data).motionTimes.some(times => this.time >= times[0] && this.time <= times[times.length - 1]);
+    if (index !== this.lastFrame || palette !== this.lastPalette || moving !== this.wasMoving
       || moving && this.time !== this.lastRenderTime) {
-      const positions = activeMotions.map(i => {
-        const motion = this.data.motions![i], times = this.motionTimes[i];
-        const key = Math.min(position(times, this.time), times.length - 2);
-        const a = motion.keyframes[key], b = motion.keyframes[key + 1], t = (this.time - a[0]) / (b[0] - a[0]);
-        return {track: i, x: a[1] + (b[1] - a[1]) * t, y: a[2] + (b[2] - a[2]) * t};
-      });
-      this.svg.draw(index, dark, positions);
-      this.lastDark = dark; this.wasMoving = moving; this.lastRenderTime = this.time;
+      this.svg.draw(this.time, theme, dark);
+      this.lastPalette = palette; this.wasMoving = moving; this.lastRenderTime = this.time;
     }
     this.seek.value = String(this.time);
     const second = Math.floor(this.time);
