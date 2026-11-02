@@ -4,7 +4,15 @@ These JSON assets preserve the documentation scenes as finite drawing data. LWS 
 
 ## Format
 
-Each version-1 asset contains a 1920×1080 canvas, a deduplicated primitive dictionary, and frames with durations, ordered primitive indices, captions, and hover/tap evidence. Primitives are rectangles, circles, line paths, or text. Colors contain either one value or a light/dark pair. Optional motion tracks contain a primitive index and `[time, x, y]` keyframes.
+Each version-1 asset contains a 1920×1080 canvas, deduplicated `primitives` and `hits` dictionaries, and frames with durations, ordered indices, and captions. A frame's `items` reference primitives; its `hits` reference the top-level hover/tap evidence table. Hit order is preserved, including overlapping targets. Primitives are rectangles, circles, line paths, or text. Colors contain either one value or a light/dark pair. Optional motion tracks contain a primitive index and `[time, x, y]` keyframes.
+
+The player also accepts older version-1 drawings with inline frame hits, normalizing them to the shared table after validation. New assets always use indexed hits. To compact an older export without rendering, run from `site/`:
+
+```sh
+node scripts/compact-animation-hits.mjs static/animations/example.json
+```
+
+This deterministic, idempotent migration changes only hit storage. Captions, frame timing, primitive data, motion tracks, and hit ordering are unchanged.
 
 Playback draws the prepared frame and interpolates positions. It does not calculate replica counts, availability budgets, fractional windows, or routing shares. All original scene states, metric values, and explanations are retained. Text uses Arial and Menlo.
 

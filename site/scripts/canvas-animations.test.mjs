@@ -84,8 +84,8 @@ test('animation labels are release-independent; source provenance remains separa
   for (const name of (await readdir(directory)).filter(name => name.endsWith('.json'))) {
     const drawing = JSON.parse(await readFile(new URL(name, directory), 'utf8'));
     const labels = [drawing.title, ...drawing.primitives.map(item => item.text),
-      ...drawing.frames.flatMap(frame => [frame.caption,
-        ...(frame.hits ?? []).flatMap(hit => [hit.label, hit.detail])])].filter(Boolean);
+      ...(drawing.hits ?? []).flatMap(hit => [hit.label, hit.detail]),
+      ...drawing.frames.map(frame => frame.caption)].filter(Boolean);
     for (const label of labels) assert.doesNotMatch(label, /\bLWS\s+(?:v(?:ersion)?\s*)?\d|\bPR\b|\bpull request\b/i, name);
   }
 });
@@ -95,8 +95,9 @@ test('scaling drawings leave room below status lines and above the annotation ba
     const drawing = JSON.parse(await read(`../static/animations/${scene}.json`));
     for (const [index, frame] of drawing.frames.entries()) {
       const items = frame.items.map(id => drawing.primitives[id]);
-      const capacities = frame.hits.filter(hit => hit.width === 900 && hit.height === 42);
-      const annotation = frame.hits.find(hit => hit.width === 1840 && hit.height === 56);
+      const hits = (frame.hits ?? []).map(id => drawing.hits[id]);
+      const capacities = hits.filter(hit => hit.width === 900 && hit.height === 42);
+      const annotation = hits.find(hit => hit.width === 1840 && hit.height === 56);
       assert.equal(capacities.length, 2, `${scene}/${index}: two capacity panels`);
       assert.ok(annotation, `${scene}/${index}: annotation band`);
       for (const capacity of capacities) {
@@ -108,7 +109,7 @@ test('scaling drawings leave room below status lines and above the annotation ba
         assert.ok(heading.y - heading.size / 2 - status.y - status.size / 2 >= 16,
           `${scene}/${index}: status needs space above the role headings`);
       }
-      for (const group of frame.hits.filter(hit => hit.width === hit.height && hit.width <= 27)) {
+      for (const group of hits.filter(hit => hit.width === hit.height && hit.width <= 27)) {
         assert.ok(group.y + group.height <= annotation.y - 16, `${scene}/${index}: group grid touches annotation`);
       }
     }

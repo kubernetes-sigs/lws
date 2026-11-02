@@ -9,8 +9,8 @@ const example = () => ({version:1,width:1920,height:1080,title:'Example',
     {type:'path',points:[[0,0],[20,0],[20,20]],close:true,stroke:'#326ce5',lineWidth:2},
     {type:'circle',x:0,y:0,radius:5,fill:'#326ce5'},
   ],
-  frames:[{duration:2,caption:'An explanation.',items:[0,1,2],
-    hits:[{x:0,y:0,width:100,height:100,label:'Recorded value',detail:'Plain text only.'}]}],
+  hits:[{x:0,y:0,width:100,height:100,label:'Recorded value',detail:'Plain text only.'}],
+  frames:[{duration:2,caption:'An explanation.',items:[0,1,2],hits:[0]}],
   motions:[{primitive:3,keyframes:[[0,10,20],[2,30,40]]}],
 });
 
@@ -38,7 +38,7 @@ for (const [name,edit] of [
   ['backward motion time',d=>{d.motions[0].keyframes=[[1,0,0],[0,10,10]];}],
   ['duplicate motion time',d=>{d.motions[0].keyframes=[[0,0,0],[0,10,10]];}],
   ['motion outside presentation',d=>{d.motions[0].keyframes[1][0]=3;}],
-  ['invalid hit bounds',d=>{d.frames[0].hits[0].width=-1;}],
+  ['invalid hit bounds',d=>{d.hits[0].width=-1;}],
 ]) test(`rejects ${name}`,()=>{
   const data=example();edit(data);
   assert.throws(()=>parseDrawing(data),/Unsupported animation drawing/);

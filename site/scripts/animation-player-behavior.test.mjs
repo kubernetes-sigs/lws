@@ -181,3 +181,23 @@ test('browsers without IntersectionObserver load immediately with usable paused 
   f.seek(2);
   assert.equal(f.nodes.summary.textContent, 'Second state');
 });
+
+test('pointer inspection resolves shared hit indices in reverse paint order', async () => {
+  const data = drawing();
+  data.hits = [
+    {x: 10, y: 10, width: 50, height: 50, label: 'Underlying group', detail: 'First evidence'},
+    {x: 10, y: 10, width: 50, height: 50, label: 'Top group', detail: 'Later evidence'},
+  ];
+  data.frames[0].hits = [0, 1]; data.frames[1].hits = [0];
+  const f = fixture(data); await f.ready();
+  const inspect = (x, y) => f.nodes.canvas.handlers.pointermove({clientX: x, clientY: y});
+  inspect(20, 20);
+  assert.equal(f.nodes.tooltip.hidden, false);
+  assert.equal(f.nodes.tooltip.textContent, 'Top group\nLater evidence');
+  f.seek(2);
+  assert.equal(f.nodes.tooltip.hidden, true, 'Changing frames hides stale evidence');
+  inspect(20, 20);
+  assert.equal(f.nodes.tooltip.textContent, 'Underlying group\nFirst evidence');
+  inspect(200, 200);
+  assert.equal(f.nodes.tooltip.hidden, true);
+});

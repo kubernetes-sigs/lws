@@ -12,7 +12,8 @@ export type Primitive = Paint & (
 export interface Drawing {
   version: 1; width: number; height: number; title: string;
   primitives: Primitive[];
-  frames: {duration: number; caption: string; items: number[]; hits?: Hit[]}[];
+  hits?: Hit[];
+  frames: {duration: number; caption: string; items: number[]; hits?: number[]}[];
   motions?: {primitive: number; keyframes: [number, number, number][]}[];
 }
 
@@ -50,6 +51,16 @@ export function parseDrawing(value: unknown): Drawing {
     }
   }
   const index = (v: unknown): boolean => number(v, 0, primitives.length - 1) && Number.isInteger(v);
+  const validateHit = (raw: unknown): Hit => {
+    const hit = record(raw);
+    if (!number(hit.x) || !number(hit.y) || !number(hit.width, 0) || !number(hit.height, 0)
+      || !text(hit.label, 500) || !text(hit.detail, 20_000)) fail();
+    return raw as Hit;
+  };
+  const indexedHits = data.hits !== undefined;
+  const hits = Array.from(list(data.hits ?? [], 100_000), validateHit);
+  const legacyFrames: Drawing['frames'] = [], legacyIndices = new Map<string, number>();
+  let legacyHits = false, hitReferences = 0;
   const frames = list(data.frames, 10_000);
   if (!frames.length) fail();
   let items = 0, duration = 0;
@@ -57,10 +68,24 @@ export function parseDrawing(value: unknown): Drawing {
     const frame = record(raw), indices = list(frame.items, 100_000);
     if (!number(frame.duration, .001, 600) || !text(frame.caption, 20_000) || !indices.every(index)) fail();
     items += indices.length; duration += frame.duration as number;
-    for (const rawHit of list(frame.hits ?? [], 10_000)) {
-      const hit = record(rawHit);
-      if (!number(hit.x) || !number(hit.y) || !number(hit.width, 0) || !number(hit.height, 0)
-        || !text(hit.label, 500) || !text(hit.detail, 20_000)) fail();
+    const references = list(frame.hits ?? [], 10_000);
+    hitReferences += references.length;
+    if (hitReferences > 2_000_000) fail();
+    if (indexedHits) {
+      for (const ref of references) if (!number(ref, 0, hits.length - 1) || !Number.isInteger(ref)) fail();
+    } else {
+      const indices: number[] = [];
+      for (const rawHit of references) {
+        const hit = validateHit(rawHit);
+        legacyHits = true;
+        const key = JSON.stringify([hit.x, hit.y, hit.width, hit.height, hit.label, hit.detail]);
+        if (!legacyIndices.has(key)) {
+          if (hits.length >= 100_000) fail();
+          legacyIndices.set(key, hits.length); hits.push(hit);
+        }
+        indices.push(legacyIndices.get(key)!);
+      }
+      legacyFrames.push({...frame, ...(frame.hits !== undefined ? {hits: indices} : {})} as Drawing['frames'][number]);
     }
   }
   if (items > 2_000_000 || duration > 86_400) fail();
@@ -73,7 +98,9 @@ export function parseDrawing(value: unknown): Drawing {
       previous = (key as number[])[0];
     }
   }
-  return value as Drawing;
+  // Keep historical inline-hit exports usable without retaining repeated objects.
+  // Validation finishes before returning a normalized copy; the input is untouched.
+  return legacyHits ? {...data, hits, frames: legacyFrames} as Drawing : value as Drawing;
 }
 
 function drawPrimitive(ctx: CanvasRenderingContext2D, p: Primitive, dark: boolean) {
@@ -204,8 +231,14 @@ class AnimationPlayer {
     const bounds = this.canvas.getBoundingClientRect();
     const x = (event.clientX - bounds.left) * this.data.width / bounds.width;
     const y = (event.clientY - bounds.top) * this.data.height / bounds.height;
-    const hit = this.data.frames[position(this.starts, this.time)].hits?.slice().reverse()
-      .find(hit => x >= hit.x && y >= hit.y && x <= hit.x + hit.width && y <= hit.y + hit.height);
+    const references = this.data.frames[position(this.starts, this.time)].hits ?? [];
+    let hit: Hit | undefined;
+    for (let i = references.length - 1; i >= 0; i--) {
+      const candidate = this.data.hits![references[i]];
+      if (x >= candidate.x && y >= candidate.y && x <= candidate.x + candidate.width && y <= candidate.y + candidate.height) {
+        hit = candidate; break;
+      }
+    }
     this.tooltip.hidden = !hit;
     if (!hit) return;
     this.tooltip.textContent = `${hit.label}\n${hit.detail}`;

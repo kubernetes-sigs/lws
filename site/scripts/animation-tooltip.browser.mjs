@@ -7,11 +7,12 @@ const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
 const drawing = {
   version: 1, width: 1920, height: 1080, title: 'Tooltip sizing regression',
   primitives: [{type: 'rect', x: 0, y: 0, width: 1920, height: 1080, fill: '#ffffff'}],
-  frames: [{duration: 2, caption: 'Inspect a short label, then a longer explanation.', items: [0], hits: [
+  hits: [
     {x: 1850, y: 200, width: 70, height: 100, label: 'A', detail: 'B'},
     {x: 1380, y: 200, width: 120, height: 100, label: 'Recorded capacity',
       detail: 'Requested groups can still be loading. Ready groups and the availability minimum come from an independent planner observation.'},
-  ]}],
+  ],
+  frames: [{duration: 2, caption: 'Inspect a short label, then a longer explanation.', items: [0], hits: [0, 1]}],
 };
 const browser = await chromium.launch({headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? {channel: process.env.PLAYWRIGHT_CHANNEL} : {})});
@@ -43,7 +44,7 @@ try {
       const short = await hover(1890);
       assert.ok(short.x > bounds.x + bounds.width * .8, 'Short tooltip starts near the right edge');
       const long = await hover(1440);
-      assert.equal(await tooltip.textContent(), `${drawing.frames[0].hits[1].label}\n${drawing.frames[0].hits[1].detail}`);
+      assert.equal(await tooltip.textContent(), `${drawing.hits[1].label}\n${drawing.hits[1].detail}`);
       assert.ok(Math.abs(long.width - Math.min(420, bounds.width - 16)) < 1,
         `Long tooltip retains its intrinsic capped width after left changes (${long.width}px)`);
       assert.ok(long.x >= bounds.x + 7, 'Tooltip stays inside the left margin');
