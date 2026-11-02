@@ -17,6 +17,7 @@ import (
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
+
 func run(args []string) int {
 	f := flag.NewFlagSet("lws-harness", flag.ContinueOnError)
 	f.SetOutput(os.Stderr)

@@ -41,6 +41,7 @@ type Clock interface {
 type RealClock struct{}
 
 func (RealClock) Now() time.Time { return time.Now() }
+
 func (RealClock) Sleep(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -79,6 +80,7 @@ func (o *Options) defaults() {
 		o.Clock = RealClock{}
 	}
 }
+
 func (o Options) kube(args ...string) []string {
 	return append([]string{"--kubeconfig", o.Kubeconfig, "--context", o.Context, "--request-timeout=15s"}, args...)
 }
@@ -168,6 +170,7 @@ func ValidateOwnership(ctx context.Context, o Options) error {
 	}
 	return nil
 }
+
 func OwnsNode(id, label, mount, expectedID, cluster, ownerPath, goos string) bool {
 	return id != "" && id == expectedID && label == cluster && (mount == ownerPath || (goos == "darwin" && mount == "/host_mnt"+ownerPath))
 }
@@ -179,6 +182,7 @@ func abort(err error) {
 		panic(failure{err})
 	}
 }
+
 func writeJSON(path string, value any) error {
 	b, e := json.MarshalIndent(value, "", "  ")
 	if e != nil {

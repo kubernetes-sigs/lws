@@ -23,7 +23,24 @@ type Result struct {
 	Checks           []string `json:"checks"`
 }
 
-var scenarios = map[string]func(*Lab){"ordinary": ordinary, "scale-up": scaleUp, "scale-down": scaleDown, "autoscaler-handoff": autoscalerHandoff, "rename": func(l *Lab) { renamedRollout(l, pair(2, 2), pair(2, 2), 1) }, "rename-outage": renameOutage, "restart-rollback": restartRollback, "subroles": subroles, "native-restart": nativeRestart, "outage": outage, "emergency": emergency, "large-rename": func(l *Lab) { renamedRollout(l, pair(9, 4), pair(8, 3), 4) }, "large-scale-up": largeScaleUp, "large-scale-down": largeScaleDown, "large-ordinary": largeOrdinary, "large-subroles": largeSubroles}
+var scenarios = map[string]func(*Lab){
+	"ordinary":           ordinary,
+	"scale-up":           scaleUp,
+	"scale-down":         scaleDown,
+	"autoscaler-handoff": autoscalerHandoff,
+	"rename":             func(l *Lab) { renamedRollout(l, pair(2, 2), pair(2, 2), 1) },
+	"rename-outage":      renameOutage,
+	"restart-rollback":   restartRollback,
+	"subroles":           subroles,
+	"native-restart":     nativeRestart,
+	"outage":             outage,
+	"emergency":          emergency,
+	"large-rename":       func(l *Lab) { renamedRollout(l, pair(9, 4), pair(8, 3), 4) },
+	"large-scale-up":     largeScaleUp,
+	"large-scale-down":   largeScaleDown,
+	"large-ordinary":     largeOrdinary,
+	"large-subroles":     largeSubroles,
+}
 
 // ExecuteSuite validates ownership before any mutation, creates native raw
 // evidence and attempts every selected case unless cancelled or FailFast is set.
@@ -69,7 +86,15 @@ func ExecuteSuite(ctx context.Context, o Options, selected []Case) (results []Re
 		fmt.Fprintf(o.Output, "\n%d/%d  %s · %s · %s\n", i+1, len(selected), c.DisplayName(), c.Identity, c.Policy)
 		caseErr := runCase(l)
 		o.Auto = l.Auto
-		result := Result{Case: c.DisplayName(), Identity: c.Identity, Policy: c.Policy, Passed: caseErr == nil, Seconds: l.clock.Now().Sub(l.started).Seconds(), ControllerCommit: o.ControllerCommit, Checks: l.checks}
+		result := Result{
+			Case:             c.DisplayName(),
+			Identity:         c.Identity,
+			Policy:           c.Policy,
+			Passed:           caseErr == nil,
+			Seconds:          l.clock.Now().Sub(l.started).Seconds(),
+			ControllerCommit: o.ControllerCommit,
+			Checks:           l.checks,
+		}
 		if result.Checks == nil {
 			result.Checks = []string{}
 		}
@@ -111,6 +136,7 @@ func ExecuteSuite(ctx context.Context, o Options, selected []Case) (results []Re
 	}
 	return results, nil
 }
+
 func runCase(l *Lab) (err error) {
 	defer func() { err = errors.Join(err, l.Close()) }()
 	err = catch(func() {

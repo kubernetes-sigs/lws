@@ -23,6 +23,7 @@ func oldASurvives(l *Lab, s Snapshot) bool {
 	}
 	return true
 }
+
 func capacityRejection(s Snapshot) bool {
 	for _, p := range Pods(s, "C", "prefill") {
 		for _, c := range objects(at(p, "status", "conditions")) {
@@ -87,7 +88,11 @@ func pausedForAdoption(l *Lab, adopt func()) {
 					if selector == nil {
 						selector = Object{}
 					}
-					selector["matchExpressions"] = append(arr(selector["matchExpressions"]), Object{"key": "kubernetes.io/metadata.name", "operator": "NotIn", "values": []any{Namespace}})
+					selector["matchExpressions"] = append(arr(selector["matchExpressions"]), Object{
+						"key":      "kubernetes.io/metadata.name",
+						"operator": "NotIn",
+						"values":   []any{Namespace},
+					})
 					patch = append(patch, Object{"op": "add", "path": path, "value": selector})
 					if original, ok := webhook["namespaceSelector"]; ok {
 						undo = append(undo, Object{"op": "add", "path": path, "value": original})
@@ -117,6 +122,7 @@ func pausedForAdoption(l *Lab, adopt func()) {
 	})
 	abort(err)
 }
+
 func cleanupAttempt(f func()) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -130,6 +136,7 @@ func cleanupAttempt(f func()) (err error) {
 	f()
 	return nil
 }
+
 func seedHistory(l *Lab) {
 	l.SetSlots(7)
 	type seed struct{ Name, Version, Role string }
@@ -145,7 +152,16 @@ func seedHistory(l *Lab) {
 			labels := obj(at(spec, "leaderWorkerTemplate", "workerTemplate", "metadata", "labels"))
 			labels[RoleLabel], labels[SetLabel], labels[Prefix+"slice"] = role, SetName, "0"
 			name := "emergency-" + strings.ToLower(version) + "-" + role
-			l.Apply(Object{"apiVersion": "leaderworkerset.x-k8s.io/v1", "kind": "LeaderWorkerSet", "metadata": Object{"name": name, "labels": Object{RoleLabel: role}, "annotations": Object{Prefix + "initial-replicas": fmt.Sprint(initialCount)}}, "spec": spec})
+			l.Apply(Object{
+				"apiVersion": "leaderworkerset.x-k8s.io/v1",
+				"kind":       "LeaderWorkerSet",
+				"metadata": Object{
+					"name":        name,
+					"labels":      Object{RoleLabel: role},
+					"annotations": Object{Prefix + "initial-replicas": fmt.Sprint(initialCount)},
+				},
+				"spec": spec,
+			})
 			seeds = append(seeds, seed{name, version, role})
 		}
 	}
@@ -155,12 +171,35 @@ func seedHistory(l *Lab) {
 	abort(writeJSON(filepath.Join(l.Directory, "emergency-seeded.json"), l.Snapshot()))
 	l.Checkpoint("Attach interrupted history to controller.", "Pause local manager, create parent, attach six LWSs, restore admission, resume.")
 	pausedForAdoption(l, func() {
-		rs := []any{RoleSpec("prefill", 1, l.Case.Identity, "C", 1, 0, 1, false), RoleSpec("decode", 4, l.Case.Identity, "C", 1, 0, 1, false)}
-		l.Apply(Object{"apiVersion": "disaggregatedset.x-k8s.io/v1", "kind": "DisaggregatedSet", "metadata": Object{"name": SetName, "annotations": Object{Prefix + "revision-hash-version": "v2"}}, "spec": Object{"roles": rs, "scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy}}})
+		rs := []any{
+			RoleSpec("prefill", 1, l.Case.Identity, "C", 1, 0, 1, false),
+			RoleSpec("decode", 4, l.Case.Identity, "C", 1, 0, 1, false),
+		}
+		l.Apply(Object{
+			"apiVersion": "disaggregatedset.x-k8s.io/v1",
+			"kind":       "DisaggregatedSet",
+			"metadata": Object{
+				"name":        SetName,
+				"annotations": Object{Prefix + "revision-hash-version": "v2"},
+			},
+			"spec": Object{
+				"roles":         rs,
+				"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
+			},
+		})
 		ds := l.JSON("-n", Namespace, "get", DSResource, SetName, "-o", "json")
 		ctx, cancel := context.WithTimeout(l.ctx, 60*time.Second)
 		defer cancel()
-		out, stderr, err := l.Options.Executor.Run(ctx, l.Options.Observer, []string{"--kubeconfig", l.Options.Kubeconfig, "--context", l.Options.Context, "--namespace", Namespace, "--name", SetName}, nil)
+		out, stderr, err := l.Options.Executor.Run(ctx, l.Options.Observer, []string{
+			"--kubeconfig",
+			l.Options.Kubeconfig,
+			"--context",
+			l.Options.Context,
+			"--namespace",
+			Namespace,
+			"--name",
+			SetName,
+		}, nil)
 		if err != nil {
 			abort(fmt.Errorf("revision observer: %w: %s", err, stderr))
 		}
@@ -168,17 +207,29 @@ func seedHistory(l *Lab) {
 		abort(json.Unmarshal(out, &observed))
 		target := str(observed["targetRevision"])
 		l.Assert(target != "", "Read-only observer returned persisted target revision")
-		owner := Object{"apiVersion": ds["apiVersion"], "kind": ds["kind"], "name": SetName, "uid": uid(ds), "controller": true}
+		owner := Object{
+			"apiVersion": ds["apiVersion"],
+			"kind":       ds["kind"],
+			"name":       SetName,
+			"uid":        uid(ds),
+			"controller": true,
+		}
 		for _, s := range seeds {
 			revision := "seed-" + strings.ToLower(s.Version)
 			if s.Version == "C" {
 				revision = target
 			}
-			l.K("-n", Namespace, "patch", "lws", s.Name, "--type=merge", "-p", jsonText(Object{"metadata": Object{"labels": Object{SetLabel: SetName, RoleLabel: s.Role, Prefix + "slice": "0", RevisionLabel: revision}, "ownerReferences": []any{owner}}}))
+			l.K("-n", Namespace, "patch", "lws", s.Name, "--type=merge", "-p", jsonText(Object{
+				"metadata": Object{
+					"labels":          Object{SetLabel: SetName, RoleLabel: s.Role, Prefix + "slice": "0", RevisionLabel: revision},
+					"ownerReferences": []any{owner},
+				},
+			}))
 		}
 	})
 	l.StartObserver()
 }
+
 func emergency(l *Lab) {
 	l.Note("Emergency recovery: desired 1P/4D; maxSurge=1 / maxUnavailable=0. Seven equal slots.")
 	l.Note("Seeded A=1P/3D + B=1P/1D + C=0P/1D. Normal floors 1P/4D; emergency Decode floor 3.")

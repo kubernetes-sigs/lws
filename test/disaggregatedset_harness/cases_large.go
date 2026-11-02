@@ -42,6 +42,7 @@ func bootstrapEvents(s Snapshot) map[string]string {
 	}
 	return events
 }
+
 func (b *firstGroupBootstrap) start(l *Lab, s Snapshot, ceilings Targets) {
 	b.eligible, b.used, b.previous = map[string]bool{}, map[string]bool{}, bootstrapEvents(s)
 	for r, n := range ceilings {
@@ -50,6 +51,7 @@ func (b *firstGroupBootstrap) start(l *Lab, s Snapshot, ceilings Targets) {
 		}
 	}
 }
+
 func (b *firstGroupBootstrap) allows(l *Lab, s Snapshot, r string, ceiling int) bool {
 	total := l.Total(s, r, "spec")
 	if total <= ceiling {
@@ -64,6 +66,7 @@ func (b *firstGroupBootstrap) allows(l *Lab, s Snapshot, r string, ceiling int) 
 	b.used[r] = true
 	return true
 }
+
 func (b *firstGroupBootstrap) confirmed(s Snapshot) bool {
 	named := map[string]bool{}
 	for key, message := range bootstrapEvents(s) {
@@ -80,6 +83,7 @@ func (b *firstGroupBootstrap) confirmed(s Snapshot) bool {
 	}
 	return subset(b.used, named)
 }
+
 func bounds(l *Lab, s Snapshot, floors, ceilings Targets, b *firstGroupBootstrap) bool {
 	for r, floor := range floors {
 		l.Assert(l.Total(s, r, "ready") >= floor, fmt.Sprintf("%s: Ready capacity fell below protected floor %d", r, floor))
@@ -91,6 +95,7 @@ func bounds(l *Lab, s Snapshot, floors, ceilings Targets, b *firstGroupBootstrap
 	}
 	return true
 }
+
 func largeRelease(l *Lab, s Snapshot, version string, targets Targets) {
 	for _, role := range keys(targets) {
 		parent, child, _ := strings.Cut(role, "/")
@@ -113,6 +118,7 @@ func largeRelease(l *Lab, s Snapshot, version string, targets Targets) {
 		}
 	}
 }
+
 func largeProgress(l *Lab, version string, targets, floors, ceilings Targets) Snapshot {
 	return l.Wait(version+" reaches Ready "+describe(targets)+"; next batch loading", func(s Snapshot) bool {
 		bounds(l, s, floors, ceilings, nil)
@@ -125,6 +131,7 @@ func largeProgress(l *Lab, version string, targets, floors, ceilings Targets) Sn
 		return true
 	}, 480*time.Second, 3, func(s Snapshot) { largeRelease(l, s, version, targets) })
 }
+
 func sharedLayout(s Snapshot, version string, desired Targets) bool {
 	parents := []Object{}
 	for _, o := range s.LWS {
@@ -167,6 +174,7 @@ func sharedLayout(s Snapshot, version string, desired Targets) bool {
 	}
 	return true
 }
+
 func largeFinish(l *Lab, version string, desired, floors, ceilings Targets, protected Predicate, b *firstGroupBootstrap) {
 	l.Wait("Only "+version+" remains: "+describe(desired)+", all Ready and old Pods gone", func(s Snapshot) bool {
 		bounds(l, s, floors, ceilings, b)
@@ -183,11 +191,13 @@ func largeFinish(l *Lab, version string, desired, floors, ceilings Targets, prot
 		largeRelease(l, s, version, targets)
 	})
 }
+
 func largeConverged(s Snapshot, version string, desired Targets, virtual bool) bool {
 	// Every large case has exactly one Pod per requested group. Extra target
 	// roles/physical workloads must not make a nominally converged fleet pass.
 	return len(s.Pods) == totalTargets(desired) && converged(s, version, desired) && (!virtual || sharedLayout(s, version, desired))
 }
+
 func largeStart(l *Lab, virtual, percentage bool) (Targets, Targets) {
 	l.virtual = virtual
 	detail := "maxUnavailable=0; retain every existing Ready group."
@@ -221,7 +231,15 @@ func largeStart(l *Lab, virtual, percentage bool) (Targets, Targets) {
 		role["subRoles"] = childList(childTargets(parent, children))
 		parents = append(parents, role)
 	}
-	l.Apply(Object{"apiVersion": "disaggregatedset.x-k8s.io/v1", "kind": "DisaggregatedSet", "metadata": Object{"name": SetName}, "spec": Object{"roles": parents, "scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy}}})
+	l.Apply(Object{
+		"apiVersion": "disaggregatedset.x-k8s.io/v1",
+		"kind":       "DisaggregatedSet",
+		"metadata":   Object{"name": SetName},
+		"spec": Object{
+			"roles":         parents,
+			"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
+		},
+	})
 	l.StartObserver()
 	zero := Targets{}
 	for r := range children {
@@ -235,11 +253,14 @@ func largeStart(l *Lab, virtual, percentage bool) (Targets, Targets) {
 	for _, r := range rs {
 		r["subRoles"] = childList(childTargets(str(r["name"]), reassigned))
 	}
-	l.Patch(Object{"spec": Object{"roles": rs}})
+	l.Patch(Object{
+		"spec": Object{"roles": rs},
+	})
 	s := l.WaitFor("Independent child counts changed; one shared LWS per physical role", func(s Snapshot) bool { return sharedLayout(s, "A", reassigned) })
 	l.Assert(sameSet(uidSet(Pods(s, "", "")), before), "Relabelling children replaced physical Pod")
 	return reassigned, childSurge
 }
+
 func midpointVisible(l *Lab, s Snapshot, desired Targets) bool {
 	for r, n := range desired {
 		a, b := l.Count(s, "A", r).Ready, l.Count(s, "B", r).Ready
@@ -249,6 +270,7 @@ func midpointVisible(l *Lab, s Snapshot, desired Targets) bool {
 	}
 	return true
 }
+
 func largeMixed(l *Lab, virtual, percentage bool, bootstrap *firstGroupBootstrap) (string, Snapshot, Targets, Targets) {
 	desired, surge := largeStart(l, virtual, percentage)
 	floors := desired
@@ -299,11 +321,13 @@ func largeMixed(l *Lab, virtual, percentage bool, bootstrap *firstGroupBootstrap
 	}
 	return target, state, desired, ceilings
 }
+
 func largeOrdinary(l *Lab) {
 	target, _, desired, ceilings := largeMixed(l, false, false, nil)
 	l.Checkpoint("Finish "+target+" in successive readiness batches.", "Keep 37 Ready Prefill / 19 Ready Decode throughout.")
 	largeFinish(l, target, desired, desired, ceilings, nil, nil)
 }
+
 func largeSubroles(l *Lab) {
 	var bootstrap *firstGroupBootstrap
 	if l.Case.Variant == "abc" {
@@ -313,6 +337,7 @@ func largeSubroles(l *Lab) {
 	l.Checkpoint("Finish "+target+"; each child keeps its availability budget.", "Verify final children and two shared physical LWSs.")
 	largeFinish(l, target, desired, desired, ceilings, nil, bootstrap)
 }
+
 func oldSpecs(l *Lab, s Snapshot, target string) map[string]Targets {
 	out := map[string]Targets{}
 	for _, v := range versions {
@@ -326,6 +351,7 @@ func oldSpecs(l *Lab, s Snapshot, target string) map[string]Targets {
 	}
 	return out
 }
+
 func noOldRegrowth(l *Lab, s Snapshot, old map[string]Targets) {
 	for v, counts := range old {
 		for r, n := range counts {
@@ -335,6 +361,7 @@ func noOldRegrowth(l *Lab, s Snapshot, old map[string]Targets) {
 		}
 	}
 }
+
 func largeScaleUp(l *Lab) {
 	target, before, _, _ := largeMixed(l, false, false, nil)
 	old := oldSpecs(l, before, target)
@@ -358,6 +385,7 @@ func largeScaleUp(l *Lab) {
 	l.Checkpoint("Release "+target+"; newly Ready capacity raises protected floor.", "Never open or regrow an old revision.")
 	largeFinish(l, target, grown, initial, ceilings, protected, nil)
 }
+
 func scaleDownRetainsOld(l *Lab, s Snapshot, target string, before Targets) bool {
 	for r := range initial {
 		oldReady, oldSpec := 0, 0
@@ -374,6 +402,7 @@ func scaleDownRetainsOld(l *Lab, s Snapshot, target string, before Targets) bool
 	}
 	return true
 }
+
 func largeScaleDown(l *Lab) {
 	target, before, _, ceilings := largeMixed(l, false, true, nil)
 	floors, newCeilings := percentBounds(shrunk)

@@ -24,7 +24,9 @@ func (c Case) DisplayName() string {
 	}
 	return c.Name
 }
+
 func (c Case) ID() string { return c.DisplayName() + "--" + c.Identity + "--" + c.Policy }
+
 func (c Case) DirectoryName() string {
 	return c.DisplayName() + "-" + strings.ToLower(c.Identity) + "-" + strings.ToLower(c.Policy)
 }
@@ -143,7 +145,9 @@ func Matrix(s Selection) ([]Case, error) {
 	}
 	return out, nil
 }
+
 func oneOf(s string, values ...string) bool { return contains(values, s) }
+
 func contains(values []string, s string) bool {
 	for _, v := range values {
 		if v == s {

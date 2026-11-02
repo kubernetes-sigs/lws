@@ -6,4 +6,7 @@ package main
 
 import "syscall"
 
-func newProcessGroup() error { _, err := syscall.Setsid(); return err }
+func newProcessGroup() error {
+	_, err := syscall.Setsid()
+	return err
+}

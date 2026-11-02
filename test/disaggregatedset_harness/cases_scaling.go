@@ -24,6 +24,7 @@ func mixed(l *Lab) Snapshot {
 		return p.Ready == 2 && d.Ready == 1 && p.Scheduled >= 3 && d.Scheduled >= 2
 	})
 }
+
 func scaleUp(l *Lab) {
 	before := mixed(l)
 	old, target := l.Counts(before, "A"), l.Counts(before, "B")
@@ -54,6 +55,7 @@ func scaleUp(l *Lab) {
 	l.Checkpoint("Release remaining B; finish at exactly 6+6.", "Open current and subsequently created B readiness files.")
 	l.Converge("B", pair(6, 6), 0)
 }
+
 func scaleDown(l *Lab) {
 	before := mixed(l)
 	old, target := l.Counts(before, "A"), l.Counts(before, "B")
@@ -87,6 +89,7 @@ func scaleDown(l *Lab) {
 	l.Checkpoint("Let remaining Decode become Ready; finish at exactly 2+2.", "Open all B readiness files.")
 	l.Converge("B", pair(2, 2), 0)
 }
+
 func handoffPreserved(l *Lab, s, before Snapshot) {
 	l.Assert(sameSet(uidSet(s.Pods), uidSet(before.Pods)), "Static→External deleted/replaced an existing Pod")
 	l.Assert(sameSet(uidSet(s.LWS), uidSet(before.LWS)), "Replica source change created/deleted workload revision")
@@ -95,6 +98,7 @@ func handoffPreserved(l *Lab, s, before Snapshot) {
 		l.Assert(now.Spec == old.Spec && now.Ready == old.Ready, "Static→External changed "+r+" requested or Ready count")
 	}
 }
+
 func autoscalerHandoff(l *Lab) {
 	l.Create(3, 2, CreateOptions{Size: 2})
 	before := l.Snapshot()
@@ -140,6 +144,7 @@ func autoscalerHandoff(l *Lab) {
 	}
 	l.Note("This tests the autoscaler handoff and /scale API, not a metrics-driven HPA.")
 }
+
 func restartRollback(l *Lab) {
 	l.Create(4, 4, CreateOptions{Unavailable: 1})
 	l.Checkpoint("Start B with readiness held.", "Change A templates to B.")
@@ -163,6 +168,7 @@ func restartRollback(l *Lab) {
 	l.Checkpoint("Release B and complete rollback.", "Open B readiness files.")
 	l.Converge("B", pair(4, 4), 0)
 }
+
 func childList(counts Targets) []any {
 	out := []any{}
 	for _, n := range keys(counts) {
@@ -170,12 +176,21 @@ func childList(counts Targets) []any {
 	}
 	return out
 }
+
 func (l *Lab) SubrolesCreate(counts Targets) {
 	defer l.action("subroles_create", []any{counts}, nil, nil)()
 	parent := RoleSpec("decode", 1, l.Case.Identity, "A", 1, 0, 2, true)
 	delete(obj(parent["spec"]), "replicas")
 	parent["subRoles"] = childList(counts)
-	l.Apply(Object{"apiVersion": "disaggregatedset.x-k8s.io/v1", "kind": "DisaggregatedSet", "metadata": Object{"name": SetName}, "spec": Object{"roles": []any{parent}, "scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy}}})
+	l.Apply(Object{
+		"apiVersion": "disaggregatedset.x-k8s.io/v1",
+		"kind":       "DisaggregatedSet",
+		"metadata":   Object{"name": SetName},
+		"spec": Object{
+			"roles":         []any{parent},
+			"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
+		},
+	})
 	l.StartObserver()
 	target := Targets{}
 	for n, v := range counts {
@@ -183,13 +198,19 @@ func (l *Lab) SubrolesCreate(counts Targets) {
 	}
 	l.Converge("A", target, 0)
 }
+
 func (l *Lab) SubrolesUpdate(counts Targets) {
 	defer l.action("subroles_update", nil, Object{"counts": counts}, nil)()
 	ds := l.JSON("-n", Namespace, "get", DSResource, SetName, "-o", "json")
 	parent := objects(at(ds, "spec", "roles"))[0]
 	parent["subRoles"] = childList(counts)
-	l.Patch(Object{"spec": Object{"roles": []any{parent}}})
+	l.Patch(Object{
+		"spec": Object{
+			"roles": []any{parent},
+		},
+	})
 }
+
 func assigned(s Snapshot, desired Targets, version string) bool {
 	issued := SubroleCounts(s, version, false)
 	observed := Targets{}
@@ -229,6 +250,7 @@ func assigned(s Snapshot, desired Targets, version string) bool {
 	}
 	return sameTargets(observed, desired) && GroupCounts(s, version)["decode"].Spec == totalTargets(desired)
 }
+
 func subroles(l *Lab) {
 	l.SubrolesCreate(Targets{"a": 2, "b": 1})
 	initial := l.WaitFor("Shared LWS has a=2/b=1 whole Ready groups", func(s Snapshot) bool { return assigned(s, Targets{"a": 2, "b": 1}, "A") })
@@ -266,6 +288,7 @@ func subroles(l *Lab) {
 		l.Note("Hash deletion costs are preferences; this checks eventual coherent repair, not guaranteed child survivors.")
 	}
 }
+
 func nativeRestart(l *Lab) {
 	l.Create(2, 1, CreateOptions{Size: 2})
 	for _, member := range []string{"worker", "leader"} {
@@ -312,6 +335,7 @@ func nativeRestart(l *Lab) {
 	}
 	l.Note("RecreateGroupOnPodRestart changes UIDs only in the failed group; not the in-place prototype.")
 }
+
 func childTargets(parent string, t Targets) Targets {
 	out := Targets{}
 	for k, n := range t {

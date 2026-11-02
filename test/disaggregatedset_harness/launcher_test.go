@@ -97,7 +97,11 @@ func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T)
 	}
 	script, err := filepath.Abs("run.sh")
 	requireNoError(t, err)
-	env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "KIND=" + filepath.Join(root, "kind"), "HARNESS_MAX_PODS=160"}
+	env := []string{
+		"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"KIND=" + filepath.Join(root, "kind"),
+		"HARNESS_MAX_PODS=160",
+	}
 	for _, tc := range []struct {
 		flags       []string
 		interactive bool
@@ -198,7 +202,11 @@ func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
 	for _, tc := range []struct {
 		commit, image string
 		accepted      bool
-	}{{commit, image, true}, {strings.Repeat("0", 40), image, false}, {commit, "registry.k8s.io/lws/lws:v0.8.0", false}} {
+	}{
+		{commit, image, true},
+		{strings.Repeat("0", 40), image, false},
+		{commit, "registry.k8s.io/lws/lws:v0.8.0", false},
+	} {
 		env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "BASELINE_FILE=" + baselinePath,
 			"REPOSITORY=" + root, "COMMIT=" + commit, "RELEASE_IMAGE=" + tc.image, "TEST_RELEASE_COMMIT=" + tc.commit}
 		output, err := shell(t, root, env, "-c", scriptFunction(t, "validate_release"))

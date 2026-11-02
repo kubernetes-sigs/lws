@@ -31,12 +31,38 @@ func NewEvidence(runDir, commit string) (*Evidence, error) {
 		return nil, err
 	}
 	e := &Evidence{directory: dir, files: map[string]*os.File{}, seq: map[string]int{}}
-	err := writeJSON(filepath.Join(dir, "metadata.json"), Object{"schemaVersion": 2, "startedAt": unix(time.Now()), "controllerCommit": commit, "periodTargetSeconds": 1, "snapshotEventsRequested": true, "snapshotEventsSource": "same-snapshot-request", "producer": "native-go-harness", "caveats": []string{"API snapshots are non-atomic acquisition windows, not controller decisions.", "Native Go capture records complete periodic API snapshots, actions, checks and independent observer bounds. It does not claim continuous LIST/watch or controller log coverage.", "Read errors are explicit; failed acquisition never fabricates empty resources.", "Assertion messages describe failures; passed=true means the asserted failure was not observed."}})
+	err := writeJSON(filepath.Join(dir, "metadata.json"), Object{
+		"schemaVersion":           2,
+		"startedAt":               unix(time.Now()),
+		"controllerCommit":        commit,
+		"periodTargetSeconds":     1,
+		"snapshotEventsRequested": true,
+		"snapshotEventsSource":    "same-snapshot-request",
+		"producer":                "native-go-harness",
+		"caveats": []string{
+			"API snapshots are non-atomic acquisition windows, not controller decisions.",
+			"Native Go capture records complete periodic API snapshots, actions, checks and independent observer bounds. It does not claim continuous LIST/watch or controller log coverage.",
+			"Read errors are explicit; failed acquisition never fabricates empty resources.",
+			"Assertion messages describe failures; passed=true means the asserted failure was not observed.",
+		},
+	})
 	return e, err
 }
-func unix(t time.Time) float64          { return float64(t.UnixNano()) / 1e9 }
-func (e *Evidence) Case(id string)      { e.mu.Lock(); defer e.mu.Unlock(); e.caseID = id }
-func (e *Evidence) CurrentCase() string { e.mu.Lock(); defer e.mu.Unlock(); return e.caseID }
+
+func unix(t time.Time) float64 { return float64(t.UnixNano()) / 1e9 }
+
+func (e *Evidence) Case(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.caseID = id
+}
+
+func (e *Evidence) CurrentCase() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.caseID
+}
+
 func (e *Evidence) Emit(stream string, row Object) {
 	if e == nil {
 		return
@@ -63,6 +89,7 @@ func (e *Evidence) Emit(stream string, row Object) {
 	}
 	e.err = json.NewEncoder(f).Encode(row)
 }
+
 func (e *Evidence) Error() error {
 	if e == nil {
 		return nil
@@ -71,6 +98,7 @@ func (e *Evidence) Error() error {
 	defer e.mu.Unlock()
 	return e.err
 }
+
 func (e *Evidence) Start(ctx context.Context, o Options) error {
 	o.defaults()
 	ctx, e.cancel = context.WithCancel(ctx)
@@ -88,7 +116,19 @@ func (e *Evidence) Start(ctx context.Context, o Options) error {
 			out, stderr, err := o.Executor.Run(call, o.Kubectl, args, nil)
 			cancel()
 			ended := o.Clock.Now()
-			row := Object{"caseId": id, "startedAt": unix(began), "finishedAt": unix(ended), "durationSeconds": ended.Sub(began).Seconds(), "periodTargetSeconds": 1, "eventsRequested": true, "eventsSource": "same-snapshot-request", "argv": append([]string{o.Kubectl}, args...), "stdout": string(out), "stderr": string(stderr), "returncode": 0}
+			row := Object{
+				"caseId":              id,
+				"startedAt":           unix(began),
+				"finishedAt":          unix(ended),
+				"durationSeconds":     ended.Sub(began).Seconds(),
+				"periodTargetSeconds": 1,
+				"eventsRequested":     true,
+				"eventsSource":        "same-snapshot-request",
+				"argv":                append([]string{o.Kubectl}, args...),
+				"stdout":              string(out),
+				"stderr":              string(stderr),
+				"returncode":          0,
+			}
 			if !previousStart.IsZero() {
 				row["startGapSeconds"] = began.Sub(previousStart).Seconds()
 				row["previousIdleGapSeconds"] = began.Sub(previousEnd).Seconds()
@@ -154,6 +194,7 @@ func parseResourceList(data []byte) ([]Object, error) {
 	}
 	return out, nil
 }
+
 func (e *Evidence) Close() error {
 	if e == nil {
 		return nil
@@ -171,6 +212,7 @@ func (e *Evidence) Close() error {
 	}
 	return e.err
 }
+
 func stateOf(items []Object) Snapshot {
 	s := Snapshot{LWS: []Object{}, Pods: []Object{}, Events: []Object{}, Scalers: []Object{}}
 	for _, o := range items {

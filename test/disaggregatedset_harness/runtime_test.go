@@ -20,11 +20,46 @@ func ownershipFixture(t *testing.T) (Options, Object, Object, *fakeExecutor) {
 	t.Helper()
 	root := t.TempDir()
 	cluster := "lws-v1-run-proof"
-	proof := Object{"cluster": cluster, "node": cluster + "-control-plane", "nodeID": "owned-id", "owner": "run-proof", "controllerCommit": strings.Repeat("a", 40)}
+	proof := Object{
+		"cluster":          cluster,
+		"node":             cluster + "-control-plane",
+		"nodeID":           "owned-id",
+		"owner":            "run-proof",
+		"controllerCommit": strings.Repeat("a", 40),
+	}
 	requireNoError(t, writeJSON(filepath.Join(root, "runtime.json"), proof))
 	requireNoError(t, os.WriteFile(filepath.Join(root, "owner"), []byte("run-proof\n"), 0600))
-	node := Object{"Id": "owned-id", "Config": Object{"Labels": Object{"io.x-k8s.kind.cluster": cluster}}, "Mounts": []any{Object{"Destination": "/var/run/lws-v1-harness-owner", "Source": filepath.Join(root, "owner"), "RW": false}}, "NetworkSettings": Object{"Ports": Object{"6443/tcp": []any{Object{"HostIp": "127.0.0.1", "HostPort": "51234"}}}}}
-	config := Object{"current-context": "kind-" + cluster, "contexts": []any{Object{"name": "kind-" + cluster, "context": Object{"cluster": cluster}}}, "clusters": []any{Object{"name": cluster, "cluster": Object{"server": "https://127.0.0.1:51234"}}}}
+	node := Object{
+		"Id": "owned-id",
+		"Config": Object{
+			"Labels": Object{"io.x-k8s.kind.cluster": cluster},
+		},
+		"Mounts": []any{
+			Object{"Destination": "/var/run/lws-v1-harness-owner", "Source": filepath.Join(root, "owner"), "RW": false},
+		},
+		"NetworkSettings": Object{
+			"Ports": Object{
+				"6443/tcp": []any{
+					Object{"HostIp": "127.0.0.1", "HostPort": "51234"},
+				},
+			},
+		},
+	}
+	config := Object{
+		"current-context": "kind-" + cluster,
+		"contexts": []any{
+			Object{
+				"name":    "kind-" + cluster,
+				"context": Object{"cluster": cluster},
+			},
+		},
+		"clusters": []any{
+			Object{
+				"name":    cluster,
+				"cluster": Object{"server": "https://127.0.0.1:51234"},
+			},
+		},
+	}
 	e := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
 		if c.program == "docker" {
 			return []byte(jsonText([]Object{node})), nil, nil
@@ -34,11 +69,31 @@ func ownershipFixture(t *testing.T) (Options, Object, Object, *fakeExecutor) {
 		}
 		return []byte(jsonText(config)), nil, nil
 	}}
-	o := Options{RunDir: root, Kubeconfig: filepath.Join(root, "kubeconfig"), Context: "kind-" + cluster, Node: cluster + "-control-plane", ControllerCommit: strings.Repeat("a", 40), Observer: filepath.Join(root, "bin", "observe"), Executor: e}
+	o := Options{
+		RunDir:           root,
+		Kubeconfig:       filepath.Join(root, "kubeconfig"),
+		Context:          "kind-" + cluster,
+		Node:             cluster + "-control-plane",
+		ControllerCommit: strings.Repeat("a", 40),
+		Observer:         filepath.Join(root, "bin", "observe"),
+		Executor:         e,
+	}
 	return o, node, config, e
 }
+
 func TestOwnershipBindsExactDockerNodeAndKubeEndpoint(t *testing.T) {
-	for _, fault := range []string{"none", "other-port", "remote", "node-id", "cluster-label", "mount", "writable", "owner-token", "extra-context", "private-path"} {
+	for _, fault := range []string{
+		"none",
+		"other-port",
+		"remote",
+		"node-id",
+		"cluster-label",
+		"mount",
+		"writable",
+		"owner-token",
+		"extra-context",
+		"private-path",
+	} {
 		t.Run(fault, func(t *testing.T) {
 			o, node, config, e := ownershipFixture(t)
 			switch fault {
@@ -73,17 +128,25 @@ func TestOwnershipBindsExactDockerNodeAndKubeEndpoint(t *testing.T) {
 		})
 	}
 }
+
 func TestOwnsNodeOnlyExactHostTranslation(t *testing.T) {
 	p := "/private/run/owner"
 	for _, c := range []struct {
 		os, mount, id string
 		want          bool
-	}{{"darwin", p, "id", true}, {"darwin", "/host_mnt" + p, "id", true}, {"linux", "/host_mnt" + p, "id", false}, {"darwin", "/host_mnt" + p + "-other", "id", false}, {"darwin", p, "new-id", false}} {
+	}{
+		{"darwin", p, "id", true},
+		{"darwin", "/host_mnt" + p, "id", true},
+		{"linux", "/host_mnt" + p, "id", false},
+		{"darwin", "/host_mnt" + p + "-other", "id", false},
+		{"darwin", p, "new-id", false},
+	} {
 		if OwnsNode(c.id, "cluster", c.mount, "id", "cluster", p, c.os) != c.want {
 			t.Fatal(c)
 		}
 	}
 }
+
 func TestPublicSuiteRejectsUnknownVariantBeforeFilesystemOrCommands(t *testing.T) {
 	e := &fakeExecutor{}
 	_, err := ExecuteSuite(context.Background(), Options{Executor: e, Output: io.Discard}, []Case{{"ordinary", "Hash", "Deferred", "../../outside"}})
@@ -91,6 +154,7 @@ func TestPublicSuiteRejectsUnknownVariantBeforeFilesystemOrCommands(t *testing.T
 		t.Fatal(err, e.calls)
 	}
 }
+
 func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 	e := &fakeExecutor{}
 	calls := 0
@@ -102,7 +166,18 @@ func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 			if calls == 1 {
 				id = "old"
 			}
-			return []byte(jsonText(Object{"items": []any{Object{"metadata": Object{"name": "manager-" + id, "uid": id}, "status": Object{"conditions": []any{Object{"type": "Ready", "status": "True"}}}}}})), nil, nil
+			return []byte(jsonText(Object{
+				"items": []any{
+					Object{
+						"metadata": Object{"name": "manager-" + id, "uid": id},
+						"status": Object{
+							"conditions": []any{
+								Object{"type": "Ready", "status": "True"},
+							},
+						},
+					},
+				},
+			})), nil, nil
 		}
 		if contains(c.args, "patch") {
 			if !contains(c.args, "--dry-run=server") {
@@ -121,6 +196,7 @@ func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 		t.Fatal("admission not retried", probeCount)
 	}
 }
+
 func TestEmergencyRestoresExactHooksAfterCancellation(t *testing.T) {
 	e := &fakeExecutor{}
 	var restores []command
@@ -133,9 +209,46 @@ func TestEmergencyRestoresExactHooksAfterCancellation(t *testing.T) {
 		case strings.Contains(a, "get deployment"):
 			return []byte(`{"spec":{"replicas":2}}`), nil, nil
 		case strings.Contains(a, "get mutatingwebhookconfigurations"):
-			return []byte(jsonText(Object{"items": []any{Object{"metadata": Object{"name": "mutate"}, "webhooks": []any{Object{"name": "mleaderworkerset.kb.io", "namespaceSelector": Object{"matchLabels": Object{"keep": "original"}}, "clientConfig": Object{"service": Object{"namespace": "lws-system"}}}}}}})), nil, nil
+			return []byte(jsonText(Object{
+				"items": []any{
+					Object{
+						"metadata": Object{"name": "mutate"},
+						"webhooks": []any{
+							Object{
+								"name": "mleaderworkerset.kb.io",
+								"namespaceSelector": Object{
+									"matchLabels": Object{"keep": "original"},
+								},
+								"clientConfig": Object{
+									"service": Object{"namespace": "lws-system"},
+								},
+							},
+						},
+					},
+				},
+			})), nil, nil
 		case strings.Contains(a, "get validatingwebhookconfigurations"):
-			return []byte(jsonText(Object{"items": []any{Object{"metadata": Object{"name": "validate"}, "webhooks": []any{Object{"name": "vleaderworkerset.kb.io", "clientConfig": Object{"service": Object{"namespace": "lws-system"}}}, Object{"name": "vdisaggregatedset.kb.io", "clientConfig": Object{"service": Object{"namespace": "lws-system"}}}}}}})), nil, nil
+			return []byte(jsonText(Object{
+				"items": []any{
+					Object{
+						"metadata": Object{"name": "validate"},
+						"webhooks": []any{
+							Object{
+								"name": "vleaderworkerset.kb.io",
+								"clientConfig": Object{
+									"service": Object{"namespace": "lws-system"},
+								},
+							},
+							Object{
+								"name": "vdisaggregatedset.kb.io",
+								"clientConfig": Object{
+									"service": Object{"namespace": "lws-system"},
+								},
+							},
+						},
+					},
+				},
+			})), nil, nil
 		case strings.Contains(a, "get pods"):
 			return []byte(`{"items":[]}`), nil, nil
 		case strings.Contains(a, "patch") || strings.Contains(a, "scale"):
@@ -146,7 +259,12 @@ func TestEmergencyRestoresExactHooksAfterCancellation(t *testing.T) {
 	l := testLab(t, e)
 	ctx, cancel := context.WithCancel(l.ctx)
 	l.ctx = ctx
-	err := catch(func() { pausedForAdoption(l, func() { cancel(); abort(context.Canceled) }) })
+	err := catch(func() {
+		pausedForAdoption(l, func() {
+			cancel()
+			abort(context.Canceled)
+		})
+	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
@@ -166,13 +284,18 @@ func TestEmergencyRestoresExactHooksAfterCancellation(t *testing.T) {
 		t.Fatal("original selector not restored", patch)
 	}
 }
+
 func TestEvidenceRejectsMalformedSuccessfulRead(t *testing.T) {
 	for _, body := range []string{`{}`, `null`, `{"kind":"List","items":null}`} {
 		t.Run(body, func(t *testing.T) {
 			root := t.TempDir()
 			e, err := NewEvidence(root, "fixture")
 			requireNoError(t, err)
-			o := Options{Clock: RealClock{}, Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) { return []byte(body), nil, nil }}, Kubectl: "fake"}
+			o := Options{
+				Clock:    RealClock{},
+				Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) { return []byte(body), nil, nil }},
+				Kubectl:  "fake",
+			}
 			if err = e.Start(context.Background(), o); err == nil {
 				t.Fatal("accepted malformed response")
 			}
@@ -251,9 +374,24 @@ func TestEmergencyRestoresAfterUnexpectedPanic(t *testing.T) {
 		if contains(c.args, "get") && contains(c.args, "mutatingwebhookconfigurations") {
 			webhooks := []any{}
 			for _, name := range []string{"mleaderworkerset.kb.io", "vleaderworkerset.kb.io", "vdisaggregatedset.kb.io"} {
-				webhooks = append(webhooks, Object{"name": name, "namespaceSelector": Object{"matchLabels": Object{"keep": "original"}}, "clientConfig": Object{"service": Object{"namespace": "lws-system"}}})
+				webhooks = append(webhooks, Object{
+					"name": name,
+					"namespaceSelector": Object{
+						"matchLabels": Object{"keep": "original"},
+					},
+					"clientConfig": Object{
+						"service": Object{"namespace": "lws-system"},
+					},
+				})
 			}
-			return []byte(jsonText(Object{"items": []any{Object{"metadata": Object{"name": "fixture"}, "webhooks": webhooks}}})), nil, nil
+			return []byte(jsonText(Object{
+				"items": []any{
+					Object{
+						"metadata": Object{"name": "fixture"},
+						"webhooks": webhooks,
+					},
+				},
+			})), nil, nil
 		}
 		return []byte(`{"items":[]}`), nil, nil
 	}
@@ -292,9 +430,14 @@ func TestEmergencyRestoresAfterUnexpectedPanic(t *testing.T) {
 		}
 	}
 }
+
 func TestObserverFailureClearsCredit(t *testing.T) {
 	l := testLab(t, &fakeExecutor{})
-	l.diagnostic = Object{"slices": []any{Object{"slice": "0"}}}
+	l.diagnostic = Object{
+		"slices": []any{
+			Object{"slice": "0"},
+		},
+	}
 	if !l.HasDiagnostic() {
 		t.Fatal("fixture missing")
 	}
@@ -319,7 +462,10 @@ func TestInteractiveCheckpointCancelsWhileInputBlocked(t *testing.T) {
 	l.ctx = ctx
 	done := make(chan error, 1)
 	go func() {
-		done <- catch(func() { l.Checkpoint("Awaiting user input", "No mutation yet"); l.K("delete", "unsafe") })
+		done <- catch(func() {
+			l.Checkpoint("Awaiting user input", "No mutation yet")
+			l.K("delete", "unsafe")
+		})
 	}()
 	cancel()
 	select {
@@ -334,11 +480,19 @@ func TestInteractiveCheckpointCancelsWhileInputBlocked(t *testing.T) {
 		t.Fatal("mutation after cancelled checkpoint")
 	}
 }
+
 func TestWaitCancellationAndStableSamples(t *testing.T) {
-	e := &fakeExecutor{run: func(command) ([]byte, []byte, error) { return []byte(`{"kind":"List","items":[]}`), nil, nil }}
+	e := &fakeExecutor{
+		run: func(command) ([]byte, []byte, error) { return []byte(`{"kind":"List","items":[]}`), nil, nil },
+	}
 	l := testLab(t, e)
 	hits := 0
-	requireNoError(t, catch(func() { l.Wait("stable", func(Snapshot) bool { hits++; return hits != 2 }, 10*time.Second, 3, nil) }))
+	requireNoError(t, catch(func() {
+		l.Wait("stable", func(Snapshot) bool {
+			hits++
+			return hits != 2
+		}, 10*time.Second, 3, nil)
+	}))
 	if hits != 5 {
 		t.Fatal("stable count not reset", hits)
 	}
@@ -368,21 +522,41 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 	c := Case{"ordinary", "Hash", "Deferred", "default"}
 	e.Case(c.ID())
 	executor := &fakeExecutor{}
-	l := newLab(context.Background(), Options{RunDir: root, Auto: true, Executor: executor, Clock: &fakeClock{now: time.Unix(1800000000, 0)}, Output: io.Discard}, c, e)
+	l := newLab(context.Background(), Options{
+		RunDir:   root,
+		Auto:     true,
+		Executor: executor,
+		Clock:    &fakeClock{now: time.Unix(1800000000, 0)},
+		Output:   io.Discard,
+	}, c, e)
 	requireNoError(t, os.Mkdir(l.Directory, 0700))
-	state := fleet(map[string]map[string]Counts{"A": {"prefill": {Spec: 2, Ready: 2, Scheduled: 2}, "decode": {Spec: 4, Ready: 4, Scheduled: 4}}}, 1)
-	state.DS["spec"] = Object{"roles": []any{RoleSpec("prefill", 2, "Hash", "A", 1, 0, 1, true), RoleSpec("decode", 4, "Hash", "A", 1, 0, 1, true)}}
+	state := fleet(map[string]map[string]Counts{
+		"A": {"prefill": {Spec: 2, Ready: 2, Scheduled: 2}, "decode": {Spec: 4, Ready: 4, Scheduled: 4}},
+	}, 1)
+	state.DS["spec"] = Object{
+		"roles": []any{RoleSpec("prefill", 2, "Hash", "A", 1, 0, 1, true), RoleSpec("decode", 4, "Hash", "A", 1, 0, 1, true)},
+	}
 	executor.run = func(c command) ([]byte, []byte, error) {
 		if contains(c.args, "get") {
 			if contains(c.args, "node") {
-				return []byte(jsonText(Object{"status": Object{"allocatable": Object{Slot: "64"}}})), nil, nil
+				return []byte(jsonText(Object{
+					"status": Object{
+						"allocatable": Object{Slot: "64"},
+					},
+				})), nil, nil
 			}
 			return []byte(jsonText(state.DS)), nil, nil
 		}
 		return nil, nil, nil
 	}
 	e.Emit("actions.jsonl", Object{"id": c.ID(), "kind": "case", "phase": "start", "time": unix(l.clock.Now())})
-	e.Emit("snapshots.jsonl", Object{"startedAt": unix(l.clock.Now()), "finishedAt": unix(l.clock.Now().Add(10 * time.Millisecond)), "returncode": 0, "state": state, "eventsRequested": true})
+	e.Emit("snapshots.jsonl", Object{
+		"startedAt":       unix(l.clock.Now()),
+		"finishedAt":      unix(l.clock.Now().Add(10 * time.Millisecond)),
+		"returncode":      0,
+		"state":           state,
+		"eventsRequested": true,
+	})
 	l.Sleep(time.Second)
 	requireNoError(t, catch(func() {
 		l.Checkpoint("Change demand", "Update replicas, keep template A.")
@@ -393,8 +567,21 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 		l.Assert(true, "Capacity dropped below its floor")
 	}))
 	l.Sleep(time.Second)
-	e.Emit("snapshots.jsonl", Object{"startedAt": unix(l.clock.Now()), "finishedAt": unix(l.clock.Now().Add(10 * time.Millisecond)), "returncode": 0, "state": state, "eventsRequested": true})
-	result := Result{Case: c.DisplayName(), Identity: c.Identity, Policy: c.Policy, Passed: true, ControllerCommit: strings.Repeat("a", 40), Checks: []string{"fixture"}}
+	e.Emit("snapshots.jsonl", Object{
+		"startedAt":       unix(l.clock.Now()),
+		"finishedAt":      unix(l.clock.Now().Add(10 * time.Millisecond)),
+		"returncode":      0,
+		"state":           state,
+		"eventsRequested": true,
+	})
+	result := Result{
+		Case:             c.DisplayName(),
+		Identity:         c.Identity,
+		Policy:           c.Policy,
+		Passed:           true,
+		ControllerCommit: strings.Repeat("a", 40),
+		Checks:           []string{"fixture"},
+	}
 	e.Emit("actions.jsonl", Object{"id": c.ID(), "kind": "case", "phase": "end", "time": unix(l.clock.Now()), "result": result})
 	requireNoError(t, writeJSON(filepath.Join(root, "results.json"), []Result{result}))
 	requireNoError(t, e.Close())

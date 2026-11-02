@@ -15,6 +15,7 @@ func both(p func(string) bool) bool {
 	}
 	return true
 }
+
 func ordinary(l *Lab) {
 	l.Create(2, 4, CreateOptions{})
 	initial := l.Snapshot()
@@ -51,11 +52,19 @@ func ordinary(l *Lab) {
 	l.Checkpoint("Release Decode and all subsequent B groups.", "Open B readiness files until rollout completes.")
 	l.Converge("B", pair(2, 4), 0)
 }
+
 func renamedRollout(l *Lab, old, desired Targets, newUnavailable int) {
 	l.Create(old["prefill"], old["decode"], CreateOptions{Surge: 0, Unavailable: 1, Slots: totalTargets(old)})
 	target := Targets{renamed[0]: desired["prefill"], renamed[1]: desired["decode"]}
 	l.Checkpoint("Rename both roles; preserve the saved old availability allowance.", "Replace role names, request "+describe(target)+", hold B readiness.")
-	l.Update(Update{Version: "B", Names: renamed, Counts: target, Surge: 0, Unavailable: newUnavailable, Ready: boolPtr(false)})
+	l.Update(Update{
+		Version:     "B",
+		Names:       renamed,
+		Counts:      target,
+		Surge:       0,
+		Unavailable: newUnavailable,
+		Ready:       boolPtr(false),
+	})
 	l.WaitFor("Old capacity releases before the first renamed pair schedules", func(s Snapshot) bool {
 		for i, r := range roles {
 			if l.Count(s, "A", r).Spec != old[r]-1 {
@@ -85,6 +94,7 @@ func renamedRollout(l *Lab, old, desired Targets, newUnavailable int) {
 	l.Checkpoint("Release Decode and replace using the same fixed slots.", "Open all present and future B readiness files.")
 	l.Converge("B", target, 360*time.Second)
 }
+
 func renameCapacity(l *Lab, s Snapshot, t Targets) bool {
 	for i, r := range roles {
 		l.Assert(l.Count(s, "A", r).Spec+l.Count(s, "B", renamed[i]).Spec <= t[r], "Renaming "+r+" exceeded zero-surge ceiling")
@@ -92,6 +102,7 @@ func renameCapacity(l *Lab, s Snapshot, t Targets) bool {
 	l.Assert(!eventReason(s, "BootstrapSurge") && !eventReason(s, "AvailabilityFallback"), "Full-downtime rename should not need emergency capacity")
 	return true
 }
+
 func renameOutage(l *Lab) {
 	t := pair(2, 3)
 	l.Create(2, 3, CreateOptions{Surge: 0, Unavailable: "100%", Slots: 5})
@@ -119,6 +130,7 @@ func renameOutage(l *Lab) {
 	s := l.Converge("B", Targets{renamed[0]: 2, renamed[1]: 3}, 0)
 	renameCapacity(l, s, t)
 }
+
 func outage(l *Lab) {
 	var pUnavailable any = 1
 	if l.Case.Variant == "percentage" {
@@ -135,7 +147,10 @@ func outage(l *Lab) {
 	l.WaitFor("A=0P/1D and B=1P/1D fit three scheduler slots", func(s Snapshot) bool {
 		capacity(s)
 		l.Assert(!eventReason(s, "BootstrapSurge"), "Permitted-outage rollout requested bootstrap capacity")
-		return l.Count(s, "A", "prefill").Spec == 0 && l.Count(s, "A", "decode").Spec == 1 && both(func(r string) bool { c := l.Count(s, "B", r); return c.Spec == 1 && c.Scheduled == 1 })
+		return l.Count(s, "A", "prefill").Spec == 0 && l.Count(s, "A", "decode").Spec == 1 && both(func(r string) bool {
+			c := l.Count(s, "B", r)
+			return c.Spec == 1 && c.Scheduled == 1
+		})
 	})
 	l.Hold("Prefill outage is allowed; one Ready Decode stays protected", 8, func(s Snapshot) bool {
 		capacity(s)

@@ -43,14 +43,26 @@ func newLab(ctx context.Context, o Options, c Case, e *Evidence) *Lab {
 	if !ok {
 		input = bufio.NewReader(o.Input)
 	}
-	return &Lab{Options: o, Case: c, Directory: filepath.Join(o.RunDir, c.DirectoryName()), Auto: o.Auto, ctx: ctx, clock: o.Clock, started: o.Clock.Now(), evidence: e, input: input}
+	return &Lab{
+		Options:   o,
+		Case:      c,
+		Directory: filepath.Join(o.RunDir, c.DirectoryName()),
+		Auto:      o.Auto,
+		ctx:       ctx,
+		clock:     o.Clock,
+		started:   o.Clock.Now(),
+		evidence:  e,
+		input:     input,
+	}
 }
+
 func (l *Lab) parent() any {
 	if len(l.stack) == 0 {
 		return nil
 	}
 	return l.stack[len(l.stack)-1]
 }
+
 func (l *Lab) action(method string, args []any, kwargs Object, extra Object) func() {
 	if args == nil {
 		args = []any{}
@@ -61,7 +73,16 @@ func (l *Lab) action(method string, args []any, kwargs Object, extra Object) fun
 	l.sequence++
 	id := fmt.Sprintf("%s-a%06d", l.Case.ID(), l.sequence)
 	start := l.clock.Now()
-	row := Object{"id": id, "parentId": l.parent(), "kind": method, "method": method, "phase": "start", "time": unix(start), "args": args, "kwargs": kwargs}
+	row := Object{
+		"id":       id,
+		"parentId": l.parent(),
+		"kind":     method,
+		"method":   method,
+		"phase":    "start",
+		"time":     unix(start),
+		"args":     args,
+		"kwargs":   kwargs,
+	}
 	for k, v := range extra {
 		row[k] = v
 	}
@@ -83,7 +104,9 @@ func (l *Lab) action(method string, args []any, kwargs Object, extra Object) fun
 		}
 	}
 }
+
 func (l *Lab) K(args ...string) []byte { return l.KInput(nil, args...) }
+
 func (l *Lab) KInput(input any, args ...string) []byte {
 	mutation := false
 	dry := false
@@ -108,6 +131,7 @@ func (l *Lab) KInput(input any, args ...string) []byte {
 	}
 	return out
 }
+
 func redactPatch(args []string) []string {
 	out := append([]string{}, args...)
 	for i := 1; i < len(out); i++ {
@@ -117,33 +141,46 @@ func redactPatch(args []string) []string {
 	}
 	return out
 }
+
 func (l *Lab) JSON(args ...string) Object {
 	var o Object
 	abort(json.Unmarshal(l.K(args...), &o))
 	return o
 }
+
 func (l *Lab) Apply(o Object) {
 	defer l.action("apply", []any{o}, nil, nil)()
 	l.KInput(o, "-n", Namespace, "apply", "-f", "-")
 }
+
 func (l *Lab) Patch(o Object) {
 	defer l.action("patch_set", []any{o}, nil, nil)()
 	l.K("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "-p", jsonText(o))
 }
+
 func (l *Lab) Assert(ok bool, message string) {
 	phase := "end"
 	if !ok {
 		phase = "failure"
 	}
-	l.evidence.Emit("actions.jsonl", Object{"kind": "assert", "phase": phase, "time": unix(l.clock.Now()), "parentId": l.parent(), "passed": ok, "message": message})
+	l.evidence.Emit("actions.jsonl", Object{
+		"kind":     "assert",
+		"phase":    phase,
+		"time":     unix(l.clock.Now()),
+		"parentId": l.parent(),
+		"passed":   ok,
+		"message":  message,
+	})
 	if !ok {
 		abort(fmt.Errorf("assertion: %s", message))
 	}
 }
+
 func (l *Lab) Note(message string) {
 	defer l.action("note", []any{message}, nil, nil)()
 	fmt.Fprintln(l.Options.Output, message)
 }
+
 func (l *Lab) Checkpoint(title, description string) {
 	defer l.action("checkpoint", []any{title, description}, nil, nil)()
 	fmt.Fprintf(l.Options.Output, "\n━━ %s\n   Scenario trigger: %s\n", title, description)
@@ -155,7 +192,10 @@ func (l *Lab) Checkpoint(title, description string) {
 			err  error
 		}
 		reply := make(chan response, 1)
-		go func() { line, err := l.input.ReadString('\n'); reply <- response{line, err} }()
+		go func() {
+			line, err := l.input.ReadString('\n')
+			reply <- response{line, err}
+		}()
 		var answer string
 		var err error
 		select {
@@ -175,6 +215,7 @@ func (l *Lab) Checkpoint(title, description string) {
 		}
 	}
 }
+
 func appendJSON(path string, value any) error {
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e != nil {
@@ -183,10 +224,14 @@ func appendJSON(path string, value any) error {
 	defer f.Close()
 	return json.NewEncoder(f).Encode(value)
 }
+
 func (l *Lab) Sleep(d time.Duration) { abort(l.clock.Sleep(l.ctx, d)) }
+
 func (l *Lab) SetSlots(n int) {
 	defer l.action("set_slots", []any{n}, nil, nil)()
-	l.K("patch", "node", l.Options.Node, "--subresource=status", "--type=json", "-p", jsonText([]Object{{"op": "add", "path": "/status/capacity/" + strings.ReplaceAll(Slot, "/", "~1"), "value": fmt.Sprint(n)}}))
+	l.K("patch", "node", l.Options.Node, "--subresource=status", "--type=json", "-p", jsonText([]Object{
+		{"op": "add", "path": "/status/capacity/" + strings.ReplaceAll(Slot, "/", "~1"), "value": fmt.Sprint(n)},
+	}))
 	deadline := l.clock.Now().Add(45 * time.Second)
 	for l.clock.Now().Before(deadline) {
 		node := l.JSON("get", "node", l.Options.Node, "-o", "json")
@@ -197,6 +242,7 @@ func (l *Lab) SetSlots(n int) {
 	}
 	abort(fmt.Errorf("node did not acknowledge synthetic slot capacity %d", n))
 }
+
 func (l *Lab) Snapshot() Snapshot {
 	items, err := parseResourceList(l.K("-n", Namespace, "get", DSResource+",lws,pods,dsrs", "-o", "json"))
 	abort(err)
@@ -227,7 +273,15 @@ func (l *Lab) Wait(label string, p Predicate, timeout time.Duration, stable int,
 		if tick != nil {
 			tick(s)
 		}
-		abort(appendJSON(filepath.Join(l.Directory, "samples.jsonl"), Object{"time": unix(l.clock.Now()), "checkpoint": label, "ds": s.DS, "lws": s.LWS, "pods": s.Pods, "events": s.Events, "scalers": s.Scalers}))
+		abort(appendJSON(filepath.Join(l.Directory, "samples.jsonl"), Object{
+			"time":       unix(l.clock.Now()),
+			"checkpoint": label,
+			"ds":         s.DS,
+			"lws":        s.LWS,
+			"pods":       s.Pods,
+			"events":     s.Events,
+			"scalers":    s.Scalers,
+		}))
 		if p(s) {
 			hits++
 		} else {
@@ -243,12 +297,18 @@ func (l *Lab) Wait(label string, p Predicate, timeout time.Duration, stable int,
 	abort(fmt.Errorf("timeout: %s", label))
 	return Snapshot{}
 }
+
 func (l *Lab) WaitFor(label string, p Predicate) Snapshot { return l.Wait(label, p, 0, 0, nil) }
+
 func (l *Lab) Hold(label string, seconds int, p Predicate) Snapshot {
 	defer l.action("hold", []any{label, seconds}, nil, nil)()
 	until := l.clock.Now().Add(time.Duration(seconds) * time.Second)
-	return l.Wait(label, func(s Snapshot) bool { l.Assert(p(s), label); return !l.clock.Now().Before(until) }, time.Duration(seconds+30)*time.Second, 1, nil)
+	return l.Wait(label, func(s Snapshot) bool {
+		l.Assert(p(s), label)
+		return !l.clock.Now().Before(until)
+	}, time.Duration(seconds+30)*time.Second, 1, nil)
 }
+
 func (l *Lab) Reset() {
 	defer l.action("reset", nil, nil, nil)()
 	l.K("-n", Namespace, "delete", DSResource, "--all", "--wait=true", "--timeout=90s")
@@ -256,6 +316,7 @@ func (l *Lab) Reset() {
 	l.Wait("previous groups and scalers disappear", func(s Snapshot) bool { return len(s.Pods) == 0 && len(s.LWS) == 0 && len(s.Scalers) == 0 }, 120*time.Second, 0, nil)
 	l.SetSlots(64)
 }
+
 func (l *Lab) StartObserver() {
 	if l.observerCancel != nil {
 		return
@@ -319,6 +380,7 @@ func (l *Lab) StartObserver() {
 		}
 	}()
 }
+
 func (l *Lab) observerFailed(err error) {
 	l.diagnosticMu.Lock()
 	defer l.diagnosticMu.Unlock()
@@ -328,14 +390,20 @@ func (l *Lab) observerFailed(err error) {
 		// Clear the prior diagnostic in the portable trace too. If the failure
 		// itself is a disk error this append may fail; the original error still
 		// makes the scenario fail rather than claiming complete evidence.
-		_ = appendJSON(filepath.Join(l.Directory, "observer.jsonl"), Object{"schemaVersion": 1, "observedAt": l.clock.Now().UTC().Format(time.RFC3339Nano), "error": l.observerErr.Error()})
+		_ = appendJSON(filepath.Join(l.Directory, "observer.jsonl"), Object{
+			"schemaVersion": 1,
+			"observedAt":    l.clock.Now().UTC().Format(time.RFC3339Nano),
+			"error":         l.observerErr.Error(),
+		})
 	}
 }
+
 func (l *Lab) observerError() error {
 	l.diagnosticMu.Lock()
 	defer l.diagnosticMu.Unlock()
 	return l.observerErr
 }
+
 func (l *Lab) Close() error {
 	if l.observerCancel != nil {
 		l.observerCancel()
@@ -345,6 +413,7 @@ func (l *Lab) Close() error {
 	defer l.diagnosticMu.Unlock()
 	return l.observerErr
 }
+
 func (l *Lab) HasDiagnostic() bool {
 	l.diagnosticMu.Lock()
 	defer l.diagnosticMu.Unlock()
@@ -380,19 +449,36 @@ func (l *Lab) Create(p, d int, c CreateOptions) {
 	if len(c.Names) == 0 {
 		c.Names = []string{"prefill", "decode"}
 	}
-	defer l.action("create", []any{p, d}, Object{"version": c.Version, "surge": c.Surge, "unavailable": c.Unavailable, "size": c.Size, "ready": !c.HoldReady, "names": c.Names, "slots": c.Slots}, nil)()
+	defer l.action("create", []any{p, d}, Object{
+		"version":     c.Version,
+		"surge":       c.Surge,
+		"unavailable": c.Unavailable,
+		"size":        c.Size,
+		"ready":       !c.HoldReady,
+		"names":       c.Names,
+		"slots":       c.Slots,
+	}, nil)()
 	l.SetSlots(c.Slots)
 	roles := []any{}
 	for i, n := range []int{p, d} {
 		role := c.Names[i]
 		roles = append(roles, RoleSpec(role, n, l.Case.Identity, c.Version, budget(c.Surge, role), budget(c.Unavailable, role), c.Size, !c.HoldReady))
 	}
-	l.Apply(Object{"apiVersion": "disaggregatedset.x-k8s.io/v1", "kind": "DisaggregatedSet", "metadata": Object{"name": SetName}, "spec": Object{"roles": roles, "scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy}}})
+	l.Apply(Object{
+		"apiVersion": "disaggregatedset.x-k8s.io/v1",
+		"kind":       "DisaggregatedSet",
+		"metadata":   Object{"name": SetName},
+		"spec": Object{
+			"roles":         roles,
+			"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
+		},
+	})
 	l.StartObserver()
 	if !c.HoldReady {
 		l.Converge(c.Version, Targets{c.Names[0]: p, c.Names[1]: d}, 0)
 	}
 }
+
 func budget(v any, role string) any {
 	switch m := v.(type) {
 	case map[string]int:
@@ -416,8 +502,18 @@ type Update struct {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
 func (l *Lab) Update(u Update) {
-	defer l.action("update", nil, Object{"version": u.Version, "counts": u.Counts, "policy": u.Policy, "ready": u.Ready, "names": u.Names, "surge": u.Surge, "unavailable": u.Unavailable, "external_roles": u.ExternalRoles}, nil)()
+	defer l.action("update", nil, Object{
+		"version":        u.Version,
+		"counts":         u.Counts,
+		"policy":         u.Policy,
+		"ready":          u.Ready,
+		"names":          u.Names,
+		"surge":          u.Surge,
+		"unavailable":    u.Unavailable,
+		"external_roles": u.ExternalRoles,
+	}, nil)()
 	ds := l.JSON("-n", Namespace, "get", DSResource, SetName, "-o", "json")
 	roles := objects(at(clone(ds), "spec", "roles"))
 	for i, r := range roles {
@@ -473,12 +569,15 @@ func (l *Lab) Update(u Update) {
 			}
 		}
 	}
-	patch := Object{"spec": Object{"roles": roles}}
+	patch := Object{
+		"spec": Object{"roles": roles},
+	}
 	if u.Policy != "" {
 		obj(patch["spec"])["scalingPolicy"] = Object{"scaleDownDuringRollout": u.Policy}
 	}
 	l.Patch(patch)
 }
+
 func (l *Lab) Release(version, role string, count int, s *Snapshot) {
 	defer l.action("release", nil, Object{"version": version, "role": role, "count": count}, nil)()
 	state := Snapshot{}
@@ -504,6 +603,7 @@ func (l *Lab) Release(version, role string, count int, s *Snapshot) {
 		}
 	}
 }
+
 func (l *Lab) releasePod(p Object) {
 	if Ready(p) || at(p, "status", "phase") != "Running" {
 		return
@@ -520,13 +620,16 @@ func (l *Lab) releasePod(p Object) {
 		l.K("-n", Namespace, "exec", name(p), "-c", "demo", "--", "touch", "/tmp/ready")
 	}()
 }
+
 func (l *Lab) Counts(s Snapshot, v string) map[string]Counts {
 	if l.virtual {
 		return SubroleCounts(s, v, true)
 	}
 	return GroupCounts(s, v)
 }
+
 func (l *Lab) Count(s Snapshot, v, role string) Counts { return l.Counts(s, v)[role] }
+
 func (l *Lab) Total(s Snapshot, role, field string) int {
 	sum := 0
 	for _, v := range []string{"A", "B", "C"} {
@@ -542,6 +645,7 @@ func (l *Lab) Total(s Snapshot, role, field string) int {
 	}
 	return sum
 }
+
 func (l *Lab) Converge(v string, t Targets, timeout time.Duration) Snapshot {
 	defer l.action("converge", []any{v, t}, nil, nil)()
 	if timeout == 0 {
@@ -549,6 +653,7 @@ func (l *Lab) Converge(v string, t Targets, timeout time.Duration) Snapshot {
 	}
 	return l.Wait(v+" converges to "+describe(t), func(s Snapshot) bool { return converged(s, v, t) }, timeout, 3, func(s Snapshot) { l.Release(v, "", -1, &s) })
 }
+
 func converged(s Snapshot, v string, t Targets) bool {
 	children := false
 	for k := range t {
@@ -577,6 +682,7 @@ func converged(s Snapshot, v string, t Targets) bool {
 	}
 	return s.DS != nil && at(s.DS, "status", "observedGeneration") == at(s.DS, "metadata", "generation")
 }
+
 func (l *Lab) RestartController() {
 	defer l.action("restart_controller", nil, nil, nil)()
 	pods := objects(l.JSON("-n", "lws-system", "get", "pods", "-l", "control-plane=controller-manager", "-o", "json")["items"])
@@ -600,7 +706,11 @@ func (l *Lab) RestartController() {
 	deadline = l.clock.Now().Add(60 * time.Second)
 	for {
 		err := catch(func() {
-			l.K("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "--dry-run=server", "-p", jsonText(Object{"metadata": Object{"annotations": Object{"harness.lws.x-k8s.io/admission-probe": "ready"}}}))
+			l.K("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "--dry-run=server", "-p", jsonText(Object{
+				"metadata": Object{
+					"annotations": Object{"harness.lws.x-k8s.io/admission-probe": "ready"},
+				},
+			}))
 		})
 		if err == nil {
 			break
@@ -611,6 +721,7 @@ func (l *Lab) RestartController() {
 		l.Sleep(time.Second)
 	}
 }
+
 func catch(f func()) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
