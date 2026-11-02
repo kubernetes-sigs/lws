@@ -1,0 +1,11 @@
+{{/* Apply before CSS to avoid flashing a light Canvas in dark mode. */}}
+<script>
+(() => {
+  let theme;
+  try { theme = localStorage.getItem('td-color-theme'); } catch (_) {}
+  if (theme !== 'light' && theme !== 'dark') {
+    theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.documentElement.dataset.bsTheme = theme;
+})();
+</script>

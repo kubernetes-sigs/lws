@@ -1,5 +1,17 @@
 {
+  "scripts": {
+    "build": "python3 ../hack/releasing/snapshot-docs.py && npm run build:html",
+    "build:html": "hugo --source _generated --destination ../public --cleanDestinationDir --gc --minify",
+    "serve": "python3 ../hack/releasing/snapshot-docs.py && npm run serve:html",
+    "serve:html": "hugo server --source _generated --destination ../public --cleanDestinationDir",
+    "serve:working": "hugo server",
+    "test:integration": "node --test scripts/*.test.mjs",
+    "test:contrast": "node scripts/code-theme.browser.mjs",
+    "test:layout": "node scripts/layout.browser.mjs",
+    "test:animations": "node scripts/animations.browser.mjs"
+  },
     "devDependencies": {
+      "@playwright/test": "1.64.1",
       "autoprefixer": "^10.6.2",
       "postcss": "^8.5.32",
       "postcss-cli": "^12.0.0"

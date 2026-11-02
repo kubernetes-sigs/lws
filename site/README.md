@@ -42,7 +42,7 @@ GitHub example URLs are pinned to those commits, including examples under
 
 ## Generate and preview locally
 
-Requirements: Git, Python 3.9+, Node/npm, Go, and Hugo **extended** 0.152.2.
+Requirements: Git, Python 3.9+, Node.js 22.18+ with npm, Go, and Hugo **extended** 0.152.2.
 `make site-server` can install the repository's pinned Hugo binary.
 
 From the repository root:
@@ -50,7 +50,7 @@ From the repository root:
 ```sh
 npm ci --prefix site
 python3 hack/releasing/snapshot-docs.py
-hugo server --source site/_generated --destination ../public --cleanDestinationDir
+npm run serve:html --prefix site
 ```
 
 Open <http://localhost:1313/>. The script fetches tags, `main`, and release
@@ -161,3 +161,36 @@ title, `LeaderWorkerSet & DisaggregatedSet`. For example, the overview becomes
 installation page becomes `Installation | LeaderWorkerSet & DisaggregatedSet`.
 No page-specific overrides are needed. This makes browser tabs and search
 results clearer, including when readers arrive via llm-d.
+
+## Live Canvas illustrations
+
+The `canvas-animation` shortcode plays **prepared drawing data**, not a rollout
+simulation. Hugo bundles one small player directly; there is no separate animation
+package or build step. Add an illustration with:
+
+```go-html-template
+{{< canvas-animation data="/animations/gating.json" title="Revision gating with llm-d" >}}
+A short explanation of what the illustration shows.
+{{< /canvas-animation >}}
+```
+
+The player draws rectangles, paths, circles, and text from
+`site/static/animations/`. State captions, values, colors, and motion are already
+computed. It supports pause, seeking, state stepping, speed, looping, and
+fullscreen. It follows Light / Dark / Auto, starts paused for reduced motion,
+and pauses offscreen. It does not import traces, calculate policy, or export media.
+See [the data provenance](static/animations/README.md) for regeneration details.
+
+`npm run build` and `npm run serve` use versioned snapshots. For branch previews,
+generate snapshots with `--main-ref HEAD` after committing the documentation.
+The new illustrations appear under `/main/docs/...`; stable and older releases
+retain their own content. `npm run serve:working` previews uncommitted content.
+Hugo scripts expose `site/node_modules/.bin` for PostCSS.
+
+Run `npm run test:integration --prefix site` for integration checks. With a built
+versioned preview running, set `LWS_SITE_URL` and optionally
+`PLAYWRIGHT_CHANNEL=chrome`, then run `test:animations`, `test:contrast`, and
+`test:layout` to check playback, code readability, and responsive navigation.
+
+Do not commit compiled JavaScript, generated media, `site/_generated/`, or
+`site/public/`.

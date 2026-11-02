@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import vm from 'node:vm';
+
+const read = path => readFile(new URL(path, import.meta.url), 'utf8');
+const script = await read('../assets/js/dark-mode.js');
+
+function themeFixture({ stored = null, blocked = false, dark = false } = {}) {
+  const handlers = new Map(), attrs = {};
+  const root = { dataset: {}, removeAttribute() {} };
+  const toggles = ['light', 'dark', 'auto'].map(value => ({
+    dataset: { bsThemeValue: value },
+    addEventListener: (name, fn) => handlers.set(`${value}:${name}`, fn),
+    setAttribute: (key, next) => { attrs[`${value}:${key}`] = next; },
+    classList: { toggle() {} },
+    querySelector: () => ({ getAttribute: () => `#${value}-icon` }),
+  }));
+  const control = { setAttribute: (key, value) => { attrs[key] = value; }, focus() {} };
+  const media = { matches: dark, addEventListener: (name, fn) => handlers.set(`media:${name}`, fn) };
+  vm.runInNewContext(script, {
+    document: { documentElement: root, readyState: 'complete',
+      querySelectorAll: () => toggles, querySelector: () => control },
+    localStorage: {
+      getItem: () => { if (blocked) throw new Error('blocked'); return stored; },
+      setItem: (_key, value) => { if (blocked) throw new Error('blocked'); stored = value; },
+    },
+    matchMedia: () => media,
+    window: { addEventListener: (name, fn) => handlers.set(name, fn) },
+  });
+  return { root, attrs, stored: () => stored, choose: value => handlers.get(`${value}:click`)(),
+    system: value => { media.matches = value; handlers.get('media:change')(); } };
+}
+
+test('Light/Dark persists; Auto follows the system; blocked storage is harmless', () => {
+  for (const blocked of [false, true]) {
+    const f = themeFixture({ dark: true, blocked });
+    assert.equal(f.root.dataset.bsTheme, 'dark');
+    assert.equal(f.attrs['auto:aria-pressed'], 'true');
+    f.system(false);
+    assert.equal(f.root.dataset.bsTheme, 'light');
+    f.choose('dark');
+    f.system(false);
+    assert.equal(f.root.dataset.bsTheme, 'dark');
+    assert.equal(f.attrs['aria-label'], 'Color theme: Dark');
+    if (!blocked) assert.equal(themeFixture({ stored: f.stored() }).root.dataset.bsTheme, 'dark');
+    f.choose('auto');
+    assert.equal(f.root.dataset.bsTheme, 'light');
+  }
+});
+
+test('documentation embeds local prepared data without a separate application', async () => {
+  const scenes = { 'rollout-strategy': 'fractional', 'scaling-during-rollout': 'scaling', 'llm-d-integration': 'gating' };
+  for (const [page, scene] of Object.entries(scenes)) {
+    const source = await read(`../content/en/docs/concepts/disaggregatedset/${page}/_index.md`);
+    assert.ok(source.includes(`data="/animations/${scene}.json"`));
+    assert.doesNotMatch(source, /<video|\.mp4|\.gif/);
+  }
+  const shortcode = await read('../layouts/shortcodes/canvas-animation.html');
+  assert.match(shortcode, /js.Build/);
+  assert.match(shortcode, /relURL/);
+  assert.doesNotMatch(shortcode, /iframe|scene=/);
+});
+
+test('gating subtitle introduces the role counts without a release label', async () => {
+  const drawing = JSON.parse(await read('../static/animations/gating.json'));
+  assert.equal(drawing.primitives.find(item => item.type === 'text' && item.y === 94).text, '5 Prefill + 13 Decode');
+});
+
+test('all deployment contexts preserve snapshots and need only the Hugo build', async () => {
+  const netlify = await read('../../netlify.toml');
+  const pkg = JSON.parse(await read('../package.json'));
+  assert.match(pkg.scripts['build:html'], /hugo --source _generated/);
+  assert.doesNotMatch(netlify, /pnpm|build:animations|build:player/);
+  const commands = [...netlify.matchAll(/command = "([^"]+)"/g)].map(match => match[1]);
+  assert.equal(commands.length, 3);
+  for (const command of commands) assert.match(command, /snapshot-docs\.py.*&& npm run build:html/);
+  assert.doesNotMatch(commands[0], /--main-ref/);
+  for (const command of commands.slice(1)) assert.match(command, /--main-ref HEAD/);
+});
+
+test('shared navigation retains upstream versions, combined branding, and theme menu', async () => {
+  const navbar = await read('../layouts/partials/navbar.html');
+  for (const part of ['images/lws-ds-logos.svg', 'navbar-version-selector.html', 'docs-section-toggle', 'theme-toggler.html']) {
+    assert.ok(navbar.includes(part));
+  }
+});

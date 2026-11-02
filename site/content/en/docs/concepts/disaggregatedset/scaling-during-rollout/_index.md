@@ -51,16 +51,9 @@ The scale-down policy controls reductions independently of the scale-up policy. 
 
 The animation below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares the two **scale-down** policies using autoscaler requests, with both rollout budgets set to 10%. Scale-up remains Deferred in both examples.
 
-<figure class="td-max-width-on-larger-screens">
-<!-- Keep a compact area for native playback controls below the picture. -->
-<div style="position: relative; padding-top: calc(64.285714% + 2rem);">
-<video controls autoplay loop muted playsinline preload="metadata" poster="/images/disaggregatedset-scale-down-comparison-poster.png" width="1400" height="900" class="img-fluid d-block" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: top; background: #fff;" aria-label="After the same demand reduction, Deferred keeps 52 groups while Immediate keeps 36. Immediate retires A and trims B sooner. Both finish with 20 Prefill and 10 Decode groups Ready.">
-  <source src="/videos/disaggregatedset-scale-down-comparison.mp4" type="video/mp4">
-  <a href="/videos/disaggregatedset-scale-down-comparison.mp4">Download the scale-down comparison.</a>
-</video>
-</div>
-<figcaption class="small text-muted mt-2">Real planner decisions with simulated readiness and timing. This example assumes deletions remove Ready groups first.</figcaption>
-</figure>
+{{< canvas-animation data="/animations/scaling.json" title="Deferred versus Immediate scale-down during a rollout" >}}
+Real planner decisions with simulated readiness and timing. This example assumes deletions remove Ready groups first.
+{{< /canvas-animation >}}
 
 After watching the animation, you might ask:
 

@@ -1,4 +1,6 @@
 {{- if eq .Type "docs" -}}
+{{- $layout := resources.Get "js/docs-layout.js" | minify | fingerprint -}}
+<script src="{{ $layout.RelPermalink }}" integrity="{{ $layout.Data.Integrity }}" defer></script>
 {{/* Apply the same looping behavior to these animations in release snapshots. */}}
 <script>
   document.querySelectorAll([
