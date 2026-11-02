@@ -242,18 +242,18 @@ func genGroupUniqueKey(ns string, podName string) string {
 	return utils.Sha1Hash(fmt.Sprintf("%s/%s", ns, podName))
 }
 
-// hashDNSPrefixLength is how much of the group key goes into DNS facing names
+// HashDNSPrefixLength is how much of the group key goes into DNS facing names
 // (leader hostname, per-replica service name). 8 hex characters is 32 bits, the
 // same width as the pod template hash Deployments already rely on, and keeps
 // the LeaderWorkerSet's share of the 63 character name budgets large.
-const hashDNSPrefixLength = 8
+const HashDNSPrefixLength = 8
 
 // hashLeaderHostname is the host name of a hash identity leader: the lws name
 // plus a prefix of the group key, the same shape as worker and ordinal names.
 func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 	key := groupUniqueKey
-	if len(key) > hashDNSPrefixLength {
-		key = key[:hashDNSPrefixLength]
+	if len(key) > HashDNSPrefixLength {
+		key = key[:HashDNSPrefixLength]
 	}
 	return fmt.Sprintf("%s-%s", lwsName, key)
 }
