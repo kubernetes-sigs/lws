@@ -21,9 +21,18 @@ grep -Eq '^[[:space:]]*ScaleUpDuringRollout[[:space:]]+bool([[:space:]]|$)' "$CO
 TAGS=harness
 if (( ! INPUT_SCALE_UP )); then TAGS=harness,harness_legacy_scale_up; fi
 
+# Whole-set hashing and ComputeDomain migration were added separately from the
+# scale-up policy. Select their adapter by source support, never by build failure.
+WHOLE_SET_REVISION=0
+COMPUTE_DOMAIN_REVISION=0
+grep -Eq '^func ComputeDisaggregatedSetRevision\(' "$SOURCE_ROOT/pkg/utils/disaggregatedset/utils.go" 2>/dev/null && WHOLE_SET_REVISION=1
+grep -Eq '^func DisaggregatedSetUsesAutoComputeDomain\(' "$SOURCE_ROOT/pkg/computedomain/injection.go" 2>/dev/null && COMPUTE_DOMAIN_REVISION=1
+[[ "$WHOLE_SET_REVISION" == "$COMPUTE_DOMAIN_REVISION" ]] || fail 'Unsupported observer revision declarations.'
+if (( ! WHOLE_SET_REVISION )); then TAGS+=,harness_legacy_revision; fi
+
 jq -n --arg source "$SOURCE_ROOT" --arg assets "$ASSETS" --argjson tests "$([[ "${3:-}" == --tests ]] && printf true || printf false)" '
-  ["harness_diagnostics.go", "harness_policy_current.go", "harness_policy_legacy.go"] +
-  (if $tests then ["harness_diagnostics_test.go", "harness_policy_current_test.go"] else [] end) |
+  ["harness_diagnostics.go", "harness_policy_current.go", "harness_policy_legacy.go", "harness_revision_current.go", "harness_revision_legacy.go"] +
+  (if $tests then ["harness_diagnostics_test.go", "harness_policy_current_test.go", "harness_revision_current_test.go"] else [] end) |
   map({key:($source + "/pkg/controllers/disaggregatedset/" + .), value:($assets + "/overlay/" + . + ".inc")}) |
   from_entries |
   . + {($source + "/test/disaggregatedset_harness/observer/main.go"):($assets + "/main.go.inc")} |

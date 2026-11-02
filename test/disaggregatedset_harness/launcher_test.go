@@ -273,11 +273,14 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 	prepare, err := filepath.Abs(filepath.Join("observer", "prepare.sh"))
 	requireNoError(t, err)
 	for _, tc := range []struct {
-		inputs, state bool
-		tags          string
+		inputs, state, wholeSet, enrollment bool
+		tags                                string
 	}{
-		{true, true, "harness"}, {false, false, "harness,harness_legacy_scale_up"},
-		{true, false, ""}, {false, true, ""},
+		{true, true, true, true, "harness"},
+		{true, true, false, false, "harness,harness_legacy_revision"},
+		{false, false, false, false, "harness,harness_legacy_scale_up,harness_legacy_revision"},
+		{true, false, false, false, ""}, {false, true, false, false, ""},
+		{true, true, true, false, ""}, {true, true, false, true, ""},
 	} {
 		root := t.TempDir()
 		source := filepath.Join(root, "source with spaces")
@@ -293,6 +296,21 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 		}
 		requireNoError(t, os.WriteFile(filepath.Join(controller, "executor.go"), []byte(inputText), 0600))
 		requireNoError(t, os.WriteFile(filepath.Join(controller, "planner_state.go"), []byte(stateText), 0600))
+		for relative, supported := range map[string]bool{
+			"pkg/utils/disaggregatedset/utils.go": tc.wholeSet,
+			"pkg/computedomain/injection.go":      tc.enrollment,
+		} {
+			if !supported {
+				continue
+			}
+			path := filepath.Join(source, relative)
+			requireNoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+			name := "ComputeDisaggregatedSetRevision"
+			if strings.Contains(relative, "computedomain") {
+				name = "DisaggregatedSetUsesAutoComputeDomain"
+			}
+			requireNoError(t, os.WriteFile(path, []byte("func "+name+"(\n"), 0600))
+		}
 		overlay := filepath.Join(root, "overlay.json")
 		output, err := shell(t, root, nil, prepare, source, overlay, "--tests")
 		if (err == nil) != (tc.tags != "") {
@@ -311,7 +329,7 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 		requireNoError(t, err)
 		var mapping struct{ Replace map[string]string }
 		requireNoError(t, json.Unmarshal(contents, &mapping))
-		if len(mapping.Replace) != 6 {
+		if len(mapping.Replace) != 9 {
 			t.Fatalf("missing build/test overlay assets: %+v", mapping)
 		}
 		for virtual, backing := range mapping.Replace {

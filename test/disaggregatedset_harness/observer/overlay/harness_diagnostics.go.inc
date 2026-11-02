@@ -59,15 +59,9 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 	if len(missing) > 0 {
 		warnings = append(warnings, fmt.Sprintf("No owned scaler target for %v; previews are unavailable.", missing))
 	}
-	revision := disaggutils.ComputeRevision(ds.Spec.Roles)
-	switch ds.Annotations[disaggv1.RevisionHashVersionAnnotationKey] {
-	case disaggv1.RevisionHashVersion:
-	case "":
-		if len(list.Items) > 0 {
-			revision = disaggutils.ComputeRevisionV1(ds.Spec.Roles)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported revision hash version")
+	revision, err := harnessTargetRevision(ds, len(list.Items) > 0)
+	if err != nil {
+		return nil, err
 	}
 	readiness := make(rolloutReadiness)
 	snapshots := map[string]*replicagroups.Snapshot{}
