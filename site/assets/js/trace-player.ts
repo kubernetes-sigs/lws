@@ -59,6 +59,13 @@ function selectSuite(id: string, scenario?: string) {
   if (id === 'docs' && scenario === 'scaling') scenario = 'scaling-down';
   const group = groups.find(item => item.id === id);
   if (suite !== (group?.id ?? 'import')) {
+    if (!exporting) {
+      exportStatus.hidden = true;
+      delete exportStatus.dataset.state;
+      exportStatus.removeAttribute('title');
+      exportStatus.removeAttribute('aria-label');
+      exportMessage.textContent = '';
+    }
     scenarios.replaceChildren(...(group?.scenarios ?? []).map(entry => {
       const button = document.createElement('button'), detail = document.createElement('small');
       const [name, ...parts] = entry.title.split(' · ');

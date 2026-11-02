@@ -301,6 +301,8 @@ try {
   assert.equal(exported.version, 1);assert.deepEqual(exported.themes, themes);
   assert.deepEqual([exported.width, exported.height], [1920, 1080], 'Prepared JSON retains native 1080p dimensions');
   await page.locator('[data-trace-suite="import"]').click();
+  assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'Changing tabs clears completed export feedback');
+  assert.equal(await page.locator('[data-trace-export-message]').textContent(), '', 'Changing tabs also clears the stale live announcement');
   assert.equal(await surface.isVisible(), false);assert.equal(await page.locator('[data-trace-scenario]').count(), 0);
   const beforeImport = requests.length;
   await page.locator('[data-trace-file]').setInputFiles({name: 'my-scenario.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))});
