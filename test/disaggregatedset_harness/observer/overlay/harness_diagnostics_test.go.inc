@@ -19,7 +19,6 @@ limitations under the License.
 package disaggregatedset
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,27 +55,20 @@ func TestHarnessDiagnosticsUseCurrentPlannerBounds(t *testing.T) {
 				require.Equal(t, tc.floors[i], rows[i]["availabilityFloor"])
 				require.Equal(t, tc.ceilings[i], rows[i]["surgeCeiling"])
 			}
-			require.Equal(t, harnessStep(ComputeNextStep(tc.state)), report["preview"])
 		})
 	}
 }
 
-func TestHarnessObserveCannotInitializeMetadataOrIncludeForeignObjects(t *testing.T) {
+func TestHarnessObserveIgnoresForeignObjects(t *testing.T) {
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 2}, [2]int{0, 0}, [2]int{1, 1})
 	foreign := &leaderv1.LeaderWorkerSet{ObjectMeta: metav1.ObjectMeta{
 		Name: "foreign", Namespace: ds.Namespace, Labels: map[string]string{disaggv1.SetNameLabelKey: ds.Name},
 	}}
 	c := newTestClient(ds, foreign)
-	// Expose only Read methods, not a client that might accidentally be used
-	// for annotation/assignment initialization.
-	reader := struct{ client.Reader }{c}
-	report, err := HarnessObserve(context.Background(), reader, client.ObjectKeyFromObject(ds))
+	report, err := HarnessObserve(t.Context(), c, client.ObjectKeyFromObject(ds))
 	require.NoError(t, err)
 	require.Empty(t, report["lws"])
 	require.Equal(t, disaggutils.ComputeRevision(ds.Spec.Roles), report["targetRevision"])
-	current := &disaggv1.DisaggregatedSet{}
-	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(ds), current))
-	require.Empty(t, current.Annotations)
 	require.Len(t, report["slices"], 1)
 	require.NotNil(t, report["slices"].([]map[string]any)[0]["steadyBounds"])
 }

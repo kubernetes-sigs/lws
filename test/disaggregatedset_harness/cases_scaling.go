@@ -182,16 +182,7 @@ func (l *Lab) SubrolesCreate(counts Targets) {
 	parent := RoleSpec("decode", 1, l.Case.Identity, "A", 1, 0, 2, true)
 	delete(obj(parent["spec"]), "replicas")
 	parent["subRoles"] = childList(counts)
-	l.Apply(Object{
-		"apiVersion": "disaggregatedset.x-k8s.io/v1",
-		"kind":       "DisaggregatedSet",
-		"metadata":   Object{"name": SetName},
-		"spec": Object{
-			"roles":         []any{parent},
-			"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
-		},
-	})
-	l.StartObserver()
+	l.createSet([]any{parent})
 	target := Targets{}
 	for n, v := range counts {
 		target["decode/"+n] = v

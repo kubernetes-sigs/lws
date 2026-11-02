@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -57,11 +58,7 @@ func ExecuteSuite(ctx context.Context, o Options, selected []Case) (results []Re
 	}
 	for _, c := range selected {
 		allowed, selectionErr := Matrix(Selection{Names: []string{c.Name}})
-		valid := false
-		for _, candidate := range allowed {
-			valid = valid || candidate == c
-		}
-		if scenarios[c.Name] == nil || selectionErr != nil || !valid {
+		if scenarios[c.Name] == nil || selectionErr != nil || !slices.Contains(allowed, c) {
 			return nil, fmt.Errorf("invalid case selection: %+v", c)
 		}
 	}

@@ -10,29 +10,28 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // The overlay accesses private planner symbols, so unit CI must compile it
 // against this checkout, not just verify a synthetic overlay's JSON mapping.
 func TestObserverOverlayAgainstRepository(t *testing.T) {
 	root, err := filepath.Abs("../..")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	prepare, err := filepath.Abs("observer/prepare.sh")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	overlay := filepath.Join(t.TempDir(), "overlay.json")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, "bash", prepare, root, overlay, "--tests")
 	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("prepare current-source observer: %v\n%s", err, output)
-	}
+	require.NoError(t, err, "prepare current-source observer: %s", output)
 	tags := strings.TrimSpace(string(output))
 	command = exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"),
 		"test", "-overlay="+overlay, "-tags="+tags, "-count=1", "-run=^TestHarness",
 		"./pkg/controllers/disaggregatedset", "./test/disaggregatedset_harness/observer")
 	command.Dir = root
-	if output, err = command.CombinedOutput(); err != nil {
-		t.Fatalf("test current-source observer: %v\n%s", err, output)
-	}
+	output, err = command.CombinedOutput()
+	require.NoError(t, err, "test current-source observer: %s", output)
 }

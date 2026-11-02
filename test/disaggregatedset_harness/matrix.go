@@ -8,6 +8,7 @@ package harness
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -79,7 +80,7 @@ func Matrix(s Selection) ([]Case, error) {
 		}
 	}
 	var expanded []string
-	if contains(names, "all") {
+	if slices.Contains(names, "all") {
 		for _, d := range Definitions {
 			if !d.Large && d.Name != "large-rename" {
 				expanded = append(expanded, d.Name)
@@ -91,7 +92,7 @@ func Matrix(s Selection) ([]Case, error) {
 			expanded = append(expanded, n)
 		}
 	}
-	if contains(names, "large-all") {
+	if slices.Contains(names, "large-all") {
 		for _, d := range Definitions {
 			if d.Large {
 				expanded = append(expanded, d.Name)
@@ -146,13 +147,4 @@ func Matrix(s Selection) ([]Case, error) {
 	return out, nil
 }
 
-func oneOf(s string, values ...string) bool { return contains(values, s) }
-
-func contains(values []string, s string) bool {
-	for _, v := range values {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
+func oneOf(s string, values ...string) bool { return slices.Contains(values, s) }

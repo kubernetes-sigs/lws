@@ -6,15 +6,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeClock struct {
@@ -73,17 +74,8 @@ func testLab(t *testing.T, e Executor) *Lab {
 		Observer:   "/nonexistent-observer",
 	}
 	l := newLab(context.Background(), o, Case{"ordinary", "Hash", "Deferred", "default"}, nil)
-	if err := os.Mkdir(l.Directory, 0700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(l.Directory, 0700))
 	return l
-}
-
-func requireNoError(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestUnserializableInputFailsCaseWithoutExecutingCommand(t *testing.T) {
@@ -91,41 +83,16 @@ func TestUnserializableInputFailsCaseWithoutExecutingCommand(t *testing.T) {
 	l := testLab(t, executor)
 	err := catch(func() { l.Apply(Object{"invalid": func() {}}) })
 	var unsupported *json.UnsupportedTypeError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("Apply returned %v, want a recoverable JSON encoding error", err)
-	}
-	if len(executor.calls) != 0 {
-		t.Fatal("invalid manifest invoked a command", executor.calls)
-	}
+	require.ErrorAs(t, err, &unsupported, "Apply should return a recoverable JSON encoding error")
+	require.Empty(t, executor.calls, "invalid manifest invoked a command")
 }
 
-func TestSameTargetsComparesCountsIncludingEmptyMaps(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		a, b Targets
-		want bool
-	}{
-		{"both absent", nil, nil, true},
-		{"missing annotation", annotatedCounts(Object{}), Targets{}, true},
-		{
-			"empty annotation",
-			annotatedCounts(Object{
-				"metadata": Object{
-					"annotations": Object{ChildCounts: ""},
-				},
-			}),
-			Targets{},
-			true,
-		},
-		{"same counts", pair(2, 3), pair(2, 3), true},
-		{"different counts", pair(2, 3), pair(2, 4), false},
-		{"missing key", Targets{}, Targets{"prefill": 0}, false},
+func TestAbsentSubroleCountsMatchEmptyTargets(t *testing.T) {
+	for _, lws := range []Object{
+		{},
+		{"metadata": Object{"annotations": Object{ChildCounts: ""}}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := sameTargets(tc.a, tc.b); got != tc.want {
-				t.Fatalf("sameTargets(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
-		})
+		require.True(t, sameTargets(annotatedCounts(lws), Targets{}), "absent subrole counts did not match empty targets: %v", lws)
 	}
 }
 
@@ -212,23 +179,18 @@ func TestMatrixParity(t *testing.T) {
 		{Selection{Names: []string{"all", "all"}}, 26},
 	} {
 		m, err := Matrix(test.s)
-		requireNoError(t, err)
-		if len(m) != test.want {
-			t.Fatalf("matrix %+v: got %d want %d", test.s, len(m), test.want)
-		}
+		require.NoError(t, err)
+		require.Len(t, m, test.want, "matrix %+v", test.s)
 		seen := map[Case]bool{}
 		for _, c := range m {
-			if seen[c] || scenarios[c.Name] == nil {
-				t.Fatalf("duplicate or unimplemented %+v", c)
-			}
+			require.False(t, seen[c], "duplicate %+v", c)
+			require.NotNil(t, scenarios[c.Name], "unimplemented %+v", c)
 			seen[c] = true
 		}
 	}
 	m, err := Matrix(Selection{Names: []string{"large-scale-down"}, Identity: "hash", Policy: "Immediate", RolloutChain: "abc"})
-	requireNoError(t, err)
-	if !reflect.DeepEqual(m, []Case{{"large-scale-down", "Hash", "Immediate", "abc"}}) {
-		t.Fatal(m)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Case{{"large-scale-down", "Hash", "Immediate", "abc"}}, m)
 	for _, s := range []Selection{
 		{Names: []string{"unknown"}},
 		{Identity: "production"},
@@ -236,35 +198,29 @@ func TestMatrixParity(t *testing.T) {
 		{Variant: "100%"},
 		{RolloutChain: "a"},
 	} {
-		if _, err := Matrix(s); err == nil {
-			t.Fatalf("accepted %+v", s)
-		}
+		_, err := Matrix(s)
+		require.Error(t, err, "accepted %+v", s)
 	}
 }
 
 func TestManifestReadinessAndBudgets(t *testing.T) {
 	r := RoleSpec("prefill", 1, "Hash", "B", 0, "100%", 2, false)
-	if at(r, "spec", "groupIdentity") != "Hash" || at(r, "spec", "rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable") != "100%" {
-		t.Fatal(r)
-	}
+	require.Equal(t, "Hash", at(r, "spec", "groupIdentity"))
+	require.Equal(t, "100%", at(r, "spec", "rolloutStrategy", "rollingUpdateConfiguration", "maxUnavailable"))
 	container := objects(at(r, "spec", "leaderWorkerTemplate", "workerTemplate", "spec", "containers"))[0]
-	if objects(container["env"])[0]["value"] != "0" || at(container, "resources", "requests", Slot) != "1" {
-		t.Fatal(container)
-	}
+	require.Equal(t, "0", objects(container["env"])[0]["value"])
+	require.Equal(t, "1", at(container, "resources", "requests", Slot))
 }
 
 func TestWholeGroupCountsRequireLeaderAndWorker(t *testing.T) {
 	s := fleet(map[string]map[string]Counts{
 		"A": {"decode": {Spec: 1, Ready: 1, Scheduled: 1}},
 	}, 2)
-	if GroupCounts(s, "A")["decode"].Ready != 1 {
-		t.Fatal("complete group missing")
-	}
+	require.Equal(t, 1, GroupCounts(s, "A")["decode"].Ready, "complete group missing")
 	s.Pods = s.Pods[1:]
 	c := GroupCounts(s, "A")["decode"]
-	if c.Ready != 0 || c.Scheduled != 0 {
-		t.Fatal("ready worker without leader counted as group", c)
-	}
+	require.Zero(t, c.Ready, "ready worker without leader counted as group")
+	require.Zero(t, c.Scheduled, "scheduled worker without leader counted as group")
 }
 
 func TestPodRevisionChangesCannotHideBehindStableLWSRevision(t *testing.T) {
@@ -273,16 +229,10 @@ func TestPodRevisionChangesCannotHideBehindStableLWSRevision(t *testing.T) {
 	}, 1)
 	workload, previous := revisions(s, "B"), podRevisions(s, "B")
 	obj(at(s.Pods[0], "metadata", "labels"))[RevisionLabel] = "unexpected-revision"
-	if !sameSet(workload, revisions(s, "B")) {
-		t.Fatal("fixture changed workload")
-	}
-	if sameSet(previous, podRevisions(s, "B")) {
-		t.Fatal("Pod revision-only change was hidden")
-	}
+	require.True(t, sameSet(workload, revisions(s, "B")), "fixture changed workload")
+	require.False(t, sameSet(previous, podRevisions(s, "B")), "Pod revision-only change was hidden")
 	delete(obj(at(s.Pods[0], "metadata", "labels")), RevisionLabel)
-	if catch(func() { podRevisions(s, "B") }) == nil {
-		t.Fatal("missing revision label silently accepted")
-	}
+	require.Error(t, catch(func() { podRevisions(s, "B") }), "missing revision label silently accepted")
 }
 
 func TestSubroleAssignmentsRejectIncompleteOrUnpublishedState(t *testing.T) {
@@ -293,9 +243,7 @@ func TestSubroleAssignmentsRejectIncompleteOrUnpublishedState(t *testing.T) {
 	for _, p := range base.Pods {
 		obj(at(p, "metadata", "labels"))[SubroleLabel] = "a"
 	}
-	if !assigned(base, Targets{"a": 1}, "A") {
-		t.Fatal("valid assignment rejected")
-	}
+	require.True(t, assigned(base, Targets{"a": 1}, "A"), "valid assignment rejected")
 	for _, fault := range []string{"worker", "child", "plan", "published", "terminating", "physical"} {
 		s := copySnapshot(base)
 		switch fault {
@@ -312,9 +260,7 @@ func TestSubroleAssignmentsRejectIncompleteOrUnpublishedState(t *testing.T) {
 		case "physical":
 			obj(s.LWS[0]["spec"])["replicas"] = 2
 		}
-		if assigned(s, Targets{"a": 1}, "A") {
-			t.Fatal("accepted", fault)
-		}
+		require.False(t, assigned(s, Targets{"a": 1}, "A"), "accepted %s", fault)
 	}
 }
 
@@ -330,7 +276,7 @@ func TestHandoffDetectsHiddenReplacement(t *testing.T) {
 	before := fleet(map[string]map[string]Counts{
 		"A": {"prefill": {Spec: 3, Ready: 3, Scheduled: 3}, "decode": {Spec: 2, Ready: 2, Scheduled: 2}},
 	}, 2)
-	requireNoError(t, catch(func() { handoffPreserved(l, before, before) }))
+	require.NoError(t, catch(func() { handoffPreserved(l, before, before) }))
 	for _, fault := range []string{"uid", "replicas", "worker-ready", "lws"} {
 		s := copySnapshot(before)
 		switch fault {
@@ -343,9 +289,7 @@ func TestHandoffDetectsHiddenReplacement(t *testing.T) {
 		case "lws":
 			obj(s.LWS[0]["metadata"])["uid"] = "new"
 		}
-		if catch(func() { handoffPreserved(l, s, before) }) == nil {
-			t.Fatal("accepted", fault)
-		}
+		require.Error(t, catch(func() { handoffPreserved(l, s, before) }), "accepted %s", fault)
 	}
 }
 
@@ -356,13 +300,10 @@ func TestReleaseCountsExistingReadyFirst(t *testing.T) {
 		"B": {"prefill": {Spec: 3, Ready: 1, Scheduled: 3}},
 	}, 1)
 	obj(s.Pods[0]["metadata"])["name"] = "z-ready"
-	requireNoError(t, catch(func() { l.Release("B", "prefill", 2, &s) }))
-	if len(e.calls) != 1 || !contains(e.calls[0].args, name(s.Pods[1])) {
-		t.Fatal(e.calls)
-	}
-	if !reflect.DeepEqual(e.calls[0].args[:4], []string{"--kubeconfig", l.Options.Kubeconfig, "--context", l.Options.Context}) {
-		t.Fatal("ambient context used")
-	}
+	require.NoError(t, catch(func() { l.Release("B", "prefill", 2, &s) }))
+	require.Len(t, e.calls, 1)
+	require.Contains(t, e.calls[0].args, name(s.Pods[1]))
+	require.Equal(t, []string{"--kubeconfig", l.Options.Kubeconfig, "--context", l.Options.Context}, e.calls[0].args[:4], "ambient context used")
 }
 
 func TestUpdateExternalOnlyChangesReplicaSource(t *testing.T) {
@@ -371,75 +312,61 @@ func TestUpdateExternalOnlyChangesReplicaSource(t *testing.T) {
 		"spec": Object{"roles": roles},
 	}
 	e := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
-		if contains(c.args, "get") {
+		if slices.Contains(c.args, "get") {
 			return []byte(jsonText(ds)), nil, nil
 		}
 		return nil, nil, nil
 	}}
 	l := testLab(t, e)
-	requireNoError(t, catch(func() { l.Update(Update{ExternalRoles: []string{"prefill"}}) }))
+	require.NoError(t, catch(func() { l.Update(Update{ExternalRoles: []string{"prefill"}}) }))
 	call := e.calls[len(e.calls)-1]
 	var patch Object
 	for i, a := range call.args {
 		if a == "-p" {
-			requireNoError(t, json.Unmarshal([]byte(call.args[i+1]), &patch))
+			require.NoError(t, json.Unmarshal([]byte(call.args[i+1]), &patch))
 		}
 	}
 	rs := objects(at(patch, "spec", "roles"))
-	if at(rs[0], "scaling", "mode") != "External" || at(rs[0], "spec", "replicas") != nil || integer(at(rs[1], "spec", "replicas")) != 2 {
-		t.Fatal(patch)
-	}
-	if integer(at(obj(roles[0]), "spec", "replicas")) != 3 {
-		t.Fatal("mutated input")
-	}
+	require.Equal(t, "External", at(rs[0], "scaling", "mode"))
+	require.Nil(t, at(rs[0], "spec", "replicas"))
+	require.Equal(t, 2, integer(at(rs[1], "spec", "replicas")))
+	require.Equal(t, 3, integer(at(obj(roles[0]), "spec", "replicas")), "mutated input")
 }
 
 func TestConvergenceRequiresPhysicalCleanupAndAcknowledgement(t *testing.T) {
 	s := fleet(map[string]map[string]Counts{
 		"B": {"prefill": {Spec: 1, Ready: 1, Scheduled: 1}},
 	}, 1)
-	if !converged(s, "B", Targets{"prefill": 1}) {
-		t.Fatal("valid convergence rejected")
-	}
+	require.True(t, converged(s, "B", Targets{"prefill": 1}), "valid convergence rejected")
 	old := pod("old", "A", "prefill", "old", "0", true)
 	obj(old["metadata"])["deletionTimestamp"] = "now"
 	s.Pods = append(s.Pods, old)
-	if converged(s, "B", Targets{"prefill": 1}) {
-		t.Fatal("terminating old Pod ignored")
-	}
+	require.False(t, converged(s, "B", Targets{"prefill": 1}), "terminating old Pod ignored")
 	s.Pods = s.Pods[:1]
 	obj(s.DS["status"])["observedGeneration"] = 1
-	if converged(s, "B", Targets{"prefill": 1}) {
-		t.Fatal("unacknowledged generation accepted")
-	}
+	require.False(t, converged(s, "B", Targets{"prefill": 1}), "unacknowledged generation accepted")
 }
 
 func TestPercentageBounds(t *testing.T) {
 	f, c := percentBounds(initial)
-	if !sameTargets(f, pair(34, 18)) || !sameTargets(c, pair(41, 21)) {
-		t.Fatal(f, c)
-	}
+	require.Equal(t, pair(34, 18), f)
+	require.Equal(t, pair(41, 21), c)
 	f, c = percentBounds(shrunk)
-	if !sameTargets(f, pair(26, 13)) || !sameTargets(c, pair(31, 16)) {
-		t.Fatal(f, c)
-	}
+	require.Equal(t, pair(26, 13), f)
+	require.Equal(t, pair(31, 16), c)
 }
 
 func TestLargeCompletionRejectsUnexpectedTargetWorkload(t *testing.T) {
 	s := fleet(map[string]map[string]Counts{
 		"B": {"prefill": {Spec: 37, Ready: 37, Scheduled: 37}, "decode": {Spec: 19, Ready: 19, Scheduled: 19}},
 	}, 1)
-	if !largeConverged(s, "B", initial, false) {
-		t.Fatal("valid final large fleet rejected")
-	}
+	require.True(t, largeConverged(s, "B", initial, false), "valid final large fleet rejected")
 	extra := fleet(map[string]map[string]Counts{
 		"B": {"unexpected": {Spec: 1, Ready: 1, Scheduled: 1}},
 	}, 1)
 	s.LWS = append(s.LWS, extra.LWS...)
 	s.Pods = append(s.Pods, extra.Pods...)
-	if largeConverged(s, "B", initial, false) {
-		t.Fatal("extra target LWS/Pod accepted")
-	}
+	require.False(t, largeConverged(s, "B", initial, false), "extra target LWS/Pod accepted")
 }
 
 func TestBootstrapRequiresFirstGroupAndNewMatchingEvent(t *testing.T) {
@@ -455,13 +382,9 @@ func TestBootstrapRequiresFirstGroupAndNewMatchingEvent(t *testing.T) {
 	}, 1)
 	b := &firstGroupBootstrap{}
 	b.start(l, before, Targets{"prefill": 27})
-	if catch(func() { bounds(l, s, Targets{"prefill": 21}, Targets{"prefill": 27}, nil) }) == nil {
-		t.Fatal("ordinary ceiling not strict")
-	}
-	requireNoError(t, catch(func() { bounds(l, s, Targets{"prefill": 21}, Targets{"prefill": 27}, b) }))
-	if b.confirmed(s) {
-		t.Fatal("invented bootstrap event")
-	}
+	require.Error(t, catch(func() { bounds(l, s, Targets{"prefill": 21}, Targets{"prefill": 27}, nil) }), "ordinary ceiling not strict")
+	require.NoError(t, catch(func() { bounds(l, s, Targets{"prefill": 21}, Targets{"prefill": 27}, b) }))
+	require.False(t, b.confirmed(s), "invented bootstrap event")
 	s.Events = []Object{
 		{
 			"metadata":       Object{"uid": "event"},
@@ -471,23 +394,13 @@ func TestBootstrapRequiresFirstGroupAndNewMatchingEvent(t *testing.T) {
 			"message":        "Created one bootstrap replica for roles [prefill]",
 		},
 	}
-	if !b.confirmed(s) {
-		t.Fatal("matching event not recognized")
-	}
+	require.True(t, b.confirmed(s), "matching event not recognized")
 	b.start(l, s, Targets{"prefill": 28})
-	if b.allows(l, s, "prefill", 27) {
-		t.Fatal("already started C eligible")
-	}
+	require.False(t, b.allows(l, s, "prefill", 27), "already started C eligible")
 	b.start(l, before, Targets{"prefill": 27})
-	if !b.allows(l, s, "prefill", 27) {
-		t.Fatal("first borrow rejected")
-	}
-	if b.allows(l, before, "prefill", 27) {
-		t.Fatal("no excess is not borrowing")
-	}
-	if b.allows(l, s, "prefill", 27) {
-		t.Fatal("repaid exception borrowed twice")
-	}
+	require.True(t, b.allows(l, s, "prefill", 27), "first borrow rejected")
+	require.False(t, b.allows(l, before, "prefill", 27), "no excess is not borrowing")
+	require.False(t, b.allows(l, s, "prefill", 27), "repaid exception borrowed twice")
 }
 
 func TestMidpointAndGentleDownKeepOldWork(t *testing.T) {
@@ -496,19 +409,13 @@ func TestMidpointAndGentleDownKeepOldWork(t *testing.T) {
 		"A": {"prefill": {Spec: 19, Ready: 19}, "decode": {Spec: 10, Ready: 10}},
 		"B": {"prefill": {Spec: 18, Ready: 18}, "decode": {Spec: 9, Ready: 9}},
 	}, 1)
-	if !midpointVisible(l, s, initial) {
-		t.Fatal("midpoint rejected")
-	}
+	require.True(t, midpointVisible(l, s, initial), "midpoint rejected")
 	s = fleet(map[string]map[string]Counts{
 		"A": {"prefill": {Spec: 8, Ready: 8}, "decode": {Spec: 4, Ready: 4}},
 	}, 1)
-	if !scaleDownRetainsOld(l, s, "B", pair(19, 10)) {
-		t.Fatal("gentle down rejected")
-	}
+	require.True(t, scaleDownRetainsOld(l, s, "B", pair(19, 10)), "gentle down rejected")
 	s.Pods = nil
-	if scaleDownRetainsOld(l, s, "B", pair(19, 10)) {
-		t.Fatal("full drain accepted")
-	}
+	require.False(t, scaleDownRetainsOld(l, s, "B", pair(19, 10)), "full drain accepted")
 }
 
 func TestPauseAndEOFStopWithoutMutation(t *testing.T) {
@@ -521,9 +428,8 @@ func TestPauseAndEOFStopWithoutMutation(t *testing.T) {
 			l.Checkpoint("stop", "no event")
 			l.K("delete", "node", "unsafe")
 		})
-		if !errors.Is(err, context.Canceled) || len(e.calls) != 0 {
-			t.Fatalf("%q: %v %v", input, err, e.calls)
-		}
+		require.ErrorIs(t, err, context.Canceled, "input %q", input)
+		require.Empty(t, e.calls, "mutation after input %q", input)
 	}
 }
 
@@ -536,22 +442,18 @@ func TestResourceListValidation(t *testing.T) {
 		`{"kind":"List","items":[{}]}`,
 		`{"kind":"PodList","items":[]}`,
 	} {
-		if _, err := parseResourceList([]byte(input)); err == nil {
-			t.Fatal("fabricated empty state from", input)
-		}
+		_, err := parseResourceList([]byte(input))
+		require.Error(t, err, "fabricated empty state from %s", input)
 	}
 	items, err := parseResourceList([]byte(`{"kind":"List","items":[]}`))
-	requireNoError(t, err)
-	if items == nil || len(items) != 0 {
-		t.Fatal("valid empty list missing")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, items, "valid empty list missing")
+	require.Empty(t, items)
 }
 
 func TestObserverStartFailureDoesNotDeadlockClose(t *testing.T) {
 	l := testLab(t, &fakeExecutor{})
-	if catch(l.StartObserver) == nil {
-		t.Fatal("missing executable accepted")
-	}
+	require.Error(t, catch(l.StartObserver), "missing executable accepted")
 	done := make(chan struct{})
 	go func() {
 		l.Close()

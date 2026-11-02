@@ -4,6 +4,7 @@ package harness
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -17,14 +18,6 @@ var children = Targets{"prefill/fast": 25, "prefill/bulk": 12, "decode/fast": 13
 var reassigned = Targets{"prefill/fast": 21, "prefill/bulk": 16, "decode/fast": 10, "decode/bulk": 9}
 var childSurge = Targets{"prefill/fast": 6, "prefill/bulk": 6, "decode/fast": 3, "decode/bulk": 3}
 var versions = []string{"A", "B", "C"}
-
-func copyTargets(t Targets) Targets {
-	m := Targets{}
-	for k, v := range t {
-		m[k] = v
-	}
-	return m
-}
 
 type firstGroupBootstrap struct {
 	eligible, used map[string]bool
@@ -231,16 +224,7 @@ func largeStart(l *Lab, virtual, percentage bool) (Targets, Targets) {
 		role["subRoles"] = childList(childTargets(parent, children))
 		parents = append(parents, role)
 	}
-	l.Apply(Object{
-		"apiVersion": "disaggregatedset.x-k8s.io/v1",
-		"kind":       "DisaggregatedSet",
-		"metadata":   Object{"name": SetName},
-		"spec": Object{
-			"roles":         parents,
-			"scalingPolicy": Object{"scaleDownDuringRollout": l.Case.Policy},
-		},
-	})
-	l.StartObserver()
+	l.createSet(parents)
 	zero := Targets{}
 	for r := range children {
 		zero[r] = 0
@@ -366,7 +350,7 @@ func largeScaleUp(l *Lab) {
 	target, before, _, _ := largeMixed(l, false, false, nil)
 	old := oldSpecs(l, before, target)
 	started := uidSet(Pods(before, target, ""))
-	floors, ceilings := copyTargets(initial), Targets{}
+	floors, ceilings := maps.Clone(initial), Targets{}
 	for r, n := range grown {
 		ceilings[r] = n + largeSurge[r]
 	}

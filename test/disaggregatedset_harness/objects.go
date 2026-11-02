@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -37,11 +37,9 @@ type Snapshot struct {
 	Scalers []Object `json:"scalers"`
 }
 type Counts struct {
-	Spec      int        `json:"spec"`
-	Ready     int        `json:"ready"`
-	Scheduled int        `json:"scheduled"`
-	Initial   int        `json:"initial"`
-	Groups    [][]Object `json:"groups,omitempty"`
+	Spec      int `json:"spec"`
+	Ready     int `json:"ready"`
+	Scheduled int `json:"scheduled"`
 }
 type Targets = map[string]int
 
@@ -124,14 +122,7 @@ func jsonText(v any) string {
 	return string(b)
 }
 
-func keys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
+func keys[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 func Ready(p Object) bool {
 	if deleting(p) {
@@ -193,7 +184,6 @@ func GroupCounts(s Snapshot, version string) map[string]Counts {
 		role := label(lws, RoleLabel)
 		c := out[role]
 		c.Spec += integer(at(lws, "spec", "replicas"), 1)
-		c.Initial += integer(at(lws, "metadata", "annotations", Prefix+"initial-replicas"), c.Spec)
 		size := integer(at(lws, "spec", "leaderWorkerTemplate", "size"), 1)
 		for _, g := range Groups(s, version, role) {
 			if label(g[0], LWSLabel) != name(lws) {
@@ -243,7 +233,6 @@ func SubroleCounts(s Snapshot, version string, qualified bool) map[string]Counts
 			}
 			key := childKey(child)
 			c := out[key]
-			c.Groups = append(c.Groups, g)
 			if len(g) == size && allPods(g, Ready) {
 				c.Ready++
 			}

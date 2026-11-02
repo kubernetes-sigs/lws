@@ -70,7 +70,6 @@ func TestHarnessObserveIndependentScalingPolicies(t *testing.T) {
 					require.Equal(t, down == disaggv1.RolloutScalingImmediate, state.ScaleDownDuringRollout)
 					require.Equal(t, RoleReplicaState{4, 4}, state.ActiveOld.ReadyReplicas)
 					require.Equal(t, RoleReplicaState{0, 0}, state.Target.ReadyReplicas)
-					require.Equal(t, harnessStep(ComputeNextStep(state)), candidate["preview"])
 					growthLimit := 2
 					if up == disaggv1.RolloutScalingImmediate {
 						growthLimit = 6

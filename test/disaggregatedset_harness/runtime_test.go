@@ -6,14 +6,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func ownershipFixture(t *testing.T) (Options, Object, Object, *fakeExecutor) {
@@ -27,8 +29,8 @@ func ownershipFixture(t *testing.T) (Options, Object, Object, *fakeExecutor) {
 		"owner":            "run-proof",
 		"controllerCommit": strings.Repeat("a", 40),
 	}
-	requireNoError(t, writeJSON(filepath.Join(root, "runtime.json"), proof))
-	requireNoError(t, os.WriteFile(filepath.Join(root, "owner"), []byte("run-proof\n"), 0600))
+	require.NoError(t, writeJSON(filepath.Join(root, "runtime.json"), proof))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "owner"), []byte("run-proof\n"), 0600))
 	node := Object{
 		"Id": "owned-id",
 		"Config": Object{
@@ -64,9 +66,7 @@ func ownershipFixture(t *testing.T) (Options, Object, Object, *fakeExecutor) {
 		if c.program == "docker" {
 			return []byte(jsonText([]Object{node})), nil, nil
 		}
-		if !contains(c.args, "config") {
-			t.Fatal("ownership check attempted non-config Kubernetes command", c)
-		}
+		require.Contains(t, c.args, "config", "ownership check attempted non-config Kubernetes command")
 		return []byte(jsonText(config)), nil, nil
 	}}
 	o := Options{
@@ -110,20 +110,17 @@ func TestOwnershipBindsExactDockerNodeAndKubeEndpoint(t *testing.T) {
 			case "writable":
 				objects(node["Mounts"])[0]["RW"] = true
 			case "owner-token":
-				requireNoError(t, os.WriteFile(filepath.Join(o.RunDir, "owner"), []byte("replaced"), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(o.RunDir, "owner"), []byte("replaced"), 0600))
 			case "extra-context":
 				config["contexts"] = append(arr(config["contexts"]), Object{"name": "production"})
 			case "private-path":
 				o.Kubeconfig = "/tmp/unrelated-kubeconfig"
 			}
 			err := ValidateOwnership(context.Background(), o)
-			if (err == nil) != (fault == "none") {
-				t.Fatalf("%s: %v", fault, err)
-			}
+			require.Equal(t, fault == "none", err == nil, "%s: %v", fault, err)
 			for _, call := range e.calls {
-				if contains(call.args, "delete") || contains(call.args, "patch") {
-					t.Fatal("ownership check mutated", call)
-				}
+				require.NotContains(t, call.args, "delete", "ownership check mutated")
+				require.NotContains(t, call.args, "patch", "ownership check mutated")
 			}
 		})
 	}
@@ -141,18 +138,15 @@ func TestOwnsNodeOnlyExactHostTranslation(t *testing.T) {
 		{"darwin", "/host_mnt" + p + "-other", "id", false},
 		{"darwin", p, "new-id", false},
 	} {
-		if OwnsNode(c.id, "cluster", c.mount, "id", "cluster", p, c.os) != c.want {
-			t.Fatal(c)
-		}
+		require.Equal(t, c.want, OwnsNode(c.id, "cluster", c.mount, "id", "cluster", p, c.os), "%+v", c)
 	}
 }
 
 func TestPublicSuiteRejectsUnknownVariantBeforeFilesystemOrCommands(t *testing.T) {
 	e := &fakeExecutor{}
 	_, err := ExecuteSuite(context.Background(), Options{Executor: e, Output: io.Discard}, []Case{{"ordinary", "Hash", "Deferred", "../../outside"}})
-	if err == nil || !strings.Contains(err.Error(), "invalid case selection") || len(e.calls) != 0 {
-		t.Fatal(err, e.calls)
-	}
+	require.ErrorContains(t, err, "invalid case selection")
+	require.Empty(t, e.calls)
 }
 
 func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
@@ -161,7 +155,7 @@ func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 	probeCount := 0
 	e.run = func(c command) ([]byte, []byte, error) {
 		calls++
-		if contains(c.args, "get") {
+		if slices.Contains(c.args, "get") {
 			id := "new"
 			if calls == 1 {
 				id = "old"
@@ -179,10 +173,8 @@ func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 				},
 			})), nil, nil
 		}
-		if contains(c.args, "patch") {
-			if !contains(c.args, "--dry-run=server") {
-				t.Fatal("admission probe persisted")
-			}
+		if slices.Contains(c.args, "patch") {
+			require.Contains(t, c.args, "--dry-run=server", "admission probe persisted")
 			probeCount++
 			if probeCount == 1 {
 				return nil, []byte("failed calling webhook: connection refused"), fmt.Errorf("exit 1")
@@ -191,161 +183,147 @@ func TestRestartControllerWaitsForAdmissionDryRun(t *testing.T) {
 		return nil, nil, nil
 	}
 	l := testLab(t, e)
-	requireNoError(t, catch(l.RestartController))
-	if probeCount != 2 {
-		t.Fatal("admission not retried", probeCount)
-	}
+	require.NoError(t, catch(l.RestartController))
+	require.Equal(t, 2, probeCount, "admission not retried")
 }
 
-func TestEmergencyRestoresExactHooksAfterCancellation(t *testing.T) {
-	e := &fakeExecutor{}
-	var restores []command
-	e.run = func(c command) ([]byte, []byte, error) {
-		if c.ctx.Err() != nil {
-			return nil, nil, c.ctx.Err()
-		}
-		a := strings.Join(c.args, " ")
-		switch {
-		case strings.Contains(a, "get deployment"):
-			return []byte(`{"spec":{"replicas":2}}`), nil, nil
-		case strings.Contains(a, "get mutatingwebhookconfigurations"):
-			return []byte(jsonText(Object{
-				"items": []any{
-					Object{
-						"metadata": Object{"name": "mutate"},
-						"webhooks": []any{
-							Object{
-								"name": "mleaderworkerset.kb.io",
-								"namespaceSelector": Object{
-									"matchLabels": Object{"keep": "original"},
-								},
+func TestEmergencyRestoresExactHooksAfterFailure(t *testing.T) {
+	for _, mode := range []string{"cancellation", "panic"} {
+		t.Run(mode, func(t *testing.T) {
+			e := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+				if c.ctx.Err() != nil {
+					return nil, nil, c.ctx.Err()
+				}
+				if slices.Contains(c.args, "get") {
+					if slices.Contains(c.args, "deployment") {
+						return []byte(`{"spec":{"replicas":2}}`), nil, nil
+					}
+					var names []string
+					if slices.Contains(c.args, "mutatingwebhookconfigurations") {
+						names = []string{"mleaderworkerset.kb.io"}
+					} else if slices.Contains(c.args, "validatingwebhookconfigurations") {
+						names = []string{"vleaderworkerset.kb.io", "vdisaggregatedset.kb.io"}
+					}
+					if len(names) > 0 {
+						webhooks := []any{}
+						for _, name := range names {
+							hook := Object{
+								"name": name,
 								"clientConfig": Object{
 									"service": Object{"namespace": "lws-system"},
 								},
+							}
+							if name == "mleaderworkerset.kb.io" {
+								hook["namespaceSelector"] = Object{"matchLabels": Object{"keep": "original"}}
+							}
+							webhooks = append(webhooks, hook)
+						}
+						return []byte(jsonText(Object{
+							"items": []any{
+								Object{"metadata": Object{"name": names[0]}, "webhooks": webhooks},
 							},
-						},
-					},
+						})), nil, nil
+					}
+				}
+				return []byte(`{"items":[]}`), nil, nil
+			}}
+			l := testLab(t, e)
+			ctx, cancel := context.WithCancel(l.ctx)
+			defer cancel()
+			l.ctx = ctx
+			run := func() {
+				pausedForAdoption(l, func() {
+					if mode == "panic" {
+						panic("unexpected fixture panic")
+					}
+					cancel()
+					abort(context.Canceled)
+				})
+			}
+			if mode == "panic" {
+				require.PanicsWithValue(t, "unexpected fixture panic", run)
+			} else {
+				require.ErrorIs(t, catch(run), context.Canceled, "cancellation not preserved")
+			}
+			var mutations []command
+			for _, call := range e.calls {
+				if slices.Contains(call.args, "patch") || slices.Contains(call.args, "scale") {
+					mutations = append(mutations, call)
+				}
+			}
+			require.Len(t, mutations, 6, "expected two exclusions, scale0, two restores, scale2")
+			require.Contains(t, mutations[5].args, "--replicas=2", "manager count not restored")
+			for index, want := range map[int][]Object{
+				3: {
+					{"op": "remove", "path": "/webhooks/0/namespaceSelector"},
+					{"op": "remove", "path": "/webhooks/1/namespaceSelector"},
 				},
-			})), nil, nil
-		case strings.Contains(a, "get validatingwebhookconfigurations"):
-			return []byte(jsonText(Object{
-				"items": []any{
-					Object{
-						"metadata": Object{"name": "validate"},
-						"webhooks": []any{
-							Object{
-								"name": "vleaderworkerset.kb.io",
-								"clientConfig": Object{
-									"service": Object{"namespace": "lws-system"},
-								},
-							},
-							Object{
-								"name": "vdisaggregatedset.kb.io",
-								"clientConfig": Object{
-									"service": Object{"namespace": "lws-system"},
-								},
-							},
-						},
-					},
-				},
-			})), nil, nil
-		case strings.Contains(a, "get pods"):
-			return []byte(`{"items":[]}`), nil, nil
-		case strings.Contains(a, "patch") || strings.Contains(a, "scale"):
-			restores = append(restores, c)
-		}
-		return nil, nil, nil
-	}
-	l := testLab(t, e)
-	ctx, cancel := context.WithCancel(l.ctx)
-	l.ctx = ctx
-	err := catch(func() {
-		pausedForAdoption(l, func() {
-			cancel()
-			abort(context.Canceled)
+				4: {{
+					"op":    "add",
+					"path":  "/webhooks/0/namespaceSelector",
+					"value": Object{"matchLabels": Object{"keep": "original"}},
+				}},
+			} {
+				var patch []Object
+				for i, arg := range mutations[index].args {
+					if arg == "-p" {
+						require.NoError(t, json.Unmarshal([]byte(mutations[index].args[i+1]), &patch))
+					}
+				}
+				require.Equal(t, want, patch, "original selectors not restored")
+			}
 		})
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if len(restores) != 6 {
-		t.Fatalf("expected two exclusions, scale0, two restores, scale2; got %d", len(restores))
-	}
-	if !contains(restores[5].args, "--replicas=2") {
-		t.Fatal("manager count not restored")
-	}
-	var patch []Object
-	for i, a := range restores[4].args {
-		if a == "-p" {
-			requireNoError(t, json.Unmarshal([]byte(restores[4].args[i+1]), &patch))
-		}
-	}
-	if len(patch) != 1 || at(obj(patch[0]["value"]), "matchLabels", "keep") != "original" {
-		t.Fatal("original selector not restored", patch)
 	}
 }
 
 func TestEvidenceRejectsMalformedSuccessfulRead(t *testing.T) {
-	for _, body := range []string{`{}`, `null`, `{"kind":"List","items":null}`} {
-		t.Run(body, func(t *testing.T) {
-			root := t.TempDir()
-			e, err := NewEvidence(root, "fixture")
-			requireNoError(t, err)
-			o := Options{
-				Clock:    RealClock{},
-				Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) { return []byte(body), nil, nil }},
-				Kubectl:  "fake",
-			}
-			if err = e.Start(context.Background(), o); err == nil {
-				t.Fatal("accepted malformed response")
-			}
-			select {
-			case <-e.done:
-			default:
-				t.Fatal("failed Start left the acquisition goroutine running")
-			}
-			requireNoError(t, e.Close())
-			raw, err := os.ReadFile(filepath.Join(root, "film-recording", "snapshots.jsonl"))
-			requireNoError(t, err)
-			var row Object
-			requireNoError(t, json.Unmarshal([]byte(strings.Split(strings.TrimSpace(string(raw)), "\n")[0]), &row))
-			if row["state"] != nil || row["error"] == nil {
-				t.Fatal("fabricated state", row)
-			}
-		})
+	root := t.TempDir()
+	e, err := NewEvidence(root, "fixture")
+	require.NoError(t, err)
+	o := Options{Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) {
+		return []byte(`{"kind":"List","items":null}`), nil, nil
+	}}}
+	require.Error(t, e.Start(context.Background(), o), "accepted malformed response")
+	select {
+	case <-e.done:
+	default:
+		t.Fatal("failed Start left the acquisition goroutine running")
 	}
+	require.NoError(t, e.Close())
+	raw, err := os.ReadFile(filepath.Join(root, "film-recording", "snapshots.jsonl"))
+	require.NoError(t, err)
+	var row Object
+	require.NoError(t, json.NewDecoder(strings.NewReader(string(raw))).Decode(&row))
+	require.Nil(t, row["state"], "fabricated state")
+	require.NotNil(t, row["error"], "missing acquisition error")
 }
 
 func TestEvidenceStartDefaultsAndCancellation(t *testing.T) {
 	t.Run("default clock", func(t *testing.T) {
 		e, err := NewEvidence(t.TempDir(), "fixture")
-		requireNoError(t, err)
+		require.NoError(t, err)
 		executor := &fakeExecutor{run: func(command) ([]byte, []byte, error) {
 			return []byte(`{"kind":"List","items":[]}`), nil, nil
 		}}
-		requireNoError(t, e.Start(t.Context(), Options{Executor: executor}))
-		requireNoError(t, e.Close())
-		if len(executor.calls) == 0 || executor.calls[0].program != "kubectl" {
-			t.Fatal("default kubectl was not used", executor.calls)
-		}
+		require.NoError(t, e.Start(t.Context(), Options{Executor: executor}))
+		require.NoError(t, e.Close())
+		require.NotEmpty(t, executor.calls)
+		require.Equal(t, "kubectl", executor.calls[0].program, "default kubectl was not used")
 	})
 	t.Run("default executor", func(t *testing.T) {
 		e, err := NewEvidence(t.TempDir(), "fixture")
-		requireNoError(t, err)
-		err = e.Start(t.Context(), Options{Kubectl: filepath.Join(t.TempDir(), "missing-kubectl")})
-		if err == nil {
-			t.Fatal("missing executable did not fail initial acquisition")
-		}
+		require.NoError(t, err)
+		require.Error(t, e.Start(t.Context(), Options{Kubectl: filepath.Join(t.TempDir(), "missing-kubectl")}), "missing executable did not fail initial acquisition")
 		select {
 		case <-e.done:
 		default:
 			t.Fatal("failed Start left the acquisition goroutine running")
 		}
-		requireNoError(t, e.Close())
+		require.NoError(t, e.Close())
 	})
 	t.Run("cancellation joins acquisition", func(t *testing.T) {
 		e, err := NewEvidence(t.TempDir(), "fixture")
-		requireNoError(t, err)
+		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		executor := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
@@ -353,82 +331,14 @@ func TestEvidenceStartDefaultsAndCancellation(t *testing.T) {
 			<-c.ctx.Done()
 			return nil, nil, c.ctx.Err()
 		}}
-		if err = e.Start(ctx, Options{Executor: executor}); !errors.Is(err, context.Canceled) {
-			t.Fatalf("Start returned %v, want cancellation", err)
-		}
+		require.ErrorIs(t, e.Start(ctx, Options{Executor: executor}), context.Canceled)
 		select {
 		case <-e.done:
 		default:
 			t.Fatal("canceled Start returned before acquisition stopped")
 		}
-		requireNoError(t, e.Close())
+		require.NoError(t, e.Close())
 	})
-}
-
-func TestEmergencyRestoresAfterUnexpectedPanic(t *testing.T) {
-	e := &fakeExecutor{}
-	e.run = func(c command) ([]byte, []byte, error) {
-		if contains(c.args, "get") && contains(c.args, "deployment") {
-			return []byte(`{"spec":{"replicas":2}}`), nil, nil
-		}
-		if contains(c.args, "get") && contains(c.args, "mutatingwebhookconfigurations") {
-			webhooks := []any{}
-			for _, name := range []string{"mleaderworkerset.kb.io", "vleaderworkerset.kb.io", "vdisaggregatedset.kb.io"} {
-				webhooks = append(webhooks, Object{
-					"name": name,
-					"namespaceSelector": Object{
-						"matchLabels": Object{"keep": "original"},
-					},
-					"clientConfig": Object{
-						"service": Object{"namespace": "lws-system"},
-					},
-				})
-			}
-			return []byte(jsonText(Object{
-				"items": []any{
-					Object{
-						"metadata": Object{"name": "fixture"},
-						"webhooks": webhooks,
-					},
-				},
-			})), nil, nil
-		}
-		return []byte(`{"items":[]}`), nil, nil
-	}
-	l := testLab(t, e)
-	var propagated any
-	func() {
-		defer func() { propagated = recover() }()
-		pausedForAdoption(l, func() { panic("unexpected fixture panic") })
-	}()
-	if propagated != "unexpected fixture panic" {
-		t.Fatal("unexpected panic not preserved", propagated)
-	}
-	patches := []command{}
-	restored := false
-	for _, call := range e.calls {
-		if contains(call.args, "patch") {
-			patches = append(patches, call)
-		}
-		restored = restored || contains(call.args, "--replicas=2")
-	}
-	if len(patches) != 2 || !restored {
-		t.Fatal("panic bypassed restoration", e.calls)
-	}
-	var undo []Object
-	for i, arg := range patches[1].args {
-		if arg == "-p" {
-			requireNoError(t, json.Unmarshal([]byte(patches[1].args[i+1]), &undo))
-		}
-	}
-	if len(undo) != 3 {
-		t.Fatal(undo)
-	}
-	for _, patch := range undo {
-		if at(obj(patch["value"]), "matchLabels", "keep") != "original" {
-			t.Fatal("selector not restored exactly", patch)
-		}
-	}
 }
 
 func TestObserverFailureClearsCredit(t *testing.T) {
@@ -438,16 +348,10 @@ func TestObserverFailureClearsCredit(t *testing.T) {
 			Object{"slice": "0"},
 		},
 	}
-	if !l.HasDiagnostic() {
-		t.Fatal("fixture missing")
-	}
+	require.True(t, l.HasDiagnostic(), "fixture missing")
 	l.observerFailed(fmt.Errorf("unexpected exit"))
-	if catch(func() { l.HasDiagnostic() }) == nil {
-		t.Fatal("stale diagnostic survived failure")
-	}
-	if l.Close() == nil {
-		t.Fatal("observer failure lost on close")
-	}
+	require.Error(t, catch(func() { l.HasDiagnostic() }), "stale diagnostic survived failure")
+	require.Error(t, l.Close(), "observer failure lost on close")
 }
 
 func TestInteractiveCheckpointCancelsWhileInputBlocked(t *testing.T) {
@@ -470,15 +374,11 @@ func TestInteractiveCheckpointCancelsWhileInputBlocked(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(time.Second):
 		t.Fatal("cancellation blocked on stdin")
 	}
-	if len(executor.calls) > 0 {
-		t.Fatal("mutation after cancelled checkpoint")
-	}
+	require.Empty(t, executor.calls, "mutation after cancelled checkpoint")
 }
 
 func TestWaitCancellationAndStableSamples(t *testing.T) {
@@ -487,25 +387,19 @@ func TestWaitCancellationAndStableSamples(t *testing.T) {
 	}
 	l := testLab(t, e)
 	hits := 0
-	requireNoError(t, catch(func() {
+	require.NoError(t, catch(func() {
 		l.Wait("stable", func(Snapshot) bool {
 			hits++
 			return hits != 2
 		}, 10*time.Second, 3, nil)
 	}))
-	if hits != 5 {
-		t.Fatal("stable count not reset", hits)
-	}
+	require.Equal(t, 5, hits, "stable count not reset")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	l.ctx = ctx
 	before := len(e.calls)
-	if err := catch(func() { l.WaitFor("cancel", func(Snapshot) bool { return false }) }); !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if len(e.calls) != before {
-		t.Fatal("read after cancel")
-	}
+	require.ErrorIs(t, catch(func() { l.WaitFor("cancel", func(Snapshot) bool { return false }) }), context.Canceled)
+	require.Len(t, e.calls, before, "read after cancel")
 }
 
 // This optional test fixture is created only in a caller-chosen new directory,
@@ -514,11 +408,11 @@ func TestWaitCancellationAndStableSamples(t *testing.T) {
 func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 	root := t.TempDir()
 	if requested := os.Getenv("LWS_GO_EVIDENCE_FIXTURE"); requested != "" {
-		requireNoError(t, os.Mkdir(requested, 0700))
+		require.NoError(t, os.Mkdir(requested, 0700))
 		root = requested
 	}
 	e, err := NewEvidence(root, strings.Repeat("a", 40))
-	requireNoError(t, err)
+	require.NoError(t, err)
 	c := Case{"ordinary", "Hash", "Deferred", "default"}
 	e.Case(c.ID())
 	executor := &fakeExecutor{}
@@ -529,7 +423,7 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 		Clock:    &fakeClock{now: time.Unix(1800000000, 0)},
 		Output:   io.Discard,
 	}, c, e)
-	requireNoError(t, os.Mkdir(l.Directory, 0700))
+	require.NoError(t, os.Mkdir(l.Directory, 0700))
 	state := fleet(map[string]map[string]Counts{
 		"A": {"prefill": {Spec: 2, Ready: 2, Scheduled: 2}, "decode": {Spec: 4, Ready: 4, Scheduled: 4}},
 	}, 1)
@@ -537,8 +431,8 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 		"roles": []any{RoleSpec("prefill", 2, "Hash", "A", 1, 0, 1, true), RoleSpec("decode", 4, "Hash", "A", 1, 0, 1, true)},
 	}
 	executor.run = func(c command) ([]byte, []byte, error) {
-		if contains(c.args, "get") {
-			if contains(c.args, "node") {
+		if slices.Contains(c.args, "get") {
+			if slices.Contains(c.args, "node") {
 				return []byte(jsonText(Object{
 					"status": Object{
 						"allocatable": Object{Slot: "64"},
@@ -558,7 +452,7 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 		"eventsRequested": true,
 	})
 	l.Sleep(time.Second)
-	requireNoError(t, catch(func() {
+	require.NoError(t, catch(func() {
 		l.Checkpoint("Change demand", "Update replicas, keep template A.")
 		l.Update(Update{Counts: pair(3, 5)})
 		l.SetSlots(64)
@@ -583,20 +477,16 @@ func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
 		Checks:           []string{"fixture"},
 	}
 	e.Emit("actions.jsonl", Object{"id": c.ID(), "kind": "case", "phase": "end", "time": unix(l.clock.Now()), "result": result})
-	requireNoError(t, writeJSON(filepath.Join(root, "results.json"), []Result{result}))
-	requireNoError(t, e.Close())
+	require.NoError(t, writeJSON(filepath.Join(root, "results.json"), []Result{result}))
+	require.NoError(t, e.Close())
 	raw, err := os.ReadFile(filepath.Join(root, "film-recording", "actions.jsonl"))
-	requireNoError(t, err)
+	require.NoError(t, err)
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var row Object
-		requireNoError(t, json.Unmarshal([]byte(line), &row))
+		require.NoError(t, json.Unmarshal([]byte(line), &row))
 		if row["method"] != nil {
-			if _, ok := row["args"].([]any); !ok {
-				t.Fatal("args not array", row)
-			}
-			if _, ok := row["kwargs"].(map[string]any); !ok {
-				t.Fatal("kwargs not object", row)
-			}
+			require.IsType(t, []any{}, row["args"], "args not array")
+			require.IsType(t, map[string]any{}, row["kwargs"], "kwargs not object")
 		}
 	}
 }

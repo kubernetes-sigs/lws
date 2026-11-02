@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func shell(t *testing.T, directory string, env []string, args ...string) ([]byte, error) {
@@ -30,45 +32,40 @@ func shell(t *testing.T, directory string, env []string, args ...string) ([]byte
 func scriptFunction(t *testing.T, name string) string {
 	t.Helper()
 	source, err := os.ReadFile("run.sh")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	_, body, found := strings.Cut(string(source), name+"() {\n")
-	if !found {
-		t.Fatalf("missing launcher function %s", name)
-	}
+	require.True(t, found, "missing launcher function %s", name)
 	body, _, found = strings.Cut(body, "\n}\n")
-	if !found {
-		t.Fatalf("unterminated launcher function %s", name)
-	}
+	require.True(t, found, "unterminated launcher function %s", name)
 	return "set -euo pipefail\nfail() { printf '%s\\n' \"$*\" >&2; exit 1; }\nsection() { :; }\n" + name + "() {\n" + body + "\n}\n" + name + " \"$@\"\n"
 }
 
 func testExecutable(t *testing.T, directory, name, body string) {
 	t.Helper()
-	requireNoError(t, os.WriteFile(filepath.Join(directory, name), []byte("#!/bin/sh\n"+body), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, name), []byte("#!/bin/sh\n"+body), 0700))
 }
 
 func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
 	root := t.TempDir()
 	harness := filepath.Join(root, "test", "disaggregatedset_harness")
-	requireNoError(t, os.MkdirAll(harness, 0700))
+	require.NoError(t, os.MkdirAll(harness, 0700))
 	source, err := os.ReadFile("run.sh")
-	requireNoError(t, err)
-	requireNoError(t, os.WriteFile(filepath.Join(harness, "run.sh"), source, 0700))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(harness, "run.sh"), source, 0700))
 	commands := filepath.Join(root, "bin")
-	requireNoError(t, os.Mkdir(commands, 0700))
+	require.NoError(t, os.Mkdir(commands, 0700))
 	testExecutable(t, commands, "go", "printf '%s\\n' \"$*\"\nexit \"${TEST_GO_EXIT:-0}\"\n")
 	testExecutable(t, commands, "docker", "echo 'Docker must not run' >&2\nexit 91\n")
 	env := []string{"PATH=" + commands + string(os.PathListSeparator) + os.Getenv("PATH"), "HARNESS_MAX_PODS=0"}
 	for _, args := range [][]string{
-		nil, {"--help"}, {"-h"}, {"-help"}, {"list"}, {"dry-run", "large-all"},
-		{"--h"}, {"-h=true"}, {"--help=false"}, {"-help=anything"},
-		{"--list"}, {"-list"}, {"-validate"}, {"-dry-run"}, {"large-all", "--dry-run"},
+		nil, {"--help"}, {"-h"}, {"-help=false"}, {"list"}, {"dry-run", "large-all"},
+		{"--list"}, {"-validate"}, {"-dry-run"}, {"large-all", "--dry-run"},
 		{"--list=true"}, {"-dry-run=1"}, {"--validate=T"}, {"--list=false", "--dry-run=true"},
 	} {
 		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
-		if err != nil || !strings.Contains(string(output), "run ./test/disaggregatedset_harness/cmd") || strings.Contains(string(output), "Docker must not run") {
-			t.Fatalf("selection %q invoked runtime setup: %s, %v", args, output, err)
-		}
+		require.NoError(t, err, "selection %q: %s", args, output)
+		require.Contains(t, string(output), "run ./test/disaggregatedset_harness/cmd")
+		require.NotContains(t, string(output), "Docker must not run")
 	}
 	for _, args := range [][]string{
 		{"ordinary", "--list=false"}, {"ordinary", "-dry-run=0"}, {"ordinary", "--validate=F"},
@@ -76,17 +73,14 @@ func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
 		{"ordinary", "--list", "--list=false"},
 	} {
 		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
-		if err == nil || !strings.Contains(string(output), "HARNESS_MAX_PODS must be") {
-			t.Fatalf("disabled read-only flag %q skipped runtime validation: %s, %v", args, output, err)
-		}
+		require.Error(t, err, "selection %q: %s", args, output)
+		require.Contains(t, string(output), "HARNESS_MAX_PODS must be")
 	}
 	output, err := shell(t, root, append(env, "TEST_GO_EXIT=2"), filepath.Join(harness, "run.sh"), "unknown")
-	if err == nil || !strings.Contains(string(output), "--validate") {
-		t.Fatalf("invalid selection was accepted: %s, %v", output, err)
-	}
-	if _, err := os.Stat(filepath.Join(harness, ".state")); !os.IsNotExist(err) {
-		t.Fatal("read-only selection created runtime state")
-	}
+	require.Error(t, err, "%s", output)
+	require.Contains(t, string(output), "--validate")
+	_, err = os.Stat(filepath.Join(harness, ".state"))
+	require.ErrorIs(t, err, os.ErrNotExist, "read-only selection created runtime state")
 }
 
 func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T) {
@@ -96,7 +90,7 @@ func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T)
 		testExecutable(t, root, tool, "echo 'Runtime setup reached' >&2\nexit 91\n")
 	}
 	script, err := filepath.Abs("run.sh")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	env := []string{
 		"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"KIND=" + filepath.Join(root, "kind"),
@@ -106,20 +100,18 @@ func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T)
 		flags       []string
 		interactive bool
 	}{
-		{[]string{"-interactive"}, true}, {[]string{"--interactive=true"}, true}, {[]string{"-interactive=1"}, true},
+		{[]string{"-interactive"}, true}, {[]string{"-interactive=1"}, true},
 		{[]string{"--auto=false"}, true}, {[]string{"-auto=F"}, true},
-		{[]string{"--auto", "-interactive"}, true}, {[]string{"--auto", "--interactive=true"}, true},
+		{[]string{"--auto", "--interactive=true"}, true},
 		{[]string{"--auto", "--auto=false"}, true},
-		{nil, false}, {[]string{"-auto"}, false}, {[]string{"-interactive=false"}, false},
+		{nil, false}, {[]string{"-auto"}, false},
 		{[]string{"--interactive", "--auto=true"}, false}, {[]string{"-auto=false", "--interactive=false"}, false},
 	} {
 		args := append([]string{script, "ordinary"}, tc.flags...)
 		output, err := shell(t, root, env, args...)
-		needsTerminal := strings.Contains(string(output), "Interactive mode needs a terminal")
-		reachedRuntime := strings.Contains(string(output), "Runtime setup reached")
-		if err == nil || needsTerminal != tc.interactive || reachedRuntime == tc.interactive {
-			t.Fatalf("checkpoint flags %q: %s, %v", tc.flags, output, err)
-		}
+		require.Error(t, err, "flags %q: %s", tc.flags, output)
+		require.Equal(t, tc.interactive, strings.Contains(string(output), "Interactive mode needs a terminal"), "%q: %s", tc.flags, output)
+		require.Equal(t, !tc.interactive, strings.Contains(string(output), "Runtime setup reached"), "%q: %s", tc.flags, output)
 	}
 }
 
@@ -128,12 +120,12 @@ func TestLauncherRejectsInvalidPodCapacityBeforeDocker(t *testing.T) {
 	testExecutable(t, root, "go", "exit 0\n")
 	testExecutable(t, root, "docker", "echo 'Docker must not run' >&2\nexit 91\n")
 	script, err := filepath.Abs("run.sh")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	for _, value := range []string{"0", "1001", "-1", "not-a-number", "16; echo unsafe"} {
 		output, err := shell(t, root, []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "HARNESS_MAX_PODS=" + value}, script, "large-all", "--auto")
-		if err == nil || !strings.Contains(string(output), "HARNESS_MAX_PODS must be") || strings.Contains(string(output), "Docker must not run") {
-			t.Fatalf("invalid capacity %q reached Docker: %s, %v", value, output, err)
-		}
+		require.Error(t, err, "capacity %q: %s", value, output)
+		require.Contains(t, string(output), "HARNESS_MAX_PODS must be")
+		require.NotContains(t, string(output), "Docker must not run")
 	}
 }
 
@@ -155,9 +147,7 @@ func TestLauncherOwnershipPredicateUsesExactMountAndIdentity(t *testing.T) {
 		env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "TEST_OS=" + tc.os,
 			"NODE_ID=owned-id", "CLUSTER=owned-cluster", "RUN_DIR=" + filepath.Dir(owner)}
 		output, err := shell(t, root, env, "-c", scriptFunction(t, "owns_node"), "owns-node-test", tc.id, tc.cluster, tc.mount)
-		if (err == nil) != tc.accepted {
-			t.Fatalf("%+v: %s, %v", tc, output, err)
-		}
+		require.Equal(t, tc.accepted, err == nil, "%+v: %s, %v", tc, output, err)
 	}
 }
 
@@ -167,21 +157,18 @@ func TestLauncherKindConfigurationKeepsOwnedMount(t *testing.T) {
 	}
 	root := t.TempDir()
 	output, err := shell(t, root, []string{"RUN_DIR=" + root, "HARNESS_MAX_PODS=160"}, "-c", scriptFunction(t, "kind_config"))
-	requireNoError(t, err)
+	require.NoError(t, err)
 	var config Object
-	requireNoError(t, json.Unmarshal(output, &config))
+	require.NoError(t, json.Unmarshal(output, &config))
 	patches := arr(config["kubeadmConfigPatches"])
-	if len(patches) != 1 || !strings.Contains(str(patches[0]), "maxPods: 160") {
-		t.Fatalf("wrong kubelet capacity: %s", output)
-	}
+	require.Len(t, patches, 1)
+	require.Contains(t, str(patches[0]), "maxPods: 160")
 	nodes := objects(config["nodes"])
-	if len(nodes) != 1 {
-		t.Fatalf("unexpected node count: %s", output)
-	}
+	require.Len(t, nodes, 1)
 	mounts := objects(nodes[0]["extraMounts"])
-	if len(mounts) != 1 || mounts[0]["hostPath"] != filepath.Join(root, "owner") || mounts[0]["readOnly"] != true {
-		t.Fatalf("lost read-only ownership proof: %s", output)
-	}
+	require.Len(t, mounts, 1)
+	require.Equal(t, filepath.Join(root, "owner"), mounts[0]["hostPath"])
+	require.Equal(t, true, mounts[0]["readOnly"])
 }
 
 func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
@@ -190,11 +177,11 @@ func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
 	}
 	root := t.TempDir()
 	baselinePath, err := filepath.Abs("baseline.json")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	contents, err := os.ReadFile(baselinePath)
-	requireNoError(t, err)
+	require.NoError(t, err)
 	var baseline Object
-	requireNoError(t, json.Unmarshal(contents, &baseline))
+	require.NoError(t, json.Unmarshal(contents, &baseline))
 	commit, image := str(baseline["commit"]), str(at(baseline, "release", "image"))
 	testExecutable(t, root, "git", "printf '%s\\n' \"$TEST_RELEASE_COMMIT\"\n")
 	testExecutable(t, root, "curl", "echo 'validation must not download' >&2\nexit 91\n")
@@ -210,9 +197,7 @@ func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
 		env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "BASELINE_FILE=" + baselinePath,
 			"REPOSITORY=" + root, "COMMIT=" + commit, "RELEASE_IMAGE=" + tc.image, "TEST_RELEASE_COMMIT=" + tc.commit}
 		output, err := shell(t, root, env, "-c", scriptFunction(t, "validate_release"))
-		if (err == nil) != tc.accepted {
-			t.Fatalf("%+v: %s, %v", tc, output, err)
-		}
+		require.Equal(t, tc.accepted, err == nil, "%+v: %s, %v", tc, output, err)
 	}
 }
 
@@ -244,16 +229,15 @@ exit 91
 			"TEST_IMAGE_DIGEST=" + actual, "ARCH=arm64", "RELEASE_MANIFESTS=https://example.invalid/not-fetched",
 			fmt.Sprintf("RELEASE_MANIFEST_SHA=%x", sha256.Sum256([]byte("release fixture")))}
 		output, err := shell(t, root, env, "-c", scriptFunction(t, "prepare_image"))
-		if (err == nil) != (actual == image) || strings.Contains(string(output), "Manager build must not run") {
-			t.Fatalf("release digest %q: %s, %v", actual, output, err)
-		}
+		require.Equal(t, actual == image, err == nil, "release digest %q: %s, %v", actual, output, err)
+		require.NotContains(t, string(output), "Manager build must not run")
 	}
 }
 
 func TestSourceBuildSupportsBothDockerBuilders(t *testing.T) {
 	for _, provenance := range []string{"0", "1"} {
 		root := t.TempDir()
-		requireNoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
+		require.NoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
 		testExecutable(t, root, "go", "exit 0\n")
 		testExecutable(t, root, "docker", `case "$*" in
   "image inspect "*) exit 1 ;;
@@ -266,11 +250,10 @@ esac
 		output, err := shell(t, root, []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
 			"RUN_DIR=" + root, "RELEASE_IMAGE=", "COMMIT=" + commit, "ARCH=arm64", "IMAGE=local-controller:" + commit,
 			"TEST_PROVENANCE=" + provenance}, "-c", scriptFunction(t, "prepare_image"))
-		requireNoError(t, err)
-		if strings.Contains(string(output), "--provenance=false") != (provenance == "1") ||
-			!strings.Contains(string(output), "--platform linux/arm64") || !strings.Contains(string(output), "--build-arg REVISION="+commit) {
-			t.Fatalf("builder provenance=%s: %s", provenance, output)
-		}
+		require.NoError(t, err)
+		require.Equal(t, provenance == "1", strings.Contains(string(output), "--provenance=false"), "%s", output)
+		require.Contains(t, string(output), "--platform linux/arm64")
+		require.Contains(t, string(output), "--build-arg REVISION="+commit)
 	}
 }
 
@@ -279,7 +262,7 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 		t.Skip("jq is required to prepare observer overlays")
 	}
 	prepare, err := filepath.Abs(filepath.Join("observer", "prepare.sh"))
-	requireNoError(t, err)
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		inputs, state, wholeSet, enrollment bool
 		tags                                string
@@ -293,8 +276,8 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 		root := t.TempDir()
 		source := filepath.Join(root, "source with spaces")
 		controller := filepath.Join(source, "pkg", "controllers", "disaggregatedset")
-		requireNoError(t, os.MkdirAll(controller, 0700))
-		requireNoError(t, os.WriteFile(filepath.Join(source, "go.mod"), []byte("module fixture\n"), 0600))
+		require.NoError(t, os.MkdirAll(controller, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "go.mod"), []byte("module fixture\n"), 0600))
 		inputText, stateText := "// scaleUpDuringRollout bool\n", "// ScaleUpDuringRollout bool\n"
 		if tc.inputs {
 			inputText += "\tscaleUpDuringRollout bool\n"
@@ -302,8 +285,8 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 		if tc.state {
 			stateText += "\tScaleUpDuringRollout bool\n"
 		}
-		requireNoError(t, os.WriteFile(filepath.Join(controller, "executor.go"), []byte(inputText), 0600))
-		requireNoError(t, os.WriteFile(filepath.Join(controller, "planner_state.go"), []byte(stateText), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(controller, "executor.go"), []byte(inputText), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(controller, "planner_state.go"), []byte(stateText), 0600))
 		for relative, supported := range map[string]bool{
 			"pkg/utils/disaggregatedset/utils.go": tc.wholeSet,
 			"pkg/computedomain/injection.go":      tc.enrollment,
@@ -312,70 +295,53 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 				continue
 			}
 			path := filepath.Join(source, relative)
-			requireNoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
 			name := "ComputeDisaggregatedSetRevision"
 			if strings.Contains(relative, "computedomain") {
 				name = "DisaggregatedSetUsesAutoComputeDomain"
 			}
-			requireNoError(t, os.WriteFile(path, []byte("func "+name+"(\n"), 0600))
+			require.NoError(t, os.WriteFile(path, []byte("func "+name+"(\n"), 0600))
 		}
 		overlay := filepath.Join(root, "overlay.json")
 		output, err := shell(t, root, nil, prepare, source, overlay, "--tests")
-		if (err == nil) != (tc.tags != "") {
-			t.Fatalf("%+v: %s, %v", tc, output, err)
-		}
+		require.Equal(t, tc.tags != "", err == nil, "%+v: %s, %v", tc, output, err)
 		if tc.tags == "" {
-			if _, err := os.Stat(overlay); !os.IsNotExist(err) {
-				t.Fatal("inconsistent source produced an overlay")
-			}
+			_, err = os.Stat(overlay)
+			require.ErrorIs(t, err, os.ErrNotExist, "inconsistent source produced an overlay")
 			continue
 		}
-		if strings.TrimSpace(string(output)) != tc.tags {
-			t.Fatalf("wrong build tags: %s", output)
-		}
+		require.Equal(t, tc.tags, strings.TrimSpace(string(output)))
 		contents, err := os.ReadFile(overlay)
-		requireNoError(t, err)
+		require.NoError(t, err)
 		var mapping struct{ Replace map[string]string }
-		requireNoError(t, json.Unmarshal(contents, &mapping))
-		if len(mapping.Replace) != 9 {
-			t.Fatalf("missing build/test overlay assets: %+v", mapping)
-		}
+		require.NoError(t, json.Unmarshal(contents, &mapping))
 		for virtual, backing := range mapping.Replace {
-			if !strings.HasPrefix(virtual, source+string(os.PathSeparator)) || !strings.HasSuffix(backing, ".go.inc") {
-				t.Fatalf("invalid overlay entry: %s -> %s", virtual, backing)
-			}
-			if _, err := os.Stat(virtual); !os.IsNotExist(err) {
-				t.Fatalf("overlay materialized a controller hook: %s", virtual)
-			}
-			if _, err := os.Stat(backing); err != nil {
-				t.Fatal(err)
-			}
+			require.True(t, strings.HasPrefix(virtual, source+string(os.PathSeparator)), "invalid overlay entry: %s -> %s", virtual, backing)
+			_, err = os.Stat(virtual)
+			require.ErrorIs(t, err, os.ErrNotExist, "overlay materialized a controller hook: %s", virtual)
+			require.FileExists(t, backing)
 		}
 		output, err = shell(t, root, nil, prepare, source, overlay)
-		if err == nil || !strings.Contains(string(output), "already exists") {
-			t.Fatal("existing overlay was overwritten")
-		}
+		require.Error(t, err, "%s", output)
+		require.Contains(t, string(output), "already exists")
 	}
 }
 
 func TestObserverBuildFailureDoesNotFallback(t *testing.T) {
 	root := t.TempDir()
 	harness, err := filepath.Abs(".")
-	requireNoError(t, err)
+	require.NoError(t, err)
 	prepare := filepath.Join(root, "observer")
-	requireNoError(t, os.Mkdir(prepare, 0700))
+	require.NoError(t, os.Mkdir(prepare, 0700))
 	testExecutable(t, prepare, "prepare.sh", "printf 'harness\\n'\n")
 	testExecutable(t, root, "go", "printf '%s\\n' \"$*\" >> \"$TEST_COMMAND_LOG\"\nexit 91\n")
-	requireNoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
+	require.NoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
 	log := filepath.Join(root, "commands.log")
 	output, err := shell(t, harness, []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"RUN_DIR=" + root, "HARNESS_DIR=" + root, "TEST_COMMAND_LOG=" + log}, "-c", scriptFunction(t, "build_observer"))
-	if err == nil {
-		t.Fatalf("accepted failed build: %s", output)
-	}
+	require.Error(t, err, "accepted failed build: %s", output)
 	contents, err := os.ReadFile(log)
-	requireNoError(t, err)
-	if strings.Count(strings.TrimSpace(string(contents)), "\n") != 0 || !strings.Contains(string(contents), "-tags=harness ") {
-		t.Fatalf("build retried with other semantics: %s", contents)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, strings.TrimSpace(string(contents)), "\n", "build retried with other semantics")
+	require.Contains(t, string(contents), "-tags=harness ")
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -422,18 +423,12 @@ func (l *Lab) HasDiagnostic() bool {
 }
 
 type CreateOptions struct {
-	Version            string
 	Surge, Unavailable any
 	Size               int
-	HoldReady          bool
-	Names              []string
 	Slots              int
 }
 
 func (l *Lab) Create(p, d int, c CreateOptions) {
-	if c.Version == "" {
-		c.Version = "A"
-	}
 	if c.Surge == nil {
 		c.Surge = 1
 	}
@@ -446,24 +441,26 @@ func (l *Lab) Create(p, d int, c CreateOptions) {
 	if c.Slots == 0 {
 		c.Slots = 64
 	}
-	if len(c.Names) == 0 {
-		c.Names = []string{"prefill", "decode"}
-	}
 	defer l.action("create", []any{p, d}, Object{
-		"version":     c.Version,
+		"version":     "A",
 		"surge":       c.Surge,
 		"unavailable": c.Unavailable,
 		"size":        c.Size,
-		"ready":       !c.HoldReady,
-		"names":       c.Names,
+		"ready":       true,
+		"names":       roles,
 		"slots":       c.Slots,
 	}, nil)()
 	l.SetSlots(c.Slots)
-	roles := []any{}
+	specs := []any{}
 	for i, n := range []int{p, d} {
-		role := c.Names[i]
-		roles = append(roles, RoleSpec(role, n, l.Case.Identity, c.Version, budget(c.Surge, role), budget(c.Unavailable, role), c.Size, !c.HoldReady))
+		role := roles[i]
+		specs = append(specs, RoleSpec(role, n, l.Case.Identity, "A", budget(c.Surge, role), budget(c.Unavailable, role), c.Size, true))
 	}
+	l.createSet(specs)
+	l.Converge("A", pair(p, d), 0)
+}
+
+func (l *Lab) createSet(roles []any) {
 	l.Apply(Object{
 		"apiVersion": "disaggregatedset.x-k8s.io/v1",
 		"kind":       "DisaggregatedSet",
@@ -474,9 +471,6 @@ func (l *Lab) Create(p, d int, c CreateOptions) {
 		},
 	})
 	l.StartObserver()
-	if !c.HoldReady {
-		l.Converge(c.Version, Targets{c.Names[0]: p, c.Names[1]: d}, 0)
-	}
 }
 
 func budget(v any, role string) any {
@@ -493,7 +487,7 @@ func budget(v any, role string) any {
 }
 
 type Update struct {
-	Version, Policy    string
+	Version            string
 	Counts             Targets
 	Ready              *bool
 	Names              []string
@@ -507,7 +501,7 @@ func (l *Lab) Update(u Update) {
 	defer l.action("update", nil, Object{
 		"version":        u.Version,
 		"counts":         u.Counts,
-		"policy":         u.Policy,
+		"policy":         "",
 		"ready":          u.Ready,
 		"names":          u.Names,
 		"surge":          u.Surge,
@@ -525,7 +519,7 @@ func (l *Lab) Update(u Update) {
 		if n, ok := u.Counts[role]; ok {
 			spec["replicas"] = n
 		}
-		if contains(u.ExternalRoles, role) {
+		if slices.Contains(u.ExternalRoles, role) {
 			r["scaling"] = Object{"mode": "External"}
 			delete(spec, "replicas")
 		}
@@ -569,13 +563,9 @@ func (l *Lab) Update(u Update) {
 			}
 		}
 	}
-	patch := Object{
+	l.Patch(Object{
 		"spec": Object{"roles": roles},
-	}
-	if u.Policy != "" {
-		obj(patch["spec"])["scalingPolicy"] = Object{"scaleDownDuringRollout": u.Policy}
-	}
-	l.Patch(patch)
+	})
 }
 
 func (l *Lab) Release(version, role string, count int, s *Snapshot) {
@@ -608,17 +598,15 @@ func (l *Lab) releasePod(p Object) {
 	if Ready(p) || at(p, "status", "phase") != "Running" {
 		return
 	}
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if f, ok := r.(failure); ok && (strings.Contains(f.err.Error(), "not found") || strings.Contains(f.err.Error(), "not running")) {
-					return
-				}
-				panic(r)
+	defer func() {
+		if r := recover(); r != nil {
+			if f, ok := r.(failure); ok && (strings.Contains(f.err.Error(), "not found") || strings.Contains(f.err.Error(), "not running")) {
+				return
 			}
-		}()
-		l.K("-n", Namespace, "exec", name(p), "-c", "demo", "--", "touch", "/tmp/ready")
+			panic(r)
+		}
 	}()
+	l.K("-n", Namespace, "exec", name(p), "-c", "demo", "--", "touch", "/tmp/ready")
 }
 
 func (l *Lab) Counts(s Snapshot, v string) map[string]Counts {
