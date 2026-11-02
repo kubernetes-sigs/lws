@@ -55,6 +55,12 @@ footer {
     text-align: left;
   }
 
+  // Keep navigation menus flat, including their selected and hovered rows.
+  .td-navbar .dropdown-menu {
+    box-shadow: none;
+    .dropdown-item { background-image: none; }
+  }
+
   .docs-version-menu {
     width: 26rem;
     min-width: 0;

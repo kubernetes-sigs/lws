@@ -106,6 +106,32 @@ async function assertDropdown(toggle, menu, label) {
   await page.locator(menu).waitFor({ state: 'hidden' });
 }
 
+async function assertFlatMenus() {
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => { document.documentElement.dataset.bsTheme = theme; }, theme);
+    for (const [toggle, selector] of [['.docs-version-toggle', '.docs-version-menu'],
+      ['#bd-theme', '.lws-theme-control .dropdown-menu']]) {
+      await page.locator(toggle).click();
+      const menu = page.locator(selector);
+      await menu.waitFor({ state: 'visible' });
+      const background = await menu.evaluate(node => {
+        const style = getComputedStyle(node);
+        return { color: style.backgroundColor, image: style.backgroundImage, shadow: style.boxShadow };
+      });
+      assert.match(background.color, /^rgb\(/, `${theme}: solid menu background`);
+      assert.equal(background.image, 'none', `${theme}: no menu gradient`);
+      assert.equal(background.shadow, 'none', `${theme}: no glossy menu shadow`);
+      for (const item of await menu.locator('.dropdown-item').all()) {
+        assert.equal(await item.evaluate(node => getComputedStyle(node).backgroundImage), 'none');
+        await item.hover();
+        assert.equal(await item.evaluate(node => getComputedStyle(node).backgroundImage), 'none',
+          `${theme}: hovering a menu item must not introduce a gradient`);
+      }
+      await page.keyboard.press('Escape');
+    }
+  }
+}
+
 async function assertAnchor() {
   const hash = await page.locator('#TableOfContents a[href^="#"]').first().getAttribute('href');
   assert.ok(hash?.length > 1, 'Expected a real table-of-contents anchor');
@@ -210,6 +236,9 @@ try {
   await assertIndependentScroll('#td-section-nav');
   await assertIndependentScroll('.td-sidebar-toc');
   await assertFooterResize();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await visit();
+  await assertFlatMenus();
 
   for (const width of [391, 320]) {
     await page.setViewportSize({ width, height: 844 });
@@ -235,7 +264,7 @@ try {
 
   console.log(`Layout passed: ${positions} desktop scroll positions across main/stable/v0.11, `
     + 'live header/logo/footer measurements and wrapping, full-width footer, independent short-screen sidebars, '
-    + 'anchors, tablet layout, 391/320px mobile navigation and dropdowns.');
+    + 'anchors, tablet layout, 391/320px mobile navigation and flat dropdowns in both themes.');
 } finally {
   await browser.close();
 }
