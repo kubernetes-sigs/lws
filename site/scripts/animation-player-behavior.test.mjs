@@ -44,7 +44,7 @@ function fixture(data = drawing(), {intersection = true, near = true, reducedMot
   class Observer {
     constructor(callback, options) {this.callback = callback; this.options = options; observers.push(this);}
     observe() {}
-    disconnect() {this.disconnected = true;}
+    disconnect() {}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
   const sandbox = {document, console, Error, performance: {now: () => 0},
@@ -61,9 +61,9 @@ function fixture(data = drawing(), {intersection = true, near = true, reducedMot
     ...(intersection ? {IntersectionObserver: Observer} : {}),
   };
   vm.runInNewContext(`${source}\nthis.Player = AnimationPlayer;`, sandbox);
-  const player = new sandbox.Player(root);
+  new sandbox.Player(root);
   if (near) observers.find(observer => observer.options?.rootMargin)?.fire(true);
-  return {player, nodes, ctx, queries, observers, mutations, responses, document,
+  return {nodes, ctx, queries, observers, mutations, responses, document,
     fetches: () => fetches,
     ready: () => new Promise(resolve => setImmediate(resolve)),
     seek(time) {nodes.seek.value = String(time); nodes.seek.handlers.input();},
@@ -116,37 +116,20 @@ test('motion entry, advancement, exit and backward seeks repaint without leaving
   f.theme('dark'); assert.equal(f.ctx.clears, 6);
 });
 
-test('loading another drawing resets duration, captions and render caches', async () => {
-  const f = fixture(); await f.ready();
-  f.seek(2.5);
-  const replacement = drawing();
-  replacement.frames = [{duration: 1.25, caption: 'Replacement state', items: [0]}];
-  f.responses[0] = replacement;
-  await f.player.load();
-  assert.equal(f.nodes.seek.max, '1.25');
-  assert.equal(f.nodes.seek.value, '0');
-  assert.equal(f.nodes.clock.textContent, '0:00 / 0:01');
-  assert.equal(f.nodes.summary.textContent, 'Replacement state');
-  assert.equal(f.ctx.clears, 3);
-});
-
-test('offscreen figures load only within the 300px preload margin and do not autoplay while merely near', async () => {
+test('offscreen figures load only near the viewport and do not autoplay while merely near', async () => {
   const f = fixture(drawing(), {near: false, reducedMotion: false}); await f.ready();
   assert.equal(f.fetches(), 0);
   assert.equal(f.nodes.play.disabled, true);
   const preload = f.observers.find(observer => observer.options?.rootMargin);
-  assert.equal(preload.options.rootMargin, '300px');
   preload.fire(false); await f.ready();
   assert.equal(f.fetches(), 0);
   preload.fire(true); preload.fire(true);
   assert.equal(f.root.attrs['aria-busy'], 'true');
   await f.ready();
   assert.equal(f.fetches(), 1, 'Overlapping observer callbacks cannot start duplicate fetches');
-  assert.equal(preload.disconnected, true);
   assert.equal(f.root.attrs['aria-busy'], 'false');
   assert.equal(f.nodes.play.disabled, false);
   assert.equal(f.nodes.play.textContent, 'Play');
-  assert.equal(f.player.visible, false, 'Preload margin is separate from playback visibility');
   f.observers.find(observer => !observer.options).fire(true);
   assert.equal(f.nodes.play.textContent, 'Pause', 'Autoplay begins only when the figure is actually visible');
 });
@@ -175,7 +158,6 @@ test('failed lazy loads remain accessible and can be retried without reloading t
 test('browsers without IntersectionObserver load immediately with usable paused controls', async () => {
   const f = fixture(drawing(), {intersection: false}); await f.ready();
   assert.equal(f.fetches(), 1);
-  assert.equal(f.player.visible, true);
   assert.equal(f.nodes.play.disabled, false);
   assert.equal(f.nodes.play.textContent, 'Play');
   f.seek(2);

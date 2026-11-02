@@ -16,7 +16,7 @@ const example = () => ({version:1,width:1920,height:1080,title:'Example',
 
 test('accepts the finite drawing vocabulary and preserves resolved data', () => {
   const data=example();
-  assert.equal(parseDrawing(data),data);
+  assert.deepEqual(parseDrawing(structuredClone(data)),data);
   data.primitives[1].text='<script>alert(1)</script>';
   assert.equal(parseDrawing(data).primitives[1].text,data.primitives[1].text);
 });

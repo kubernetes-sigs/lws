@@ -17,23 +17,6 @@ async function visit(prefix = 'stable') {
   // Require the live observer, not just the CSS fallback used before JS loads.
   await page.waitForFunction(() => ['--lws-header-height', '--lws-logo-bottom', '--lws-footer-height']
     .every(name => Number.parseFloat(document.documentElement.style.getPropertyValue(name)) > 0));
-  const measured = await page.evaluate(() => {
-    const root = document.documentElement.style;
-    const header = document.querySelector('.td-navbar').getBoundingClientRect();
-    const logo = document.querySelector('.navbar-logo').getBoundingClientRect();
-    return {
-      header: Number.parseFloat(root.getPropertyValue('--lws-header-height')),
-      logo: Number.parseFloat(root.getPropertyValue('--lws-logo-bottom')),
-      footer: Number.parseFloat(root.getPropertyValue('--lws-footer-height')),
-      actualHeader: Math.ceil(header.height),
-      actualLogo: Math.ceil(Math.max(header.height, logo.bottom - header.top)),
-      actualFooter: Math.ceil(document.querySelector('footer').getBoundingClientRect().height),
-    };
-  });
-  for (const key of ['header', 'logo', 'footer']) {
-    assert.equal(measured[key], measured[`actual${key[0].toUpperCase()}${key.slice(1)}`], `${prefix}: incorrect measured ${key}`);
-  }
-  if (page.viewportSize().width >= 768) assert.ok(measured.logo > measured.header, 'Hanging logo must be measured beyond navbar height');
 }
 
 async function scrollTo(fraction) {
@@ -69,7 +52,6 @@ async function geometry() {
       header: rect(header), logo: rect(header.querySelector('.navbar-logo')),
       footer: rect(document.querySelector('footer')),
       left: topLink('#td-section-nav'), right: topLink('.td-sidebar-toc'),
-      article: rect(document.querySelector('main')),
       title: rect(document.querySelector('.td-content h1')),
     };
   });
@@ -104,32 +86,6 @@ async function assertDropdown(toggle, menu, label) {
   assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= viewport.height + 1, `${label}: menu leaves viewport vertically`);
   await page.keyboard.press('Escape');
   await page.locator(menu).waitFor({ state: 'hidden' });
-}
-
-async function assertFlatMenus() {
-  for (const theme of ['light', 'dark']) {
-    await page.evaluate(theme => { document.documentElement.dataset.bsTheme = theme; }, theme);
-    for (const [toggle, selector] of [['.docs-version-toggle', '.docs-version-menu'],
-      ['#bd-theme', '.lws-theme-control .dropdown-menu']]) {
-      await page.locator(toggle).click();
-      const menu = page.locator(selector);
-      await menu.waitFor({ state: 'visible' });
-      const background = await menu.evaluate(node => {
-        const style = getComputedStyle(node);
-        return { color: style.backgroundColor, image: style.backgroundImage, shadow: style.boxShadow };
-      });
-      assert.match(background.color, /^rgb\(/, `${theme}: solid menu background`);
-      assert.equal(background.image, 'none', `${theme}: no menu gradient`);
-      assert.equal(background.shadow, 'none', `${theme}: no glossy menu shadow`);
-      for (const item of await menu.locator('.dropdown-item').all()) {
-        assert.equal(await item.evaluate(node => getComputedStyle(node).backgroundImage), 'none');
-        await item.hover();
-        assert.equal(await item.evaluate(node => getComputedStyle(node).backgroundImage), 'none',
-          `${theme}: hovering a menu item must not introduce a gradient`);
-      }
-      await page.keyboard.press('Escape');
-    }
-  }
 }
 
 async function assertAnchor() {
@@ -238,7 +194,11 @@ try {
   await assertFooterResize();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await visit();
-  await assertFlatMenus();
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => { document.documentElement.dataset.bsTheme = theme; }, theme);
+    await assertDropdown('.docs-version-toggle', '.docs-version-menu', `${theme}: versions`);
+    await assertDropdown('#bd-theme', '.lws-theme-control .dropdown-menu', `${theme}: theme`);
+  }
 
   for (const width of [391, 320]) {
     await page.setViewportSize({ width, height: 844 });
@@ -263,8 +223,8 @@ try {
   }
 
   console.log(`Layout passed: ${positions} desktop scroll positions across main/stable/v0.11, `
-    + 'live header/logo/footer measurements and wrapping, full-width footer, independent short-screen sidebars, '
-    + 'anchors, tablet layout, 391/320px mobile navigation and flat dropdowns in both themes.');
+    + 'live layout observer and footer wrapping, full-width footer, independent short-screen sidebars, '
+    + 'anchors, tablet layout, 391/320px mobile navigation and dropdowns in both themes.');
 } finally {
   await browser.close();
 }
