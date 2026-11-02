@@ -72,6 +72,7 @@ func (e *Evidence) Error() error {
 	return e.err
 }
 func (e *Evidence) Start(ctx context.Context, o Options) error {
+	o.defaults()
 	ctx, e.cancel = context.WithCancel(ctx)
 	e.done = make(chan struct{})
 	first := make(chan error, 1)
@@ -117,10 +118,14 @@ func (e *Evidence) Start(ctx context.Context, o Options) error {
 	select {
 	case err := <-first:
 		if err != nil {
+			e.cancel()
+			<-e.done
 			return fmt.Errorf("initial evidence acquisition failed: %w", err)
 		}
 		return nil
 	case <-ctx.Done():
+		e.cancel()
+		<-e.done
 		return ctx.Err()
 	}
 }

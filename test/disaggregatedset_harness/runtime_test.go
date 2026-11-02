@@ -176,6 +176,11 @@ func TestEvidenceRejectsMalformedSuccessfulRead(t *testing.T) {
 			if err = e.Start(context.Background(), o); err == nil {
 				t.Fatal("accepted malformed response")
 			}
+			select {
+			case <-e.done:
+			default:
+				t.Fatal("failed Start left the acquisition goroutine running")
+			}
 			requireNoError(t, e.Close())
 			raw, err := os.ReadFile(filepath.Join(root, "film-recording", "snapshots.jsonl"))
 			requireNoError(t, err)
@@ -186,6 +191,55 @@ func TestEvidenceRejectsMalformedSuccessfulRead(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEvidenceStartDefaultsAndCancellation(t *testing.T) {
+	t.Run("default clock", func(t *testing.T) {
+		e, err := NewEvidence(t.TempDir(), "fixture")
+		requireNoError(t, err)
+		executor := &fakeExecutor{run: func(command) ([]byte, []byte, error) {
+			return []byte(`{"kind":"List","items":[]}`), nil, nil
+		}}
+		requireNoError(t, e.Start(t.Context(), Options{Executor: executor}))
+		requireNoError(t, e.Close())
+		if len(executor.calls) == 0 || executor.calls[0].program != "kubectl" {
+			t.Fatal("default kubectl was not used", executor.calls)
+		}
+	})
+	t.Run("default executor", func(t *testing.T) {
+		e, err := NewEvidence(t.TempDir(), "fixture")
+		requireNoError(t, err)
+		err = e.Start(t.Context(), Options{Kubectl: filepath.Join(t.TempDir(), "missing-kubectl")})
+		if err == nil {
+			t.Fatal("missing executable did not fail initial acquisition")
+		}
+		select {
+		case <-e.done:
+		default:
+			t.Fatal("failed Start left the acquisition goroutine running")
+		}
+		requireNoError(t, e.Close())
+	})
+	t.Run("cancellation joins acquisition", func(t *testing.T) {
+		e, err := NewEvidence(t.TempDir(), "fixture")
+		requireNoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		executor := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+			cancel()
+			<-c.ctx.Done()
+			return nil, nil, c.ctx.Err()
+		}}
+		if err = e.Start(ctx, Options{Executor: executor}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start returned %v, want cancellation", err)
+		}
+		select {
+		case <-e.done:
+		default:
+			t.Fatal("canceled Start returned before acquisition stopped")
+		}
+		requireNoError(t, e.Close())
+	})
 }
 
 func TestEmergencyRestoresAfterUnexpectedPanic(t *testing.T) {
