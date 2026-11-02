@@ -58,12 +58,26 @@ func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
 	requireNoError(t, os.Mkdir(commands, 0700))
 	testExecutable(t, commands, "go", "printf '%s\\n' \"$*\"\nexit \"${TEST_GO_EXIT:-0}\"\n")
 	testExecutable(t, commands, "docker", "echo 'Docker must not run' >&2\nexit 91\n")
-	env := []string{"PATH=" + commands + string(os.PathListSeparator) + os.Getenv("PATH")}
-	for _, args := range [][]string{nil, {"--help"}, {"--list"}, {"large-all", "--dry-run"}} {
+	env := []string{"PATH=" + commands + string(os.PathListSeparator) + os.Getenv("PATH"), "HARNESS_MAX_PODS=0"}
+	for _, args := range [][]string{
+		nil, {"--help"}, {"-h"}, {"-help"}, {"list"}, {"dry-run", "large-all"},
+		{"--h"}, {"-h=true"}, {"--help=false"}, {"-help=anything"},
+		{"--list"}, {"-list"}, {"-validate"}, {"-dry-run"}, {"large-all", "--dry-run"},
+		{"--list=true"}, {"-dry-run=1"}, {"--validate=T"}, {"--list=false", "--dry-run=true"},
+	} {
 		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
-		requireNoError(t, err)
-		if !strings.Contains(string(output), "run ./test/disaggregatedset_harness/cmd") || strings.Contains(string(output), "Docker must not run") {
-			t.Fatalf("selection invoked runtime setup: %s", output)
+		if err != nil || !strings.Contains(string(output), "run ./test/disaggregatedset_harness/cmd") || strings.Contains(string(output), "Docker must not run") {
+			t.Fatalf("selection %q invoked runtime setup: %s, %v", args, output, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"ordinary", "--list=false"}, {"ordinary", "-dry-run=0"}, {"ordinary", "--validate=F"},
+		{"list", "ordinary", "--list=false"}, {"dry-run", "ordinary", "--dry-run=false"},
+		{"ordinary", "--list", "--list=false"},
+	} {
+		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
+		if err == nil || !strings.Contains(string(output), "HARNESS_MAX_PODS must be") {
+			t.Fatalf("disabled read-only flag %q skipped runtime validation: %s, %v", args, output, err)
 		}
 	}
 	output, err := shell(t, root, append(env, "TEST_GO_EXIT=2"), filepath.Join(harness, "run.sh"), "unknown")
@@ -72,6 +86,36 @@ func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(harness, ".state")); !os.IsNotExist(err) {
 		t.Fatal("read-only selection created runtime state")
+	}
+}
+
+func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T) {
+	root := t.TempDir()
+	testExecutable(t, root, "go", "exit 0\n")
+	for _, tool := range []string{"docker", "kubectl", "git", "jq", "tar", "kind"} {
+		testExecutable(t, root, tool, "echo 'Runtime setup reached' >&2\nexit 91\n")
+	}
+	script, err := filepath.Abs("run.sh")
+	requireNoError(t, err)
+	env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "KIND=" + filepath.Join(root, "kind"), "HARNESS_MAX_PODS=160"}
+	for _, tc := range []struct {
+		flags       []string
+		interactive bool
+	}{
+		{[]string{"-interactive"}, true}, {[]string{"--interactive=true"}, true}, {[]string{"-interactive=1"}, true},
+		{[]string{"--auto=false"}, true}, {[]string{"-auto=F"}, true},
+		{[]string{"--auto", "-interactive"}, true}, {[]string{"--auto", "--interactive=true"}, true},
+		{[]string{"--auto", "--auto=false"}, true},
+		{nil, false}, {[]string{"-auto"}, false}, {[]string{"-interactive=false"}, false},
+		{[]string{"--interactive", "--auto=true"}, false}, {[]string{"-auto=false", "--interactive=false"}, false},
+	} {
+		args := append([]string{script, "ordinary"}, tc.flags...)
+		output, err := shell(t, root, env, args...)
+		needsTerminal := strings.Contains(string(output), "Interactive mode needs a terminal")
+		reachedRuntime := strings.Contains(string(output), "Runtime setup reached")
+		if err == nil || needsTerminal != tc.interactive || reachedRuntime == tc.interactive {
+			t.Fatalf("checkpoint flags %q: %s, %v", tc.flags, output, err)
+		}
 	}
 }
 
