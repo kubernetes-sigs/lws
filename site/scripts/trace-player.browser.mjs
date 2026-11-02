@@ -366,7 +366,7 @@ try {
   await docs.evaluate(() => document.fonts.ready);
   await docs.waitForFunction(() => !document.querySelector('[data-animation-play]').disabled);
   const shell = target => target.evaluate(() => ({
-    logo: document.querySelector('.navbar-logo').getAttribute('src'),
+    logo: document.querySelector('.navbar-logo').outerHTML,
     links: [...document.querySelectorAll('.navbar-nav > .nav-item:not(.docs-version-nav) a')].map(node => [node.textContent.trim(), node.getAttribute('href')]),
     headerFont: getComputedStyle(document.querySelector('.td-navbar')).fontFamily,
     footerFont: getComputedStyle(document.querySelector('footer')).fontFamily,

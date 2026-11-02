@@ -202,6 +202,9 @@ footer {
       flex-shrink: 0;
     }
 
+    // Preserve the artwork's nested SVG viewports instead of Docsy's icon sizing.
+    .navbar-brand svg {margin: 0; height: revert;}
+
     @include media-breakpoint-up(md) {
       &.td-navbar--docs .navbar-brand {
         // The sidebar reserves clearance for the taller badge below the header.
@@ -209,10 +212,10 @@ footer {
         height: 5rem;
       }
 
-      &.td-navbar--docs img.navbar-logo { width: 12.5rem; }
+      &.td-navbar--docs svg.navbar-logo { width: 12.5rem; }
     }
 
-    img.navbar-logo {
+    svg.navbar-logo {
       display: block;
       width: 9.375rem;
       height: auto;
@@ -282,7 +285,7 @@ footer {
 
       .navbar-brand { margin-inline: auto; }
 
-      img.navbar-logo {
+      svg.navbar-logo {
         width: 11rem;
       }
 
