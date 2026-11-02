@@ -8,7 +8,7 @@
     "test:integration": "node --test scripts/*.test.mjs",
     "test:contrast": "node scripts/code-theme.browser.mjs",
     "test:layout": "node scripts/layout.browser.mjs",
-    "test:animations": "node scripts/animations.browser.mjs && node scripts/animation-tooltip.browser.mjs"
+    "test:animations": "node scripts/animations.browser.mjs && node scripts/animation-tooltip.browser.mjs && node scripts/animation-seek.browser.mjs"
   },
     "devDependencies": {
       "@playwright/test": "1.64.1",

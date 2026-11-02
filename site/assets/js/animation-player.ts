@@ -156,6 +156,14 @@ class AnimationPlayer {
       this.render(); this.sync();
     });
     this.seek.addEventListener('input', () => this.seekTo(Number(this.seek.value)));
+    this.seek.addEventListener('keydown', event => {
+      const step = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1
+        : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
+      if (!step) return;
+      // Keep exact fractional positions with step="any", but make keyboard
+      // scrubbing one second per press instead of a browser-dependent fraction.
+      event.preventDefault(); this.seekTo(this.time + step);
+    });
     this.speed.addEventListener('change', () => {this.lastTick = performance.now();});
     for (const [name, step] of [['previous', -1], ['next', 1]] as const) get(name).addEventListener('click', () => {
       const index = Math.max(0, Math.min(this.starts.length - 1, position(this.starts, this.time) + step));
