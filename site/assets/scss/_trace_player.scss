@@ -1,15 +1,23 @@
 .trace-player-page {
-  .trace-player-shell {max-width: 1920px; margin-inline: auto; padding: calc(var(--lws-logo-bottom, 6.55rem) + 1rem) 12px 0;}
-  .trace-player-subheader {margin-bottom: 24px;}
+  .trace-player-shell {max-width: 1920px; margin-inline: auto; padding: var(--lws-header-height, 5rem) 12px 0;}
+  .trace-player-subheader {
+    // Stay below Docsy's navbar (32), including its hanging logo and dropdowns.
+    position: sticky; top: var(--lws-header-height, 5rem); z-index: 30;
+    padding-top: calc(var(--lws-logo-bottom, 6.55rem) - var(--lws-header-height, 5rem) + 1rem);
+    margin-bottom: 24px; background: var(--bs-body-bg);
+  }
   .trace-player-layout {display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 24px;}
   main {width: 100%; max-width: 1200px; min-width: 0; padding-block: 0 2rem;}
   h1 {font-size: clamp(1.4rem, 2.5vw, 2rem); margin-bottom: 12px;}
   .trace-player-sidebar {padding: 0 12px 0 0; border-right: 0;}
   .trace-player-sidebar nav {margin: 0;}
   @media (min-width: 768px) {
+    .trace-player-sidebar {
+      --lws-sidebar-top: calc(var(--lws-header-height, 5rem) + var(--lws-subheader-height, 0px) + 24px);
+    }
     .trace-player-sidebar .td-sidebar__inner {
-      // Reserve the intro even after it scrolls away; the list must not resize while scrolling.
-      max-height: unquote("max(8rem, calc(100dvh - var(--lws-sidebar-top) - var(--lws-subheader-height, 0px) - 24px - var(--lws-footer-height, 6rem) - .5rem))");
+      // Fill the viewport; reserve footer space only once it actually enters view.
+      max-height: unquote("max(0px, calc(100dvh - var(--lws-sidebar-top) - var(--lws-trace-footer-overlap, 0px) - .5rem))");
     }
   }
   .trace-player-sidebar h2 {font-size: 1rem; margin-bottom: 12px;}
@@ -33,8 +41,10 @@
   .lws-animation {width: 100%; max-width: none; margin-block: 16px 0;}
   [hidden] {display: none !important;}
   @media (max-width: 767.98px) {
+    > header {position: sticky; top: 0; z-index: 1030;}
     .td-outer {min-height: calc(100dvh - var(--lws-header-height, 10rem));}
-    .trace-player-shell {padding-top: 12px;}
+    .trace-player-shell {padding-top: 0;}
+    .trace-player-subheader {padding-top: 12px;}
     .trace-player-layout {display: block;}
     .trace-player-sidebar {padding: 0;}
     .trace-player-sidebar nav {max-height: 45vh; overflow-y: auto;}

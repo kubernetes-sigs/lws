@@ -66,33 +66,42 @@ async function assertResponsiveSizing() {
 async function assertLayout(label, mobile = false) {
   await page.waitForFunction(() => ['--lws-header-height', '--lws-logo-bottom', '--lws-footer-height', '--lws-subheader-height']
     .every(name => Number.parseFloat(document.documentElement.style.getPropertyValue(name)) > 0));
-  let subheaderDocumentTop;
+  let subheaderTop;
   for (const fraction of [0, .5, 1]) {
     await page.evaluate(fraction => window.scrollTo({top: (document.documentElement.scrollHeight - innerHeight) * fraction, behavior: 'instant'}), fraction);
     await settle();
     const geometry = await page.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
       return {width: innerWidth, height: innerHeight, scrollY, scroll: document.documentElement.scrollWidth, footer: rect('footer'),
+        gutter: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
         header: rect('.td-navbar'), logo: rect('.navbar-logo'), sidebar: rect('#td-section-nav'), title: rect('h1'),
         subheader: rect('.trace-player-subheader'), tabs: rect('.trace-player-tabs'), aside: rect('.trace-player-sidebar'), main: rect('main')};
     });
     assert.ok(geometry.scroll <= geometry.width + 1, `${label}: horizontal overflow`);
     assert.ok(Math.abs(geometry.footer.x) < 1 && Math.abs(geometry.footer.right - geometry.width) < 1, `${label}: full-width footer`);
     if (fraction === 0) {
-      subheaderDocumentTop = geometry.subheader.y;
+      subheaderTop = geometry.subheader.y;
       assert.ok(geometry.subheader.x <= geometry.aside.x + 1 && geometry.subheader.right >= geometry.main.right - 1,
         `${label}: subheader must span both content columns`);
       assert.ok(geometry.aside.y >= geometry.subheader.bottom && geometry.main.y >= geometry.subheader.bottom,
         `${label}: both columns must start below the subheader`);
-      assert.ok(geometry.title.y >= geometry.subheader.y && geometry.tabs.bottom <= geometry.subheader.bottom + 1,
-        `${label}: title and tabs must belong to the full-width subheader`);
     }
-    assert.ok(Math.abs(geometry.subheader.y + geometry.scrollY - subheaderDocumentTop) < 1,
-      `${label}: subheader must scroll naturally, not stick or jump`);
+    assert.ok(Math.abs(geometry.subheader.y - subheaderTop) < 1,
+      `${label}: title and tabs must stay pinned while the document scrolls`);
+    assert.ok(geometry.subheader.y >= geometry.header.bottom - 1,
+      `${label}: pinned subheader must remain below the global header`);
+    assert.ok(geometry.title.y >= Math.max(geometry.header.bottom, geometry.logo.bottom) - 1,
+      `${label}: pinned title must clear the global header and hanging logo`);
+    assert.ok(geometry.title.y >= geometry.subheader.y && geometry.tabs.bottom <= geometry.subheader.bottom + 1,
+      `${label}: title and tabs must remain inside the full-width subheader`);
+    assert.ok(geometry.tabs.bottom <= geometry.height, `${label}: pinned tabs must remain visible`);
     if (!mobile) {
-      assert.ok(geometry.sidebar.y >= Math.max(geometry.header.bottom, geometry.logo.bottom) - 1, `${label}: sidebar hidden under header at scroll ${fraction}`);
+      assert.ok(geometry.sidebar.y >= geometry.subheader.bottom - 1, `${label}: sidebar hidden under subheader at scroll ${fraction}`);
       assert.ok(geometry.sidebar.bottom <= geometry.footer.y + 1, `${label}: sidebar overlaps footer at scroll ${fraction}`);
       assert.ok(geometry.sidebar.bottom <= geometry.height + 1, `${label}: sidebar end is clipped below viewport at scroll ${fraction}`);
+      const availableBottom = Math.min(geometry.height, geometry.footer.y);
+      assert.ok(availableBottom - geometry.sidebar.bottom <= geometry.gutter + 1,
+        `${label}: sidebar must use available height, reserving at most one text line of bottom gutter at scroll ${fraction}`);
     } else if (fraction === 0) {
       assert.ok(geometry.title.y >= geometry.header.bottom - 1, `${label}: title under header`);
       assert.ok(geometry.title.y - geometry.header.bottom < 70, `${label}: excessive gap below mobile header`);
@@ -129,16 +138,15 @@ async function assertNaturalScrolling() {
   await page.mouse.wheel(0, 240);await settledScroll();
   assert.equal(await page.evaluate(() => scrollY), 0, 'Sidebar end must not chain wheel events into the document');
   const before = await page.evaluate(() => ({y: scrollY, heading: document.querySelector('.trace-player-subheader').getBoundingClientRect().y,
-    main: document.querySelector('main').getBoundingClientRect().y, height: document.querySelector('#td-section-nav').clientHeight}));
+    main: document.querySelector('main').getBoundingClientRect().y}));
   const main = await page.locator('main').boundingBox();
   await page.mouse.move(main.x + main.width / 2, Math.min(main.y + 160, page.viewportSize().height - 80));
   await page.mouse.wheel(0, 100);await settledScroll();
   const after = await page.evaluate(() => ({y: scrollY, heading: document.querySelector('.trace-player-subheader').getBoundingClientRect().y,
-    main: document.querySelector('main').getBoundingClientRect().y, height: document.querySelector('#td-section-nav').clientHeight}));
+    main: document.querySelector('main').getBoundingClientRect().y}));
   assert.ok(after.y > before.y, 'Wheel over main must scroll the document normally');
-  assert.ok(Math.abs(before.heading - after.heading - (after.y - before.y)) < 1, 'Subheader cannot jump during document scrolling');
+  assert.ok(Math.abs(before.heading - after.heading) < 1, 'Title and tabs must stay pinned during main scrolling');
   assert.ok(Math.abs(before.main - after.main - (after.y - before.y)) < 1, 'Main cannot jump during document scrolling');
-  assert.equal(after.height, before.height, 'Sidebar height must stay stable while scrolling');
 }
 
 try {
@@ -298,5 +306,5 @@ try {
   await toggle.click();await navigation.waitFor({state: 'hidden'});await assertLayout('Mobile selected', true);
   assert.deepEqual(errors, []);
   if (process.env.LWS_SCREENSHOT_DIR) await page.screenshot({path: `${process.env.LWS_SCREENSHOT_DIR}/hidden-trace-player-mobile.png`, fullPage: true});
-  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, responsive 1200px cap with native 1080p drawing, full-width subheader, shared controls and thin scrollbars, contained sidebar wheel, natural main scrolling, footer clearance, and mobile navigation.');
+  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, responsive 1200px cap with native 1080p drawing, pinned full-width subheader, shared controls and thin scrollbars, full-height contained sidebar scrolling, natural main scrolling, footer clearance, and mobile navigation.');
 } finally {await browser.close();}
