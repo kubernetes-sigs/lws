@@ -78,6 +78,31 @@ test('animation labels are release-independent; source provenance remains separa
   }
 });
 
+test('scaling drawings leave room below status lines and above the annotation band', async () => {
+  for (const scene of ['scaling', 'scaling-up']) {
+    const drawing = JSON.parse(await read(`../static/animations/${scene}.json`));
+    for (const [index, frame] of drawing.frames.entries()) {
+      const items = frame.items.map(id => drawing.primitives[id]);
+      const capacities = frame.hits.filter(hit => hit.width === 900 && hit.height === 42);
+      const annotation = frame.hits.find(hit => hit.width === 1840 && hit.height === 56);
+      assert.equal(capacities.length, 2, `${scene}/${index}: two capacity panels`);
+      assert.ok(annotation, `${scene}/${index}: annotation band`);
+      for (const capacity of capacities) {
+        const below = items.filter(item => item.type === 'text' && item.x >= capacity.x &&
+          item.x < capacity.x + capacity.width && item.y > capacity.y + capacity.height);
+        const status = below.find(item => item.align === 'center');
+        const heading = below.find(item => item.align === 'left');
+        assert.ok(status && heading, `${scene}/${index}: status and role heading`);
+        assert.ok(heading.y - heading.size / 2 - status.y - status.size / 2 >= 16,
+          `${scene}/${index}: status needs space above the role headings`);
+      }
+      for (const group of frame.hits.filter(hit => hit.width === hit.height && hit.width <= 27)) {
+        assert.ok(group.y + group.height <= annotation.y - 16, `${scene}/${index}: group grid touches annotation`);
+      }
+    }
+  }
+});
+
 test('all deployment contexts preserve snapshots and need only the Hugo build', async () => {
   const netlify = await read('../../netlify.toml');
   const pkg = JSON.parse(await read('../package.json'));
