@@ -121,6 +121,8 @@ class AnimationPlayer {
   private lastDark?: boolean;
   private lastRenderTime = -1;
   private wasMoving = false;
+  private loading = false;
+  private loadFailed = false;
   private visible = false;
   private intent = !matchMedia('(prefers-reduced-motion: reduce)').matches;
   private request = 0;
@@ -148,6 +150,7 @@ class AnimationPlayer {
     this.canvas.addEventListener('pointerdown', event => this.inspect(event));
     this.canvas.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
     this.play.addEventListener('click', () => {
+      if (!this.data) {void this.load(); return;}
       this.intent = !this.playing;
       if (this.time >= this.duration) this.time = 0;
       this.render(); this.sync();
@@ -168,13 +171,23 @@ class AnimationPlayer {
     });
     new ResizeObserver(entries => get('player').style.setProperty('--animation-controls-height',
       `${Math.ceil(entries[0].target.getBoundingClientRect().height)}px`)).observe(get('controls'));
-    new IntersectionObserver(entries => {this.visible = entries[0].isIntersecting; this.sync();}).observe(root);
+    if (typeof IntersectionObserver !== 'undefined') {
+      new IntersectionObserver(entries => {this.visible = entries[0].isIntersecting; this.sync();}).observe(root);
+      const preload = new IntersectionObserver(entries => {
+        if (!entries[0].isIntersecting) return;
+        preload.disconnect();
+        void this.load();
+      }, {rootMargin: '300px'});
+      preload.observe(root);
+    } else {
+      this.visible = true;
+      void this.load();
+    }
     document.addEventListener('visibilitychange', () => this.sync());
     matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', event => {
       if (event.matches) {this.intent = false; this.sync();}
     });
     new MutationObserver(() => this.render()).observe(document.documentElement, {attributes: true, attributeFilter: ['data-bs-theme']});
-    this.load();
   }
 
   private get playing() {return !!this.data && this.intent && this.visible && !document.hidden;}
@@ -196,6 +209,10 @@ class AnimationPlayer {
     error.textContent = message; error.hidden = false;
   }
   private async load() {
+    if (this.loading) return;
+    this.loading = true; this.loadFailed = false;
+    this.root.setAttribute('aria-busy', 'true');
+    this.sync();
     try {
       if (!this.context) throw new Error('Canvas is unavailable in this browser.');
       const response = await fetch(this.root.dataset.animationSource!);
@@ -212,8 +229,16 @@ class AnimationPlayer {
       this.root.style.setProperty('--animation-width-ratio', String(this.data.width / this.data.height));
       this.seek.max = String(this.duration);
       this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-animation-control]').forEach(control => {control.disabled = false;});
-      this.render(); this.sync();
-    } catch (error) {this.error(error instanceof Error ? error.message : 'Animation could not load.');}
+      this.root.querySelector<HTMLElement>('[data-animation-error]')!.hidden = true;
+      this.render();
+    } catch (error) {
+      this.loadFailed = true;
+      this.error(error instanceof Error ? error.message : 'Animation could not load.');
+    } finally {
+      this.loading = false;
+      this.root.setAttribute('aria-busy', 'false');
+      this.sync();
+    }
   }
   private seekTo(time: number) {
     this.intent = false; this.time = Math.max(0, Math.min(this.duration, time));
@@ -221,8 +246,10 @@ class AnimationPlayer {
   }
   private sync() {
     const active = this.playing;
-    this.play.textContent = active ? 'Pause' : 'Play';
-    this.play.setAttribute('aria-label', `${active ? 'Pause' : 'Play'} animation`);
+    const label = !this.data && this.loadFailed ? 'Retry' : active ? 'Pause' : 'Play';
+    this.play.textContent = label;
+    this.play.setAttribute('aria-label', `${label} animation`);
+    this.play.disabled = this.loading || !this.data && !this.loadFailed;
     if (active && !this.request) {this.lastTick = performance.now(); this.request = requestAnimationFrame(this.tick);}
     if (!active && this.request) {cancelAnimationFrame(this.request); this.request = 0;}
   }

@@ -12,7 +12,7 @@ const drawing = () => ({version: 1, width: 1920, height: 1080, title: 'Example',
   frames: [{duration: 2, caption: 'First state', items: [0]}, {duration: 2, caption: 'Second state', items: [0]}],
 });
 
-function fixture(data = drawing(), {intersection = true} = {}) {
+function fixture(data = drawing(), {intersection = true, near = true, reducedMotion = true} = {}) {
   const observers = [], mutations = [], queries = [], responses = [data];
   const ctx = {clears: 0, translations: [], clearRect() {this.clears++;},
     translate(...point) {this.translations.push(point);}, save() {}, restore() {},
@@ -47,8 +47,8 @@ function fixture(data = drawing(), {intersection = true} = {}) {
     disconnect() {this.disconnected = true;}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
-  const sandbox = {document, console, performance: {now: () => 0},
-    matchMedia: () => ({matches: true, addEventListener() {}}),
+  const sandbox = {document, console, Error, performance: {now: () => 0},
+    matchMedia: () => ({matches: reducedMotion, addEventListener() {}}),
     ResizeObserver: class {observe() {}},
     MutationObserver: class {constructor(callback) {mutations.push(callback);} observe() {}},
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
@@ -62,11 +62,13 @@ function fixture(data = drawing(), {intersection = true} = {}) {
   };
   vm.runInNewContext(`${source}\nthis.Player = AnimationPlayer;`, sandbox);
   const player = new sandbox.Player(root);
+  if (near) observers.find(observer => observer.options?.rootMargin)?.fire(true);
   return {player, nodes, ctx, queries, observers, mutations, responses, document,
     fetches: () => fetches,
     ready: () => new Promise(resolve => setImmediate(resolve)),
     seek(time) {nodes.seek.value = String(time); nodes.seek.handlers.input();},
     theme(theme) {document.documentElement.dataset.bsTheme = theme; mutations.forEach(callback => callback([]));},
+    root,
   };
 }
 
@@ -126,4 +128,56 @@ test('loading another drawing resets duration, captions and render caches', asyn
   assert.equal(f.nodes.clock.textContent, '0:00 / 0:01');
   assert.equal(f.nodes.summary.textContent, 'Replacement state');
   assert.equal(f.ctx.clears, 3);
+});
+
+test('offscreen figures load only within the 300px preload margin and do not autoplay while merely near', async () => {
+  const f = fixture(drawing(), {near: false, reducedMotion: false}); await f.ready();
+  assert.equal(f.fetches(), 0);
+  assert.equal(f.nodes.play.disabled, true);
+  const preload = f.observers.find(observer => observer.options?.rootMargin);
+  assert.equal(preload.options.rootMargin, '300px');
+  preload.fire(false); await f.ready();
+  assert.equal(f.fetches(), 0);
+  preload.fire(true); preload.fire(true);
+  assert.equal(f.root.attrs['aria-busy'], 'true');
+  await f.ready();
+  assert.equal(f.fetches(), 1, 'Overlapping observer callbacks cannot start duplicate fetches');
+  assert.equal(preload.disconnected, true);
+  assert.equal(f.root.attrs['aria-busy'], 'false');
+  assert.equal(f.nodes.play.disabled, false);
+  assert.equal(f.nodes.play.textContent, 'Play');
+  assert.equal(f.player.visible, false, 'Preload margin is separate from playback visibility');
+  f.observers.find(observer => !observer.options).fire(true);
+  assert.equal(f.nodes.play.textContent, 'Pause', 'Autoplay begins only when the figure is actually visible');
+});
+
+test('failed lazy loads remain accessible and can be retried without reloading the page', async () => {
+  const f = fixture(drawing(), {near: false});
+  f.responses.splice(0, 1, new Error('Network unavailable'), drawing());
+  f.observers.find(observer => observer.options?.rootMargin).fire(true);
+  await f.ready();
+  assert.equal(f.nodes.error.hidden, false);
+  assert.equal(f.nodes.error.textContent, 'Network unavailable');
+  assert.equal(f.nodes.play.textContent, 'Retry');
+  assert.equal(f.nodes.play.attrs['aria-label'], 'Retry animation');
+  assert.equal(f.nodes.play.disabled, false);
+  assert.equal(f.root.attrs['aria-busy'], 'false');
+  f.nodes.play.handlers.click();
+  assert.equal(f.nodes.play.disabled, true);
+  await f.ready();
+  assert.equal(f.fetches(), 2);
+  assert.equal(f.nodes.error.hidden, true);
+  assert.equal(f.nodes.play.textContent, 'Play');
+  assert.equal(f.nodes.play.disabled, false);
+  assert.equal(f.ctx.clears, 1);
+});
+
+test('browsers without IntersectionObserver load immediately with usable paused controls', async () => {
+  const f = fixture(drawing(), {intersection: false}); await f.ready();
+  assert.equal(f.fetches(), 1);
+  assert.equal(f.player.visible, true);
+  assert.equal(f.nodes.play.disabled, false);
+  assert.equal(f.nodes.play.textContent, 'Play');
+  f.seek(2);
+  assert.equal(f.nodes.summary.textContent, 'Second state');
 });
