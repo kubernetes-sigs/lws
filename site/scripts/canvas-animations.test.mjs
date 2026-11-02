@@ -103,14 +103,16 @@ test('scaling drawings leave room below status lines and above the annotation ba
   }
 });
 
-test('all deployment contexts preserve snapshots and need only the Hugo build', async () => {
+test('all deployment contexts gate snapshots and the Hugo build on integration tests', async () => {
   const netlify = await read('../../netlify.toml');
   const pkg = JSON.parse(await read('../package.json'));
   assert.match(pkg.scripts['build:html'], /hugo --source _generated/);
   assert.doesNotMatch(netlify, /pnpm|build:animations|build:player/);
   const commands = [...netlify.matchAll(/command = "([^"]+)"/g)].map(match => match[1]);
   assert.equal(commands.length, 3);
-  for (const command of commands) assert.match(command, /snapshot-docs\.py.*&& npm run build:html/);
+  for (const command of commands) {
+    assert.match(command, /^npm ci && npm run test:integration && python3 .*snapshot-docs\.py.*&& npm run build:html$/);
+  }
   assert.doesNotMatch(commands[0], /--main-ref/);
   for (const command of commands.slice(1)) assert.match(command, /--main-ref HEAD/);
 });

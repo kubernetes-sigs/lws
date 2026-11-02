@@ -1,13 +1,13 @@
 [build]
   base = "site"
   publish = "public"
-  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py && npm run build:html"
+  command = "npm ci && npm run test:integration && python3 ../hack/releasing/snapshot-docs.py && npm run build:html"
 
 [context.deploy-preview]
-  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && npm run build:html"
+  command = "npm ci && npm run test:integration && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && npm run build:html"
 
 [context.branch-deploy]
-  command = "npm ci && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && npm run build:html"
+  command = "npm ci && npm run test:integration && python3 ../hack/releasing/snapshot-docs.py --main-ref HEAD && npm run build:html"
 
 [build.environment]
   NODE_VERSION = "22"
