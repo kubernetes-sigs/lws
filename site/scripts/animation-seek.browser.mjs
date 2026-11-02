@@ -1,6 +1,6 @@
 // Run against a Hugo preview: LWS_SITE_URL=... node scripts/animation-seek.browser.mjs
 import assert from 'node:assert/strict';
-import { chromium } from '@playwright/test';
+import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
@@ -15,7 +15,8 @@ const drawing = {
   ],
 };
 const duration = drawing.frames.reduce((total, frame) => total + frame.duration, 0);
-const browser = await chromium.launch({headless: true,
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? {channel: process.env.PLAYWRIGHT_CHANNEL} : {})});
 const page = await browser.newPage({reducedMotion: 'reduce', viewport: {width: 1600, height: 1100}});
 const errors = [];

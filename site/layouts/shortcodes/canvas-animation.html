@@ -8,8 +8,8 @@
 <figure class="lws-animation td-max-width-on-larger-screens" data-animation-source="{{ $data | relURL }}">
   <div data-animation-player>
     <div class="lws-animation__stage">
-      <canvas data-animation-canvas width="1920" height="1080" role="img"
-        aria-label="{{ .Get "title" }}" aria-describedby="{{ $id }}-summary"></canvas>
+      <svg data-animation-svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img"
+        aria-label="{{ .Get "title" }}" aria-describedby="{{ $id }}-summary"></svg>
       <div data-animation-tooltip role="tooltip" hidden></div>
     </div>
     <div data-animation-controls>

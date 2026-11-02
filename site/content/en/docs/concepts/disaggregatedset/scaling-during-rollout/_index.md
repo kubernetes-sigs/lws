@@ -32,6 +32,8 @@ These rules apply to both Ordinal and Hash. Static roles receive requests throug
 
 A replica group is one copy of a role. It may contain several Pods, which must all be Ready for the group to count as Ready.
 
+Both illustrations use roughly 44 seconds of playback for readability. Their recorded timestamps are unchanged, but they do not share a real-time playback scale.
+
 ## When demand increases
 
 Only B grows; A is never scaled back up. The scale-up policy determines whether new groups must wait behind a batch that is still starting.
@@ -55,7 +57,7 @@ The scale-down policy controls reductions independently of the scale-up policy. 
 
 The animation below reduces demand from **37 to 20 Prefill groups** and **19 to 10 Decode groups** while B is still loading. It compares the two **scale-down** policies using autoscaler requests, with both rollout budgets set to 10%. Scale-up remains Deferred in both examples.
 
-{{< canvas-animation data="/animations/scaling.json" title="Deferred versus Immediate scale-down during a rollout" >}}
+{{< canvas-animation data="/animations/scaling-down.json" title="Deferred versus Immediate scale-down during a rollout" >}}
 Two recorded Kubernetes runs with controlled model-loading readiness. Panels are aligned at the replica change; each shows its own observed state. Playback is compressed.
 {{< /canvas-animation >}}
 

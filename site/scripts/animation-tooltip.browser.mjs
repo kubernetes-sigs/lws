@@ -1,6 +1,6 @@
 // Run against a Hugo preview: LWS_SITE_URL=... node scripts/animation-tooltip.browser.mjs
 import assert from 'node:assert/strict';
-import { chromium } from '@playwright/test';
+import { chromium, firefox } from '@playwright/test';
 
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18446';
 const prefix = process.env.LWS_DOCS_PREFIX ?? '/main';
@@ -14,7 +14,8 @@ const drawing = {
   ],
   frames: [{duration: 2, caption: 'Inspect a short label, then a longer explanation.', items: [0], hits: [0, 1]}],
 };
-const browser = await chromium.launch({headless: true,
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? {channel: process.env.PLAYWRIGHT_CHANNEL} : {})});
 const page = await browser.newPage({reducedMotion: 'reduce', viewport: {width: 1600, height: 1100}});
 const errors = [];
@@ -27,11 +28,11 @@ try {
   await figure.scrollIntoViewIfNeeded();
   const play = figure.locator('[data-animation-play]');
   await page.waitForFunction(button => !button.disabled, await play.elementHandle());
-  const canvas = figure.locator('canvas'), tooltip = figure.locator('[data-animation-tooltip]');
+  const surface = figure.locator('[data-animation-svg]'), tooltip = figure.locator('[data-animation-tooltip]');
   for (const width of [1600, 1100]) {
     await page.setViewportSize({width, height: 1100});
     await figure.scrollIntoViewIfNeeded();
-    const bounds = await canvas.boundingBox();
+    const bounds = await surface.boundingBox();
     const hover = async x => {
       await page.mouse.move(bounds.x + x / drawing.width * bounds.width,
         bounds.y + 250 / drawing.height * bounds.height);
