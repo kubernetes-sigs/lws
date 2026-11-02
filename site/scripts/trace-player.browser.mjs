@@ -38,6 +38,18 @@ const state = () => page.evaluate(() => ({
   play: document.querySelector('[data-animation-play]').textContent,
   caption: document.querySelector('[data-animation-summary]').textContent,
 }));
+async function assertImportPlacement() {
+  await settle();
+  const {inside, picker, main, header} = await page.evaluate(() => {
+    const picker = document.querySelector('[data-trace-import]'), main = document.querySelector('main');
+    return {inside: main.contains(picker), picker: picker.getBoundingClientRect().toJSON(),
+      main: main.getBoundingClientRect().toJSON(), header: document.querySelector('.trace-player-subheader').getBoundingClientRect().toJSON()};
+  });
+  assert.ok(inside && picker.width > 0 && picker.height > 0, 'Import picker and help are visible in the main workspace');
+  assert.ok(picker.x >= main.x - 1 && picker.right <= main.right + 1 && picker.y >= main.y - 1 && picker.bottom <= main.bottom + 1,
+    'Import controls fit inside the main workspace');
+  assert.ok(picker.y >= header.bottom - 1, 'Import controls stay below the subheader');
+}
 async function assertResponsiveSizing() {
   const viewport = page.viewportSize();
   for (const [width, height] of [[2048, 900], [1600, 1200], [1280, 900], [1024, 768], [390, 900]]) {
@@ -312,11 +324,13 @@ try {
   assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'Changing tabs clears completed export feedback');
   assert.equal(await page.locator('[data-trace-export-message]').textContent(), '', 'Changing tabs also clears the stale live announcement');
   assert.equal(await surface.isVisible(), false);assert.equal(await page.locator('[data-trace-scenario]').count(), 0);
+  await assertImportPlacement();
   const beforeImport = requests.length;
   await page.locator('[data-trace-file]').setInputFiles({name: 'my-scenario.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))});
   await ready();assert.equal(await status.textContent(), 'Imported: my-scenario');
   assert.equal(requests.length, beforeImport, 'Local JSON import must not upload or fetch anything');
   assert.equal(await surface.getAttribute('aria-label'), exported.title);
+  await assertImportPlacement();
   await page.setViewportSize({width: 1024, height: 768});await assertViewportFit('Imported drawing with file picker');
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   const previousDrawing = await surface.innerHTML(), previousState = await state();

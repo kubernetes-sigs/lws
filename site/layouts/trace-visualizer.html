@@ -22,10 +22,6 @@
         <button type="button" data-trace-suite="import" aria-pressed="false">Import JSON</button>
       </div>
     <div class="trace-player-toolbar">
-      <div data-trace-import hidden>
-        <label>Prepared drawing file <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-describedby="trace-import-help"></label>
-        <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON. Files stay in your browser; nothing is uploaded.</small>
-      </div>
       <div data-trace-theme-control hidden>
         <select data-trace-theme aria-label="Animation theme">
           <option value="">Follow site theme</option>
@@ -70,6 +66,10 @@
       </div>
     </aside>
     <main>
+    <div data-trace-import hidden>
+      <label>Prepared drawing file <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-describedby="trace-import-help"></label>
+      <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON. Files stay in your browser; nothing is uploaded.</small>
+    </div>
     {{ partial "animation-player.html" (dict "page" . "id" "lws-trace" "data" $scenario.source "title" $scenario.title) }}
     </main>
     </div>
