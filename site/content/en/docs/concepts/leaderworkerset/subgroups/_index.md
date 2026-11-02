@@ -64,4 +64,4 @@ The annotation `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` defines
 
 {{< include file="examples/leaderworkerset/subgroups/subgroup-exclusive-topology.yaml" lang="yaml" >}}
 
-In this example, each 4-pod subgroup is scheduled onto its own exclusive rack, while the overall 8-pod replica can span across racks within the same zone or cluster.
+In this example, each 4-pod subgroup is scheduled onto its own exclusive rack, while the overall 8-pod replica can span across racks within the same zone or cluster. For compatible TPU subgroup layouts (`LeaderWorker` with `size` divisible by `subGroupSize` for a TPU leader, or `size - 1` divisible by `subGroupSize` for a CPU-only leader), LWS also scopes `TPU_WORKER_ID`, `TPU_WORKER_HOSTNAMES`, and `TPU_PROCESS_ADDRESSES` to each subgroup; see [Google Cloud TPU Integration](../../accelerators/tpu/).
