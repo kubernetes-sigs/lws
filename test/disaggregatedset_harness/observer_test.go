@@ -28,6 +28,7 @@ func TestObserverOverlayAgainstRepository(t *testing.T) {
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, "prepare current-source observer: %s", output)
 	tags := strings.TrimSpace(string(output))
+	require.Equal(t, "harness", tags, "current checkout must use current observer adapters")
 	command = exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"),
 		"test", "-overlay="+overlay, "-tags="+tags, "-count=1", "-run=^TestHarness",
 		"./pkg/controllers/disaggregatedset", "./test/disaggregatedset_harness/observer")
