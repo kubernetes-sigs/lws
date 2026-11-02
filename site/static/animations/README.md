@@ -20,6 +20,9 @@ Each file's `provenance` and `source` metadata retain the evidence description, 
 
 ## Regeneration
 
+The authoring tool's historical `scaling` scene produces `scaling.json`; rename
+that output to `scaling-down.json` for the current documentation.
+
 Use a separate checkout of `disaggregatedset-trace-player`. From that project's directory:
 
 ```sh
