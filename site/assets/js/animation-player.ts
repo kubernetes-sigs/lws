@@ -117,6 +117,10 @@ class AnimationPlayer {
   private duration = 0;
   private time = 0;
   private lastFrame = -1;
+  private lastSecond = -1;
+  private lastDark?: boolean;
+  private lastRenderTime = -1;
+  private wasMoving = false;
   private visible = false;
   private intent = !matchMedia('(prefers-reduced-motion: reduce)').matches;
   private request = 0;
@@ -129,6 +133,8 @@ class AnimationPlayer {
   private loop: HTMLInputElement;
   private fullscreen: HTMLButtonElement;
   private tooltip: HTMLElement;
+  private clockEl: HTMLElement;
+  private summaryEl: HTMLElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -137,6 +143,7 @@ class AnimationPlayer {
     this.seek = get('seek'); this.play = get('play'); this.speed = get('speed'); this.loop = get('loop');
     this.fullscreen = get('fullscreen'); this.fullscreen.hidden = !document.fullscreenEnabled;
     this.tooltip = get('tooltip');
+    this.clockEl = get('clock'); this.summaryEl = get('summary');
     this.canvas.addEventListener('pointermove', event => this.inspect(event));
     this.canvas.addEventListener('pointerdown', event => this.inspect(event));
     this.canvas.addEventListener('pointerleave', () => {this.tooltip.hidden = true;});
@@ -194,6 +201,9 @@ class AnimationPlayer {
       const response = await fetch(this.root.dataset.animationSource!);
       if (!response.ok) throw new Error(`Animation could not load (${response.status}).`);
       this.data = parseDrawing(await response.json());
+      this.duration = 0; this.time = 0;
+      this.lastFrame = -1; this.lastSecond = -1; this.lastDark = undefined;
+      this.lastRenderTime = -1; this.wasMoving = false;
       this.starts = this.data.frames.map(frame => {const start = this.duration; this.duration += frame.duration; return start;});
       this.motionTimes = (this.data.motions ?? []).map(track => track.keyframes.map(key => key[0]));
       this.canvas.width = this.data.width; this.canvas.height = this.data.height;
@@ -231,22 +241,32 @@ class AnimationPlayer {
     if (!this.data || !this.context) return;
     const ctx = this.context, dark = document.documentElement.dataset.bsTheme === 'dark';
     const index = position(this.starts, this.time), frame = this.data.frames[index];
-    ctx.clearRect(0, 0, this.data.width, this.data.height);
-    for (const id of frame.items) drawPrimitive(ctx, this.data.primitives[id], dark);
-    (this.data.motions ?? []).forEach((motion, i) => {
-      const times = this.motionTimes[i];
-      if (this.time < times[0] || this.time > times[times.length - 1]) return;
-      const key = Math.min(position(times, this.time), times.length - 2);
-      const a = motion.keyframes[key], b = motion.keyframes[key + 1], t = (this.time - a[0]) / (b[0] - a[0]);
-      ctx.save(); ctx.translate(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t);
-      drawPrimitive(ctx, this.data!.primitives[motion.primitive], dark); ctx.restore();
-    });
+    const activeMotions = this.motionTimes.flatMap((times, i) =>
+      this.time >= times[0] && this.time <= times[times.length - 1] ? [i] : []);
+    const moving = activeMotions.length > 0;
+    if (index !== this.lastFrame || dark !== this.lastDark || moving !== this.wasMoving
+      || moving && this.time !== this.lastRenderTime) {
+      ctx.clearRect(0, 0, this.data.width, this.data.height);
+      for (const id of frame.items) drawPrimitive(ctx, this.data.primitives[id], dark);
+      for (const i of activeMotions) {
+        const motion = this.data.motions![i], times = this.motionTimes[i];
+        const key = Math.min(position(times, this.time), times.length - 2);
+        const a = motion.keyframes[key], b = motion.keyframes[key + 1], t = (this.time - a[0]) / (b[0] - a[0]);
+        ctx.save(); ctx.translate(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t);
+        drawPrimitive(ctx, this.data.primitives[motion.primitive], dark); ctx.restore();
+      }
+      this.lastDark = dark; this.wasMoving = moving; this.lastRenderTime = this.time;
+    }
     this.seek.value = String(this.time);
-    this.seek.setAttribute('aria-valuetext', `${clock(this.time)} of ${clock(this.duration)}`);
-    this.root.querySelector<HTMLElement>('[data-animation-clock]')!.textContent = `${clock(this.time)} / ${clock(this.duration)}`;
+    const second = Math.floor(this.time);
+    if (second !== this.lastSecond) {
+      this.seek.setAttribute('aria-valuetext', `${clock(second)} of ${clock(this.duration)}`);
+      this.clockEl.textContent = `${clock(second)} / ${clock(this.duration)}`;
+      this.lastSecond = second;
+    }
     if (index !== this.lastFrame) {
       this.tooltip.hidden = true;
-      this.root.querySelector<HTMLElement>('[data-animation-summary]')!.textContent = frame.caption;
+      this.summaryEl.textContent = frame.caption;
       this.lastFrame = index;
     }
   }
