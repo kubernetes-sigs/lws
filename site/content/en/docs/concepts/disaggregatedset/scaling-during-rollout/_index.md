@@ -46,7 +46,7 @@ Immediate counts requested groups, including those still loading, across **all**
 This extra growth reaches the desired count; it does not raise `maxSurge` or permit extra old-group deletions. Normal rollout growth may still use the allowed surge, and renamed-role safeguards still apply. Immediate can start more groups sooner, but cannot make them schedulable or Ready sooner.
 
 {{< canvas-animation data="/animations/scaling-up.json" title="Deferred versus Immediate scale-up from 4 to 10 groups" >}}
-When demand rises, both have 4 Ready A groups and 1 loading B group per role. Immediate requests 6 B groups without waiting for that loading batch; Deferred waits. Readiness and timing are illustrative.
+Two recorded Kubernetes runs show how each policy grows B after demand rises from 4 to 10 groups per role. Model-loading readiness is controlled, and playback is compressed.
 {{< /canvas-animation >}}
 
 ## When demand decreases
