@@ -38,9 +38,9 @@
         <button type="button" data-trace-export disabled>Download scenario JSON</button>
         <button type="button" data-trace-media="gif" disabled>Export GIF</button>
         <button type="button" data-trace-media="video" title="MP4 when supported by your browser; otherwise WebM" disabled>Export video</button>
+        <button type="button" data-trace-cancel hidden>Cancel export</button>
+        <output data-trace-export-status role="status" aria-live="polite"></output>
       </div>
-      <button type="button" data-trace-cancel hidden>Cancel export</button>
-      <output data-trace-export-status role="status" aria-live="polite"></output>
     </div>
     <output data-trace-status role="status" aria-live="polite">Loading {{ $scenario.title }}…</output>
     </section>

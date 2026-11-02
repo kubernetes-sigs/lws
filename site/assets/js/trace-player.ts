@@ -44,7 +44,7 @@ function load(detail: object, name = selected?.id ?? imported?.name ?? 'imported
   pendingName = name;
   loading = true;
   status.textContent = 'Loading…';
-  status.classList.remove('visually-hidden');
+  status.classList.add('visually-hidden');
   syncExports();
   figure.dispatchEvent(new CustomEvent('animation-load', {detail: {...detail, requestId: ++requestId}}));
 }
@@ -129,6 +129,11 @@ function download(blob: Blob, name: string, extension: string) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
+function reportExport(message: string, detail = message) {
+  exportStatus.textContent = message;
+  exportStatus.title = detail;
+  exportStatus.setAttribute('aria-label', detail);
+}
 save.addEventListener('click', () => {
   if (current) download(new Blob([JSON.stringify(current.drawing)], {type: 'application/json'}), current.name, 'json');
 });
@@ -140,7 +145,7 @@ mediaButtons.forEach(button => button.addEventListener('click', async () => {
   const speed = Number(figure.querySelector<HTMLSelectElement>('[data-animation-speed]')!.value);
   const palette = figure.dataset.animationTheme, dark = document.documentElement.dataset.bsTheme === 'dark';
   syncExports();
-  exportStatus.textContent = 'Preparing export…';
+  reportExport('Preparing…', 'Preparing export…');
   try {
     const assets = JSON.parse(document.querySelector('#trace-export-assets')!.textContent!);
     const {exportScenario, videoSupport} = await import(assets.module);
@@ -148,12 +153,13 @@ mediaButtons.forEach(button => button.addEventListener('click', async () => {
     const result = await exportScenario({drawing: source.drawing, format, speed,
       theme: palette, dark, signal: controller.signal, gifWorkerURL: assets.worker, videoModuleURL: assets.video,
       onProgress: (fraction: number) => {
-        exportStatus.textContent = `${label}: ${Math.round(fraction * 100)}%`;
+        reportExport(`${label} · ${Math.round(fraction * 100)}%`);
       }});
     download(result.blob, source.name, result.extension);
-    exportStatus.textContent = `${label} exported at 1080p using the selected theme and ${speed}× speed.`;
+    reportExport(`${label} exported`, `${label} exported at 1080p using the selected theme and ${speed}× speed.`);
   } catch (error) {
-    exportStatus.textContent = controller.signal.aborted ? 'Export cancelled.' : `Export failed: ${(error as Error).message}`;
+    reportExport(controller.signal.aborted ? 'Cancelled' : 'Export failed',
+      controller.signal.aborted ? 'Export cancelled.' : `Export failed: ${(error as Error).message}`);
   } finally {exporting = undefined; syncExports();}
 }));
 function restore() {

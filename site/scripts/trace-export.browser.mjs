@@ -70,6 +70,49 @@ try {
   assert.equal(result.gif.width,1920);assert.equal(result.gif.height,1080);assert.ok(result.gif.bytes>100);
   assert.equal(result.progress[0],0);assert.equal(result.progress.at(-1),1);assert.equal(result.aborted,'AbortError');
   if(result.video){assert.equal(result.video.width,1920);assert.equal(result.video.height,1080);assert.ok(result.video.bytes>100);assert.ok(Math.abs(result.video.duration-.8)<.02);assert.ok(result.video.finalPixel[0]>180&&result.video.finalPixel[1]<30,JSON.stringify(result.video));assert.equal(result.video.cancellation,'AbortError');}
+
+  // Exercise the real toolbar as well as the encoder API: short visible feedback,
+  // with full export details available to assistive technology and on hover.
+  const status=page.locator('[data-trace-export-status]');
+  await status.evaluate(node=>{
+    node.testChanges=[];
+    new MutationObserver(()=>node.testChanges.push(node.textContent)).observe(node,{childList:true,subtree:true,characterData:true});
+  });
+  await page.locator('[data-animation-speed]').selectOption('2');
+  for(const [format,extension] of [['gif','gif'],...(result.video?[['video',result.video.extension]]:[])]) {
+    await status.evaluate(node=>{node.testChanges=[];});
+    const downloaded=page.waitForEvent('download');
+    await page.locator(`[data-trace-media="${format}"]`).click();
+    const download=await downloaded,label=extension.toUpperCase();
+    assert.ok(download.suggestedFilename().endsWith(`.${extension}`));
+    await page.waitForFunction(label=>document.querySelector('[data-trace-export-status]').textContent===`${label} exported`,label);
+    const detail=await status.getAttribute('title');
+    assert.match(detail,/1080p.*theme.*2×/);
+    assert.equal(await status.getAttribute('aria-label'),detail,'Full export details remain accessible');
+    const changes=await status.evaluate(node=>node.testChanges);
+    assert.ok(changes.some(text=>new RegExp(`^${label} · \\d+%$`).test(text)),`${label}: compact progress is shown`);
+    assert.ok(changes.every(text=>text==='Preparing…'||text===`${label} exported`||new RegExp(`^${label} · \\d+%$`).test(text)),
+      `${label}: exporter feedback never expands into a long toolbar sentence`);
+    const geometry=await status.evaluate(node=>{
+      const rect=target=>target.getBoundingClientRect().toJSON();
+      return {status:rect(node),exports:rect(node.closest('.trace-player-exports')),header:rect(node.closest('.trace-player-subheader')),
+        video:rect(document.querySelector('[data-trace-media="video"]')),rem:parseFloat(getComputedStyle(document.documentElement).fontSize)};
+    });
+    for(const container of [geometry.exports,geometry.header]) assert.ok(geometry.status.x>=container.x-1&&geometry.status.right<=container.right+1&&
+      geometry.status.y>=container.y-1&&geometry.status.bottom<=container.bottom+1,'Export badge stays within the shared subheader toolbar');
+    assert.ok(geometry.status.width<=12*geometry.rem+1,'Export badge has bounded width');
+    assert.ok(geometry.status.y>=geometry.video.y-1&&geometry.status.bottom<=geometry.video.bottom+1,'Export badge stays beside the export buttons');
+    assert.equal(await page.locator('[data-trace-cancel]').isVisible(),false);
+    assert.equal(await page.locator(`[data-trace-media="${format}"]`).isEnabled(),true);
+  }
+  await page.evaluate(()=>{
+    document.querySelector('[data-trace-media="gif"]').click();
+    document.querySelector('[data-trace-cancel]').click();
+  });
+  await page.waitForFunction(()=>document.querySelector('[data-trace-export-status]').textContent==='Cancelled');
+  assert.match(await status.getAttribute('title'),/cancelled/i);
+  assert.equal(await status.getAttribute('aria-label'),await status.getAttribute('title'));
+  assert.equal(await page.locator('[data-trace-cancel]').isVisible(),false);
   assert.deepEqual(failures,[]);
-  console.log(JSON.stringify({gif:result.gif,video:result.video,cancellation:'passed',lazyLoading:'passed',canvasFree:'passed'},null,2));
+  console.log(JSON.stringify({gif:result.gif,video:result.video,cancellation:'passed',lazyLoading:'passed',canvasFree:'passed',toolbarFeedback:'passed'},null,2));
 } finally {await browser.close();}

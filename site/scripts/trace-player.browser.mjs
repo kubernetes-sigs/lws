@@ -219,6 +219,46 @@ async function assertContainedScrolling() {
   assert.ok(Math.abs(before.heading - after.heading) < 1 && Math.abs(before.main - after.main) < 1,
     'Title, tabs and player must stay in place while the scenario list scrolls');
 }
+async function assertStableScenarioSwitch(group) {
+  await page.locator(`[data-trace-suite="${group.id}"]`).click();await ready();await settle();
+  const entry=group.scenarios.at(-1),button=page.locator(`[data-trace-scenario="${entry.id}"]`);
+  await button.scrollIntoViewIfNeeded();await settledScroll();
+  const geometry=()=>page.evaluate(()=>({
+    sidebarScroll:document.querySelector('#td-section-nav').scrollTop,documentScroll:scrollY,
+    boxes:Object.fromEntries(['.trace-player-subheader','#td-section-nav','[data-animation-player]',
+      '.lws-animation__stage','[data-animation-controls]'].map(selector=>{
+      const {x,y,width,height}=document.querySelector(selector).getBoundingClientRect();return [selector,{x,y,width,height}];
+    })),
+  }));
+  const before=await geometry(),drawing=await surface.innerHTML();
+  assert.ok(before.sidebarScroll>0,`${group.id}: switching regression exercises a scrolled scenario list`);
+  const unchanged=async phase=>{
+    const current=await geometry();
+    assert.equal(current.sidebarScroll,before.sidebarScroll,`${group.id}: ${phase} preserves the list position`);
+    assert.equal(current.documentScroll,before.documentScroll,`${group.id}: ${phase} preserves the page position`);
+    for(const [selector,box] of Object.entries(before.boxes)) for(const key of ['x','y','width','height'])
+      assert.ok(Math.abs(current.boxes[selector][key]-box[key])<1,`${group.id}: ${phase} must not move or resize ${selector} (${key})`);
+  };
+  const url=new URL(entry.source,origin).href;
+  let pending,intercepted;
+  const captured=new Promise(resolve=>{intercepted=resolve;});
+  const hold=route=>{pending=route;intercepted();};
+  await page.route(url,hold);
+  try {
+    const requested=page.waitForRequest(url);
+    await button.click();await requested;await captured;await settle();
+    assert.equal(await status.textContent(),'Loading…');
+    assert.equal(await page.locator('[data-animation-source]').getAttribute('aria-busy'),'true');
+    assert.equal(await surface.innerHTML(),drawing,`${group.id}: old drawing stays visible while the response is held`);
+    await unchanged('loading');
+    await pending.continue();pending=undefined;
+    await ready();await settle();
+    assert.equal(await status.textContent(),entry.title);
+    assert.equal(await surface.getAttribute('aria-label'),entry.title,'The requested source replaces the previous drawing');
+    assert.equal(await page.locator('[data-animation-source]').getAttribute('aria-busy'),'false');
+    await unchanged('completed switch');
+  } finally {if(pending) await pending.continue();await page.unroute(url,hold);}
+}
 
 try {
   await visit();
@@ -232,6 +272,7 @@ try {
   await assertResponsiveSizing();
   const catalog = JSON.parse(await page.locator('#trace-player-catalog').textContent());
   assert.deepEqual(catalog.map(group => group.scenarios.length), [28, 20, 4]);
+  for(const group of catalog.slice(0,2)) await assertStableScenarioSwitch(group);
   for (const group of catalog) {
     await page.locator(`[data-trace-suite="${group.id}"]`).click();
     assert.equal(await page.locator('[data-trace-scenario]').count(), group.scenarios.length);
@@ -360,10 +401,12 @@ try {
   await page.setViewportSize({width: 1024, height: 768});
   await assertViewportFit('Imported drawing with theme controls');
   // Reserve room for the real exporter progress/cancellation UI without encoding a video in this layout test.
-  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = 'Video exported at 1080p using the selected theme and 4× speed.';});
+  await page.locator('[data-trace-export-status]').evaluate(node => {
+    node.textContent = 'GIF · 67%';node.title = 'GIF export: 67%';node.setAttribute('aria-label', node.title);
+  });
   await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = false;});
   await assertViewportFit('Imported drawing with export status and controls');
-  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = '';});
+  await page.locator('[data-trace-export-status]').evaluate(node => {node.textContent = '';node.removeAttribute('title');node.removeAttribute('aria-label');});
   await page.locator('[data-trace-cancel]').evaluate(node => {node.hidden = true;});
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   assert.equal(await page.locator('[data-trace-theme]').inputValue(), '', 'Unsupported current theme clears on legacy import');
@@ -391,5 +434,5 @@ try {
   await toggle.click();await navigation.waitFor({state: 'hidden'});await assertMobileLayout('Mobile selected');
   assert.deepEqual(errors, []);
   if (process.env.LWS_SCREENSHOT_DIR) await page.screenshot({path: `${process.env.LWS_SCREENSHOT_DIR}/hidden-trace-player-mobile.png`, fullPage: true});
-  console.log('Hidden player passed: 52 choices, local imports, theme/state preservation, viewport-fitted native 1080p drawing, compact full-width subheader, shared controls and thin scrollbars, independent full-height scenario scrolling, visible footer, and mobile navigation.');
+  console.log('Hidden player passed: 52 choices, stable asynchronous scenario switches, local imports, theme/state preservation, viewport-fitted native 1080p drawing, compact full-width subheader, shared controls and thin scrollbars, independent full-height scenario scrolling, visible footer, and mobile navigation.');
 } finally {await browser.close();}

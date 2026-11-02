@@ -39,8 +39,20 @@
   [data-trace-import] small {display: block; margin-top: 6px;}
   [data-trace-status], [data-trace-export-status] {display: block; font-size: .8125rem;}
   [data-trace-status]:not(.visually-hidden) {width: 100%;}
+  [data-trace-export-status] {
+    padding: 3px 7px; border-radius: 4px; max-width: 12rem;
+    background: var(--bs-secondary-bg); color: var(--bs-secondary-color);
+    font-size: .75rem; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   [data-trace-export-status]:empty {display: none;}
   .lws-animation {width: 100%; max-width: none; margin-block: 16px 0;}
+  [data-animation-player] {position: relative;}
+  .lws-animation[aria-busy="true"] [data-animation-player]::after {
+    content: "Loading…"; position: absolute; top: 8px; right: 8px;
+    padding: 3px 8px; border: 1px solid var(--bs-border-color); border-radius: 4px;
+    background: var(--bs-body-bg); color: var(--bs-body-color); font-size: .75rem; pointer-events: none;
+  }
   [hidden] {display: none !important;}
   // A desktop workspace, with only the scenario list scrolling. Short/narrow
   // screens keep normal document flow so controls remain reachable at zoom.
