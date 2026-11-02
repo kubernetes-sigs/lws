@@ -167,8 +167,8 @@ func sharedLayout(s Snapshot, version string, desired Targets) bool {
 	}
 	return true
 }
-func largeFinish(l *Lab, version string, desired, floors, ceilings Targets, protected Predicate, b *firstGroupBootstrap) Snapshot {
-	return l.Wait("Only "+version+" remains: "+describe(desired)+", all Ready and old Pods gone", func(s Snapshot) bool {
+func largeFinish(l *Lab, version string, desired, floors, ceilings Targets, protected Predicate, b *firstGroupBootstrap) {
+	l.Wait("Only "+version+" remains: "+describe(desired)+", all Ready and old Pods gone", func(s Snapshot) bool {
 		bounds(l, s, floors, ceilings, b)
 		if protected != nil {
 			protected(s)
