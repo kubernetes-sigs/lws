@@ -53,15 +53,20 @@ try {
         assert.equal(await figure.locator('[data-animation-summary]').textContent(), frame.caption);
         if (renderer === 'svg') assert.equal(await surface.locator(':scope > g').first().locator('use').count(), frame.items.length);
         if (renderer === 'svg' && asset.motions?.length) {
+          const renderedTime = await value(seek); // Range inputs may round their assigned value.
           const actual = await surface.locator(':scope > g').last().locator('use').evaluateAll(nodes => nodes
-            .filter(node => node.getAttribute('display') !== 'none').map(node => node.getAttribute('transform')));
+            .filter(node => node.getAttribute('display') !== 'none').map(node => {
+              const matrix = node.transform.baseVal.getItem(0).matrix; return [matrix.e, matrix.f];
+            }));
           const expected = asset.motions.flatMap(({keyframes}) => {
-            if (sampleTime < keyframes[0][0] || sampleTime > keyframes.at(-1)[0]) return [];
-            const i = Math.min(keyframes.findLastIndex(key => key[0] <= sampleTime), keyframes.length - 2);
-            const [a, b] = [keyframes[i], keyframes[i + 1]], t = (sampleTime - a[0]) / (b[0] - a[0]);
-            return [`translate(${a[1] + (b[1] - a[1]) * t} ${a[2] + (b[2] - a[2]) * t})`];
+            if (renderedTime < keyframes[0][0] || renderedTime > keyframes.at(-1)[0]) return [];
+            const i = Math.min(keyframes.findLastIndex(key => key[0] <= renderedTime), keyframes.length - 2);
+            const [a, b] = [keyframes[i], keyframes[i + 1]], t = (renderedTime - a[0]) / (b[0] - a[0]);
+            return [[a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]];
           });
-          assert.deepEqual(actual, expected, 'SVG motion positions and visibility follow the shared timeline');
+          assert.equal(actual.length, expected.length, 'Only active motion tracks are visible');
+          actual.forEach((point, i) => point.forEach((coordinate, axis) =>
+            assert.ok(Math.abs(coordinate - expected[i][axis]) < .001, 'SVG motion follows the timeline within subpixel precision')));
         }
         time += frame.duration;
       }
