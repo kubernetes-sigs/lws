@@ -334,6 +334,8 @@ EOF
     else
       $KUSTOMIZE build $CWD/test/e2e/config | $KUBECTL apply --server-side -f -
     fi
+    $KUBECTL rollout status deployment/lws-controller-manager \
+        -n "$LWS_NAMESPACE" --timeout=5m
 }
 
 function run_tests() {
