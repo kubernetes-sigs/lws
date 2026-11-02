@@ -171,7 +171,7 @@ async function playerFixture(t) {
   const nodes=Object.fromEntries(names.map(name=>[name,new Element()]));
   const root=new Element();root.dataset.animationSource='/initial.json';
   root.querySelector=selector=>nodes[selector.match(/data-animation-([^\]]+)/)[1]];
-  root.querySelectorAll=()=>Object.values(nodes);
+  root.querySelectorAll=selector=>selector==='[data-animation-speed-option]'?[]:Object.values(nodes);
   const document=new EventTarget();document.createElementNS=()=>new Element();document.documentElement={dataset:{}};document.hidden=false;
   let observerCount=0,raf=0,redrawTheme;
   const globals={

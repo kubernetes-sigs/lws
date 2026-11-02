@@ -182,7 +182,7 @@ mediaButtons.forEach(button => button.addEventListener('click', async () => {
   if (!current || exporting) return;
   const source = current, controller = exporting = new AbortController();
   const format = button.dataset.traceMedia === 'gif' ? 'gif' : 'video';
-  const speed = Number(figure.querySelector<HTMLSelectElement>('[data-animation-speed]')!.value);
+  const speed = Number(figure.querySelector<HTMLButtonElement>('[data-animation-speed]')!.value);
   const palette = figure.dataset.animationTheme, dark = document.documentElement.dataset.bsTheme === 'dark';
   const themeName = palette ? theme.textContent : dark ? 'LWS dark' : 'LWS light';
   syncExports();

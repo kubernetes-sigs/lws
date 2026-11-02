@@ -84,7 +84,8 @@ try {
         visible:getComputedStyle(progress).visibility==='visible'});
     }).observe(node,{attributes:true,childList:true,subtree:true,characterData:true});
   });
-  await page.locator('[data-animation-speed]').selectOption('2');
+  await page.locator('[data-animation-speed]').click();
+  await page.locator('[data-animation-speed-option][value="2"]').click();
   for(const [format,extension] of [['gif','gif'],...(result.video?[['video',result.video.extension]]:[])]) {
     await status.evaluate(node=>{node.testChanges=[];});
     const downloaded=page.waitForEvent('download');

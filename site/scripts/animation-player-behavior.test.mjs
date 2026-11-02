@@ -39,7 +39,8 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
   const root = {...element(), dataset: {animationSource: '/example.json'},
     dispatchEvent() {},
     querySelector(selector) {queries.push(selector); return nodes[selector.match(/data-animation-([^\]]+)/)[1]];},
-    querySelectorAll: () => names.filter(name => !['error', 'summary', 'clock'].includes(name)).map(name => nodes[name]),
+    querySelectorAll: selector => selector === '[data-animation-speed-option]' ? []
+      : names.filter(name => !['error', 'summary', 'clock'].includes(name)).map(name => nodes[name]),
   };
   const document = {documentElement: {dataset: {bsTheme: 'light'}}, hidden: false,
     querySelectorAll: () => [], addEventListener() {}, fullscreenEnabled: false};

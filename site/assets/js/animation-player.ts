@@ -163,7 +163,7 @@ export class AnimationPlayer {
   private svg?: SvgDrawing;
   private seek: HTMLInputElement;
   private play: HTMLButtonElement;
-  private speed: HTMLSelectElement;
+  private speed: HTMLButtonElement;
   private loop: HTMLInputElement;
   private fullscreen: HTMLButtonElement;
   private tooltip: HTMLElement;
@@ -194,7 +194,14 @@ export class AnimationPlayer {
       if (!step) return;
       event.preventDefault(); this.seekTo(this.time + step);
     });
-    this.speed.addEventListener('change', () => {this.lastTick = performance.now();});
+    const speeds = [...root.querySelectorAll<HTMLButtonElement>('[data-animation-speed-option]')];
+    speeds.forEach(option => option.addEventListener('click', () => {
+      this.speed.value = option.value;
+      this.speed.textContent = option.textContent!.trim();
+      this.speed.setAttribute('aria-label', `Playback speed: ${this.speed.textContent}`);
+      speeds.forEach(item => item.setAttribute('aria-checked', String(item === option)));
+      this.lastTick = performance.now(); this.speed.focus();
+    }));
     for (const [name, step] of [['previous', -1], ['next', 1]] as const) get(name).addEventListener('click', () => {
       const index = Math.max(0, Math.min(this.starts.length - 1, position(this.starts, this.time) + step));
       this.seekTo(this.starts[index]);
@@ -286,7 +293,7 @@ export class AnimationPlayer {
       this.root.style.setProperty('--animation-ratio', `${data.width} / ${data.height}`);
       this.root.style.setProperty('--animation-width-ratio', String(data.width / data.height));
       this.seek.max = String(duration);
-      this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-animation-control]').forEach(control => {control.disabled = false;});
+      this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement>('[data-animation-control]').forEach(control => {control.disabled = false;});
       this.render(); this.sync();
       this.root.dispatchEvent(new CustomEvent('animation-ready', {bubbles: true, detail: {
         drawing: data, source: 'source' in input ? input.source : undefined, requestId: input.requestId,

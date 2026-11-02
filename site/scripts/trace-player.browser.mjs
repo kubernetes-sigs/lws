@@ -435,7 +435,8 @@ try {
   await page.setViewportSize({width: 1600, height: 1200});await settle();
   for (const group of [catalog[0], catalog[1], catalog[2]]) {
     await select(group, group.scenarios[0]);
-    await page.locator('[data-animation-next]').click();await page.locator('[data-animation-speed]').selectOption('2');
+    await page.locator('[data-animation-next]').click();await page.locator('[data-animation-speed]').click();
+    await page.locator('[data-animation-speed-option][value="2"]').click();
     const original = await state(), hashes = new Set();
     for (const theme of themes) {
       await selectTheme(theme);
