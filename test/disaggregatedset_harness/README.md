@@ -157,12 +157,13 @@ sharing. Never publish a run's kubeconfig or ownership token.
 
 ## Read-only planner observer
 
-`observer/` contains diagnostic **build assets**, not controller hooks. The
-launcher generates a Go `-overlay` file pointing at the `.go.inc` assets, then
-builds the standalone observer against the pinned source archive. The overlay
-temporarily adds access to private planner helpers during that build only. It
-does not copy files into the archive, change the controller, or add production
-source files under `pkg/controllers`.
+`observer/testdata/` contains ordinary Go source files. Go excludes `testdata`
+from normal package discovery, keeping these diagnostic helpers out of production
+builds. The launcher uses a small Go `-overlay` mapping to build the standalone
+observer against the pinned source archive. It gives the diagnostics access to
+private planner helpers during that build only, without copying files into the
+archive, changing the controller, or adding production source under
+`pkg/controllers`.
 
 The observer uses a Reader-only Kubernetes client. Its bounds are independent
 observations, not controller write authorization. Current sources propagate
@@ -176,15 +177,11 @@ Offline checks:
 go test -race ./test/disaggregatedset_harness/...
 go vet ./test/disaggregatedset_harness/...
 bash -n test/disaggregatedset_harness/run.sh test/disaggregatedset_harness/observer/prepare.sh
-
-# Run private-planner diagnostic tests without editing the checkout:
-OBSERVER_CHECK=$(mktemp -d)
-OBSERVER_TAGS=$(bash test/disaggregatedset_harness/observer/prepare.sh "$PWD" "$OBSERVER_CHECK/overlay.json" --tests)
-go test -overlay="$OBSERVER_CHECK/overlay.json" -tags="$OBSERVER_TAGS" -count=1 \
-  ./pkg/controllers/disaggregatedset -run '^TestHarness'
-go build -overlay="$OBSERVER_CHECK/overlay.json" -tags="$OBSERVER_TAGS" \
-  -o "$OBSERVER_CHECK/observer" ./test/disaggregatedset_harness/observer
 ```
+
+The normal `go test` command above also builds the observer and runs its
+private-planner diagnostic tests through a temporary overlay against this
+checkout. No separate test command or source edits are needed.
 
 The Go package exposes selection and suite execution, with injectable process
 execution and clocks. Scenario operations abort immediately on failed checks;

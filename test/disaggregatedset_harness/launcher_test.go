@@ -303,7 +303,7 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte("func "+name+"(\n"), 0600))
 		}
 		overlay := filepath.Join(root, "overlay.json")
-		output, err := shell(t, root, nil, prepare, source, overlay, "--tests")
+		output, err := shell(t, root, nil, prepare, source, overlay)
 		require.Equal(t, tc.tags != "", err == nil, "%+v: %s, %v", tc, output, err)
 		if tc.tags == "" {
 			_, err = os.Stat(overlay)

@@ -24,7 +24,7 @@ func TestObserverOverlayAgainstRepository(t *testing.T) {
 	overlay := filepath.Join(t.TempDir(), "overlay.json")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, "bash", prepare, root, overlay, "--tests")
+	command := exec.CommandContext(ctx, "bash", prepare, root, overlay)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, "prepare current-source observer: %s", output)
 	tags := strings.TrimSpace(string(output))
