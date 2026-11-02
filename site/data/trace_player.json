@@ -256,16 +256,6 @@
     "title": "Documentation",
     "scenarios": [
       {
-        "id": "gating",
-        "title": "Revision gating with llm-d",
-        "source": "/animations/gating.json"
-      },
-      {
-        "id": "scaling-down",
-        "title": "Deferred versus Immediate scale-down",
-        "source": "/animations/scaling-down.json"
-      },
-      {
         "id": "fractional",
         "title": "Fractional rollout window",
         "source": "/animations/fractional.json"
@@ -274,6 +264,16 @@
         "id": "scaling-up",
         "title": "Deferred versus Immediate scale-up",
         "source": "/animations/scaling-up.json"
+      },
+      {
+        "id": "scaling-down",
+        "title": "Deferred versus Immediate scale-down",
+        "source": "/animations/scaling-down.json"
+      },
+      {
+        "id": "gating",
+        "title": "Revision gating with llm-d",
+        "source": "/animations/gating.json"
       }
     ]
   }

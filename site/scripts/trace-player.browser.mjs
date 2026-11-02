@@ -263,6 +263,7 @@ async function assertStableScenarioSwitch(group) {
 try {
   await visit();
   assert.equal(await page.locator('h1').textContent(), 'DisaggregatedSet Trace Player');
+  assert.equal(await page.locator('.docs-version-nav').count(), 0, 'The hidden player omits the documentation switcher');
   assert.match(await page.locator('meta[name=robots]').getAttribute('content'), /noindex/);
   assert.doesNotMatch(await (await page.request.get(origin + '/sitemap.xml')).text(), /disaggregated-set-trace-visualizer/);
   assert.ok(requests.filter(url => url.includes('/scenarios/')).every(url => url.includes('ordinary--Ordinal--Deferred')),
@@ -330,6 +331,7 @@ try {
     footer: document.querySelector('footer').textContent.replace(/\s+/g, ' ').trim(),
   }));
   assert.deepEqual(await shell(page), await shell(docs));
+  assert.equal(await docs.locator('.docs-version-nav').count(), 1, 'Ordinary documentation retains its switcher');
   const scrollProperties = ['scrollbar-width','scrollbar-color','scrollbar-gutter','overscroll-behavior-y','padding-right'];
   const scrollStyle = await styles(page, '#td-section-nav', scrollProperties);
   assert.deepEqual(scrollStyle, await styles(docs, '#td-section-nav', scrollProperties), 'Scrollbar styling must match shared docs');
