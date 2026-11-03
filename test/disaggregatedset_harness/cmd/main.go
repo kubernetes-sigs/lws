@@ -38,10 +38,10 @@ func run(args []string) int {
 	f.StringVar(&o.Context, "context", "", "owned private context")
 	f.StringVar(&o.RunDir, "run-dir", "", "owned run directory")
 	f.StringVar(&o.Node, "node", "", "owned kind node")
-	f.StringVar(&o.ControllerCommit, "controller-commit", "", "full controller baseline SHA")
-	f.StringVar(&o.Observer, "observer", "", "read-only observer binary built against baseline")
+	f.StringVar(&o.ControllerCommit, "controller-commit", "", "checked-out controller commit SHA")
+	f.StringVar(&o.Observer, "observer", "", "read-only observer binary built against the checked-out commit")
 	f.Usage = func() {
-		fmt.Fprintln(f.Output(), "Usage: lws-harness [list|dry-run|run] [case IDs|all|large-all] [options]\nNormally use test/disaggregatedset_harness/run.sh to provision an isolated, owned kind cluster.\nAll scenarios retain the historical v1.0 baseline; new scaleUpDuringRollout policy is not tested.")
+		fmt.Fprintln(f.Output(), "Usage: lws-harness [list|dry-run|run] [case IDs|all|large-all] [options]\nNormally use test/disaggregatedset_harness/run.sh to build the checked-out commit and provision an isolated, owned kind cluster.")
 		f.PrintDefaults()
 	}
 	if len(args) > 0 {

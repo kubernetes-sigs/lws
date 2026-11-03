@@ -11,26 +11,7 @@ CONTROLLER="$SOURCE_ROOT/pkg/controllers/disaggregatedset"
 [[ -f "$SOURCE_ROOT/go.mod" && -f "$CONTROLLER/executor.go" && -f "$CONTROLLER/planner_state.go" ]] || fail 'Unsupported observer source layout.'
 [[ ! -e "$OUTPUT" && ! -L "$OUTPUT" ]] || fail 'Overlay output already exists; choose a new file.'
 
-# Both known planner declarations must agree. A failed build never retries with
-# legacy semantics: sources without the independent scale-up policy opt in here.
-INPUT_SCALE_UP=0
-STATE_SCALE_UP=0
-grep -Eq '^[[:space:]]*scaleUpDuringRollout[[:space:]]+bool([[:space:]]|$)' "$CONTROLLER/executor.go" && INPUT_SCALE_UP=1
-grep -Eq '^[[:space:]]*ScaleUpDuringRollout[[:space:]]+bool([[:space:]]|$)' "$CONTROLLER/planner_state.go" && STATE_SCALE_UP=1
-[[ "$INPUT_SCALE_UP" == "$STATE_SCALE_UP" ]] || fail 'Unsupported observer scale-up policy declarations.'
-TAGS=harness
-if (( ! INPUT_SCALE_UP )); then TAGS=harness,harness_legacy_scale_up; fi
-
-# Whole-set hashing and ComputeDomain migration were added separately from the
-# scale-up policy. Select their adapter by source support, never by build failure.
-WHOLE_SET_REVISION=0
-COMPUTE_DOMAIN_REVISION=0
-grep -Eq '^func ComputeDisaggregatedSetRevision\(' "$SOURCE_ROOT/pkg/utils/disaggregatedset/utils.go" 2>/dev/null && WHOLE_SET_REVISION=1
-grep -Eq '^func DisaggregatedSetUsesAutoComputeDomain\(' "$SOURCE_ROOT/pkg/computedomain/injection.go" 2>/dev/null && COMPUTE_DOMAIN_REVISION=1
-[[ "$WHOLE_SET_REVISION" == "$COMPUTE_DOMAIN_REVISION" ]] || fail 'Unsupported observer revision declarations.'
-if (( ! WHOLE_SET_REVISION )); then TAGS+=,harness_legacy_revision; fi
-
-# Go selects build tags and ignores *_test.go during builds; map the sources once.
+# Build with -tags=harness. Go ignores *_test.go during ordinary builds.
 jq -n --arg source "$SOURCE_ROOT" --arg assets "$ASSETS" '
   $ARGS.positional |
   map({key:($source + "/pkg/controllers/disaggregatedset/" + (split("/") | last)), value:.}) |
@@ -38,4 +19,3 @@ jq -n --arg source "$SOURCE_ROOT" --arg assets "$ASSETS" '
   . + {($source + "/test/disaggregatedset_harness/observer/main.go"):($assets + "/testdata/main.go")} |
   {Replace:.}
 ' --args "$ASSETS"/testdata/controller/*.go > "$OUTPUT"
-printf '%s\n' "$TAGS"

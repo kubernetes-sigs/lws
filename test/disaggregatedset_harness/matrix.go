@@ -1,7 +1,7 @@
 // Copyright 2026 The Kubernetes Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package harness implements the v1 live regression scenarios without using
+// Package harness implements live regression scenarios without using
 // the ambient Kubernetes context. The shell launcher
 // owns cluster provisioning; this package owns scenarios and portable evidence.
 package harness

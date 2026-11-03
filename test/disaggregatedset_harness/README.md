@@ -17,8 +17,7 @@ The checks cover the selected scenarios, not every possible interleaving.
 ## Requirements and commands
 
 Install Docker (Colima is fine), kind, kubectl, Go compatible with the checkout,
-jq, Git, Bash and standard Unix tools. Historical release baselines also need
-curl and shasum. Give Docker roughly 8 GiB RAM for these demonstrations.
+jq, Git, Bash and standard Unix tools. Give Docker roughly 8 GiB RAM for these demonstrations.
 Large cases use up to 102 requested workload
 Pods, plus terminating and system Pods. Slots are synthetic resources, not GPUs.
 
@@ -40,9 +39,9 @@ respectively. They are opt-in; ordinary `make test` does not start a kind cluste
 
 Commit local controller changes before running: the HEAD archive deliberately
 excludes uncommitted changes. In CI, check out the commit to test and run either
-Make target without `LWS_HARNESS_BASELINE`. Detached HEAD and pull-request merge
-commits are supported; the harness tests that exact commit, not a branch tip or
-an implicit historical baseline.
+Make target. Branch, detached HEAD, tag and pull-request merge checkouts all use
+that exact commit. A tagged checkout must contain the harness; there is no
+separate controller source or published-image selection.
 
 For selection checks without the shell launcher, use
 `go run ./test/disaggregatedset_harness/cmd list` or
@@ -54,25 +53,9 @@ runtime proof created by the launcher; an arbitrary kubeconfig is refused.
 all selected cases even if one fails; `--fail-fast` stops early. Failures and
 incomplete matrices produce a nonzero exit status.
 
-The checked-in `baseline.json` is only an explicit option for reproducing
-historical recordings. Select it with an absolute path:
-
-```sh
-LWS_HARNESS_BASELINE="$PWD/test/disaggregatedset_harness/baseline.json" make disaggset-test-harness-small
-```
-
-Another `LWS_HARNESS_BASELINE=/absolute/path/baseline.json` can select a full
-source `commit`, optionally with a release tag, image digest, manifest URL and
-SHA-256. Ensure the referenced commit and any release tag are available locally.
-Source-only baselines build the controller; release baselines verify the
-published image and manifests. Both build the observer against the selected
-source. This changes what is tested, not the expected scenario contract.
-
 The `Immediate` label in `large-scale-up` is the `scaleDownDuringRollout` setting,
 not a comparison of the independent `scaleUpDuringRollout` policies. The observer
-does follow both policies when the selected source supports them. Older sources
-explicitly select a compatibility adapter; a build failure never silently
-switches the observer to different planner semantics.
+follows both independent policies in the checked-out controller.
 
 Use `--interactive` for Enter-to-trigger checkpoints. Press `a` to switch the
 remaining run to automatic mode or `q` to stop. Kubernetes waits remain automatic.
@@ -145,7 +128,7 @@ Each native run records:
 - `film-recording/snapshots.jsonl`: independent one-second API acquisition
   windows, including Events, with explicit read errors and no invented state.
 - `<case>-<identity>-<policy>/observer.jsonl`: independent read-only planner
-  bounds from the existing Go observer built against the selected baseline.
+  bounds from the Go observer built against the checked-out commit.
 - Per-case samples and failure diagnostics, plus the launcher's final resources,
   controller log and cleanup result.
 
@@ -183,16 +166,14 @@ archive.
 `observer/testdata/` contains ordinary Go source files. Go excludes `testdata`
 from normal package discovery, keeping these diagnostic helpers out of production
 builds. The launcher uses a small Go `-overlay` mapping to build the standalone
-observer against the selected source archive. It gives the diagnostics access to
+observer against the HEAD source archive. It gives the diagnostics access to
 private planner helpers during that build only, without copying files into the
 archive, changing the controller, or adding production source under
 `pkg/controllers`.
 
 The observer uses a Reader-only Kubernetes client. Its bounds are independent
-observations, not controller write authorization. Current sources propagate
-both scaling policies. Sources predating independent scale-up explicitly select
-`harness_legacy_scale_up`; inconsistent declarations or build
-errors fail visibly rather than silently switching semantics.
+observations, not controller write authorization. It uses the planner APIs from
+the same checkout, so incompatible API changes fail at build time.
 
 Offline checks:
 

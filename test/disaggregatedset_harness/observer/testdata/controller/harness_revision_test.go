@@ -1,4 +1,4 @@
-//go:build harness && !harness_legacy_revision
+//go:build harness
 
 // Copyright 2026 The Kubernetes Authors.
 // SPDX-License-Identifier: Apache-2.0

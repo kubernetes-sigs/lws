@@ -1,4 +1,4 @@
-//go:build harness && !harness_legacy_scale_up
+//go:build harness
 
 /*
 Copyright 2026 The Kubernetes Authors.

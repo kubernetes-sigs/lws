@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -126,7 +127,8 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 		if len(missing) == 0 {
 			for _, active := range orderedRevisionCandidates(old, readiness) {
 				state := rolloutStateForRevision(inputs.allRoleNames, old, active, target, inputs.targetReplicas, inputs.config, readiness)
-				harnessApplyScalingPolicies(&state, inputs)
+				state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
+				state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
 				row := harnessCandidate(inputs.allRoleNames, state)
 				row["revision"] = active.Revision
 				// Like the executor, scheduler recovery is considered only after
@@ -140,7 +142,8 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 			}
 			if len(candidates) == 0 {
 				state := rolloutStateForRevision(inputs.allRoleNames, old, disaggutils.RevisionRoles{}, target, inputs.targetReplicas, inputs.config, readiness)
-				harnessApplyScalingPolicies(&state, inputs)
+				state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
+				state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
 				steadyBounds = harnessCandidate(inputs.allRoleNames, state)["bounds"]
 			}
 		}
@@ -149,6 +152,21 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 	return map[string]any{"schemaVersion": 1, "observedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		"observation": "independent-informer", "name": ds.Name, "namespace": ds.Namespace,
 		"targetRevision": revision, "policy": ds.Spec.ScalingPolicy, "lws": lwsRows, "slices": sliceRows, "warnings": warnings}, nil
+}
+
+// Match controller revision selection without writing its migration marker.
+func harnessTargetRevision(ds *disaggv1.DisaggregatedSet, hasExistingLWS bool) (string, error) {
+	switch ds.Annotations[disaggv1.RevisionHashVersionAnnotationKey] {
+	case disaggv1.RevisionHashVersion:
+		return disaggutils.ComputeDisaggregatedSetRevision(ds), nil
+	case "":
+		if hasExistingLWS && !computedomain.DisaggregatedSetUsesAutoComputeDomain(ds) {
+			return disaggutils.ComputeRevisionV1(ds.Spec.Roles), nil
+		}
+		return disaggutils.ComputeDisaggregatedSetRevision(ds), nil
+	default:
+		return "", fmt.Errorf("unsupported revision hash version")
+	}
 }
 
 func harnessDesired(ctx context.Context, reader client.Reader, ds *disaggv1.DisaggregatedSet) (map[string]int, error) {

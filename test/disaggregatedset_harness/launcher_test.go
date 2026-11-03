@@ -4,9 +4,7 @@ package harness
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -297,11 +295,9 @@ func TestLauncherKindConfigurationKeepsOwnedMount(t *testing.T) {
 	require.Equal(t, true, mounts[0]["readOnly"])
 }
 
-func TestLauncherBaselineDefaultsToCheckoutAndHonorsExplicitFile(t *testing.T) {
-	for _, tool := range []string{"git", "jq"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip(tool + " is required for baseline selection")
-		}
+func TestLauncherUsesCheckedOutCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("Git is required for checkout selection")
 	}
 	root := t.TempDir()
 	git := func(t *testing.T, args ...string) string {
@@ -316,109 +312,29 @@ func TestLauncherBaselineDefaultsToCheckoutAndHonorsExplicitFile(t *testing.T) {
 		return strings.TrimSpace(string(output))
 	}
 	git(t, "init", "-q", "--initial-branch=main")
-	git(t, "commit", "-q", "--allow-empty", "-m", "baseline")
-	baselineCommit := git(t, "rev-parse", "HEAD")
+	git(t, "commit", "-q", "--allow-empty", "-m", "tagged commit")
+	git(t, "-c", "tag.gpgsign=false", "tag", "snapshot")
+	taggedCommit := git(t, "rev-parse", "HEAD")
+	git(t, "commit", "-q", "--allow-empty", "-m", "branch checkout")
+	branchCommit := git(t, "rev-parse", "HEAD")
 	git(t, "checkout", "-q", "--detach")
-	git(t, "commit", "-q", "--allow-empty", "-m", "synthetic checkout")
+	git(t, "commit", "-q", "--allow-empty", "-m", "detached checkout")
 	detachedCommit := git(t, "rev-parse", "HEAD")
-	image := "registry.example.invalid/lws:historical"
 	for _, tc := range []struct {
-		name, ref, commit, image string
-		baseline                 Object
-		missing                  bool
+		name, ref, commit string
 	}{
-		{name: "branch HEAD", ref: "main", commit: baselineCommit},
-		{name: "detached HEAD", ref: detachedCommit, commit: detachedCommit},
-		{name: "explicit source", baseline: Object{"commit": baselineCommit}, commit: baselineCommit},
-		{name: "explicit release", baseline: Object{"commit": baselineCommit, "release": Object{"image": image}}, commit: baselineCommit, image: image},
-		{name: "malformed commit", baseline: Object{"commit": "not-a-commit"}},
-		{name: "missing commit object", baseline: Object{"commit": strings.Repeat("0", 40)}},
-		{name: "missing file", missing: true},
+		{"branch HEAD", "main", branchCommit},
+		{"detached HEAD", detachedCommit, detachedCommit},
+		{"tag checkout", "refs/tags/snapshot", taggedCommit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.ref != "" {
-				git(t, "checkout", "-q", tc.ref)
-			}
-			baselineFile := ""
-			if tc.baseline != nil || tc.missing {
-				baselineFile = filepath.Join(t.TempDir(), "baseline.json")
-				if !tc.missing {
-					require.NoError(t, os.WriteFile(baselineFile, []byte(jsonText(tc.baseline)), 0600))
-				}
-			}
-			env := []string{"REPOSITORY=" + root, "BASELINE_FILE=" + baselineFile, "COMMIT=stale", "RELEASE_IMAGE=stale"}
-			script := scriptFunction(t, "select_baseline") + "printf '%s\\n%s\\n' \"$COMMIT\" \"$RELEASE_IMAGE\"\n"
+			git(t, "checkout", "-q", tc.ref)
+			env := []string{"REPOSITORY=" + root, "COMMIT=stale"}
+			script := scriptFunction(t, "select_commit") + "printf '%s\\n' \"$COMMIT\"\n"
 			output, err := shell(t, root, env, "-c", script)
-			if tc.commit == "" {
-				require.Error(t, err, "invalid explicit baseline must not fall back to HEAD: %s", output)
-				return
-			}
 			require.NoError(t, err, "%s", output)
-			require.Equal(t, tc.commit+"\n"+tc.image+"\n", string(output))
+			require.Equal(t, tc.commit+"\n", string(output))
 		})
-	}
-}
-
-func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq is required for release validation")
-	}
-	root := t.TempDir()
-	baselinePath, err := filepath.Abs("baseline.json")
-	require.NoError(t, err)
-	contents, err := os.ReadFile(baselinePath)
-	require.NoError(t, err)
-	var baseline Object
-	require.NoError(t, json.Unmarshal(contents, &baseline))
-	commit, image := str(baseline["commit"]), str(at(baseline, "release", "image"))
-	testExecutable(t, root, "git", "printf '%s\\n' \"$TEST_RELEASE_COMMIT\"\n")
-	testExecutable(t, root, "curl", "echo 'validation must not download' >&2\nexit 91\n")
-	testExecutable(t, root, "shasum", "echo 'validation must not hash' >&2\nexit 91\n")
-	for _, tc := range []struct {
-		commit, image string
-		accepted      bool
-	}{
-		{commit, image, true},
-		{strings.Repeat("0", 40), image, false},
-		{commit, "registry.k8s.io/lws/lws:v0.8.0", false},
-	} {
-		env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "BASELINE_FILE=" + baselinePath,
-			"REPOSITORY=" + root, "COMMIT=" + commit, "RELEASE_IMAGE=" + tc.image, "TEST_RELEASE_COMMIT=" + tc.commit}
-		output, err := shell(t, root, env, "-c", scriptFunction(t, "validate_release"))
-		require.Equal(t, tc.accepted, err == nil, "%+v: %s, %v", tc, output, err)
-	}
-}
-
-func TestPublishedReleaseVerifiesDigestWithoutManagerBuild(t *testing.T) {
-	for _, tool := range []string{"jq", "shasum"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip(tool + " is required for release verification")
-		}
-	}
-	root := t.TempDir()
-	image := "registry.k8s.io/lws/lws@sha256:" + strings.Repeat("a", 64)
-	testExecutable(t, root, "go", "echo 'Manager build must not run' >&2\nexit 91\n")
-	testExecutable(t, root, "docker", `case "$*" in
-  *RepoDigests*) printf '["%s"]\n' "$TEST_IMAGE_DIGEST" ;;
-  *Architecture*) printf 'arm64\n' ;;
-  "image inspect "*) exit 0 ;;
-  *) echo "Unexpected Docker command: $*" >&2; exit 91 ;;
-esac
-`)
-	testExecutable(t, root, "curl", `while [ "$#" -gt 0 ]; do
-  if [ "$1" = --output ]; then shift; printf 'release fixture' > "$1"; exit 0; fi
-  shift
-done
-exit 91
-`)
-	for _, actual := range []string{image, image + "wrong"} {
-		env := []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "RUN_DIR=" + root,
-			"RELEASE_IMAGE=registry.k8s.io/lws/lws:v1.0.0", "IMAGE=" + image, "RELEASE_DIGEST=" + image,
-			"TEST_IMAGE_DIGEST=" + actual, "ARCH=arm64", "RELEASE_MANIFESTS=https://example.invalid/not-fetched",
-			fmt.Sprintf("RELEASE_MANIFEST_SHA=%x", sha256.Sum256([]byte("release fixture")))}
-		output, err := shell(t, root, env, "-c", scriptFunction(t, "prepare_image"))
-		require.Equal(t, actual == image, err == nil, "release digest %q: %s, %v", actual, output, err)
-		require.NotContains(t, string(output), "Manager build must not run")
 	}
 }
 
@@ -436,7 +352,7 @@ esac
 `)
 		commit := strings.Repeat("a", 40)
 		output, err := shell(t, root, []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
-			"RUN_DIR=" + root, "RELEASE_IMAGE=", "COMMIT=" + commit, "ARCH=arm64", "IMAGE=local-controller:" + commit,
+			"RUN_DIR=" + root, "COMMIT=" + commit, "ARCH=arm64", "IMAGE=local-controller:" + commit,
 			"TEST_PROVENANCE=" + provenance}, "-c", scriptFunction(t, "prepare_image"))
 		require.NoError(t, err)
 		require.Equal(t, provenance == "1", strings.Contains(string(output), "--provenance=false"), "%s", output)
@@ -451,68 +367,26 @@ func TestObserverOverlayIsExplicitAndDoesNotMutateSource(t *testing.T) {
 	}
 	prepare, err := filepath.Abs(filepath.Join("observer", "prepare.sh"))
 	require.NoError(t, err)
-	for _, tc := range []struct {
-		inputs, state, wholeSet, enrollment bool
-		tags                                string
-	}{
-		{true, true, true, true, "harness"},
-		{true, true, false, false, "harness,harness_legacy_revision"},
-		{false, false, false, false, "harness,harness_legacy_scale_up,harness_legacy_revision"},
-		{true, false, false, false, ""}, {false, true, false, false, ""},
-		{true, true, true, false, ""}, {true, true, false, true, ""},
-	} {
-		root := t.TempDir()
-		source := filepath.Join(root, "source with spaces")
-		controller := filepath.Join(source, "pkg", "controllers", "disaggregatedset")
-		require.NoError(t, os.MkdirAll(controller, 0700))
-		require.NoError(t, os.WriteFile(filepath.Join(source, "go.mod"), []byte("module fixture\n"), 0600))
-		inputText, stateText := "// scaleUpDuringRollout bool\n", "// ScaleUpDuringRollout bool\n"
-		if tc.inputs {
-			inputText += "\tscaleUpDuringRollout bool\n"
-		}
-		if tc.state {
-			stateText += "\tScaleUpDuringRollout bool\n"
-		}
-		require.NoError(t, os.WriteFile(filepath.Join(controller, "executor.go"), []byte(inputText), 0600))
-		require.NoError(t, os.WriteFile(filepath.Join(controller, "planner_state.go"), []byte(stateText), 0600))
-		for relative, supported := range map[string]bool{
-			"pkg/utils/disaggregatedset/utils.go": tc.wholeSet,
-			"pkg/computedomain/injection.go":      tc.enrollment,
-		} {
-			if !supported {
-				continue
-			}
-			path := filepath.Join(source, relative)
-			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
-			name := "ComputeDisaggregatedSetRevision"
-			if strings.Contains(relative, "computedomain") {
-				name = "DisaggregatedSetUsesAutoComputeDomain"
-			}
-			require.NoError(t, os.WriteFile(path, []byte("func "+name+"(\n"), 0600))
-		}
-		overlay := filepath.Join(root, "overlay.json")
-		output, err := shell(t, root, nil, prepare, source, overlay)
-		require.Equal(t, tc.tags != "", err == nil, "%+v: %s, %v", tc, output, err)
-		if tc.tags == "" {
-			_, err = os.Stat(overlay)
-			require.ErrorIs(t, err, os.ErrNotExist, "inconsistent source produced an overlay")
-			continue
-		}
-		require.Equal(t, tc.tags, strings.TrimSpace(string(output)))
-		contents, err := os.ReadFile(overlay)
-		require.NoError(t, err)
-		var mapping struct{ Replace map[string]string }
-		require.NoError(t, json.Unmarshal(contents, &mapping))
-		for virtual, backing := range mapping.Replace {
-			require.True(t, strings.HasPrefix(virtual, source+string(os.PathSeparator)), "invalid overlay entry: %s -> %s", virtual, backing)
-			_, err = os.Stat(virtual)
-			require.ErrorIs(t, err, os.ErrNotExist, "overlay materialized a controller hook: %s", virtual)
-			require.FileExists(t, backing)
-		}
-		output, err = shell(t, root, nil, prepare, source, overlay)
-		require.Error(t, err, "%s", output)
-		require.Contains(t, string(output), "already exists")
+	source, err := filepath.Abs("../..")
+	require.NoError(t, err)
+	root := t.TempDir()
+	overlay := filepath.Join(root, "overlay.json")
+	output, err := shell(t, root, nil, prepare, source, overlay)
+	require.NoError(t, err, "%s", output)
+	contents, err := os.ReadFile(overlay)
+	require.NoError(t, err)
+	var mapping struct{ Replace map[string]string }
+	require.NoError(t, json.Unmarshal(contents, &mapping))
+	require.NotEmpty(t, mapping.Replace)
+	for virtual, backing := range mapping.Replace {
+		require.True(t, strings.HasPrefix(virtual, source+string(os.PathSeparator)), "invalid overlay entry: %s -> %s", virtual, backing)
+		_, err = os.Stat(virtual)
+		require.ErrorIs(t, err, os.ErrNotExist, "overlay materialized a controller hook: %s", virtual)
+		require.FileExists(t, backing)
 	}
+	output, err = shell(t, root, nil, prepare, source, overlay)
+	require.Error(t, err, "%s", output)
+	require.Contains(t, string(output), "already exists")
 }
 
 func TestObserverBuildFailureDoesNotFallback(t *testing.T) {
@@ -521,7 +395,7 @@ func TestObserverBuildFailureDoesNotFallback(t *testing.T) {
 	require.NoError(t, err)
 	prepare := filepath.Join(root, "observer")
 	require.NoError(t, os.Mkdir(prepare, 0700))
-	testExecutable(t, prepare, "prepare.sh", "printf 'harness\\n'\n")
+	testExecutable(t, prepare, "prepare.sh", "exit 0\n")
 	testExecutable(t, root, "go", "printf '%s\\n' \"$*\" >> \"$TEST_COMMAND_LOG\"\nexit 91\n")
 	require.NoError(t, os.Mkdir(filepath.Join(root, "source"), 0700))
 	log := filepath.Join(root, "commands.log")
