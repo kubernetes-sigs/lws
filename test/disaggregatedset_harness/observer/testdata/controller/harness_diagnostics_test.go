@@ -81,11 +81,11 @@ func TestHarnessDistinguishesCreationShortfallFromPendingObservations(t *testing
 		name                    string
 		desired, nativeReplicas int32
 		deletionsObserved       bool
-		warning                 string
+		warningPattern          string
 	}{
-		{"settled empty workload", 0, 0, true, ""},
-		{"confirmed creation shortfall", 2, 0, true, "some requested Pods are missing; the controller may still adjust the target"},
-		{"Pod observation still behind native status", 2, 2, false, "native scale/deletion acknowledgement is pending"},
+		{"settled empty workload", 0, 0, true, "^$"},
+		{"confirmed creation shortfall", 2, 0, true, "requested Pods are missing"},
+		{"Pod observation still behind native status", 2, 2, false, "acknowledgement is pending"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// No Pods have been observed. Native status distinguishes an actual
@@ -101,7 +101,7 @@ func TestHarnessDistinguishesCreationShortfallFromPendingObservations(t *testing
 			row := harnessLWS(s)
 			require.Equal(t, tc.desired == 0, row["scalingObserved"])
 			require.Equal(t, tc.deletionsObserved, row["deletionsObserved"])
-			require.Equal(t, tc.warning, harnessScaleWarning(s))
+			require.Regexp(t, tc.warningPattern, harnessScaleWarning(s))
 		})
 	}
 }

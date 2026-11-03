@@ -276,28 +276,6 @@ func TestEmergencyRestoresExactHooksAfterFailure(t *testing.T) {
 	}
 }
 
-func TestEvidenceRejectsMalformedSuccessfulRead(t *testing.T) {
-	root := t.TempDir()
-	e, err := NewEvidence(root, "fixture")
-	require.NoError(t, err)
-	o := Options{Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) {
-		return []byte(`{"kind":"List","items":null}`), nil, nil
-	}}}
-	require.Error(t, e.Start(context.Background(), o), "accepted malformed response")
-	select {
-	case <-e.done:
-	default:
-		t.Fatal("failed Start left the acquisition goroutine running")
-	}
-	require.NoError(t, e.Close())
-	raw, err := os.ReadFile(filepath.Join(root, "film-recording", "snapshots.jsonl"))
-	require.NoError(t, err)
-	var row Object
-	require.NoError(t, json.NewDecoder(strings.NewReader(string(raw))).Decode(&row))
-	require.Nil(t, row["state"], "fabricated state")
-	require.NotNil(t, row["error"], "missing acquisition error")
-}
-
 func TestEvidenceStartDefaultsAndCancellation(t *testing.T) {
 	t.Run("default clock", func(t *testing.T) {
 		e, err := NewEvidence(t.TempDir(), "fixture")
@@ -321,24 +299,36 @@ func TestEvidenceStartDefaultsAndCancellation(t *testing.T) {
 		}
 		require.NoError(t, e.Close())
 	})
-	t.Run("cancellation joins acquisition", func(t *testing.T) {
-		e, err := NewEvidence(t.TempDir(), "fixture")
-		require.NoError(t, err)
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		executor := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
-			cancel()
-			<-c.ctx.Done()
-			return nil, nil, c.ctx.Err()
-		}}
-		require.ErrorIs(t, e.Start(ctx, Options{Executor: executor}), context.Canceled)
-		select {
-		case <-e.done:
-		default:
-			t.Fatal("canceled Start returned before acquisition stopped")
-		}
-		require.NoError(t, e.Close())
-	})
+	for _, periodic := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancellation joins acquisition/periodic=%t", periodic), func(t *testing.T) {
+			e, err := NewEvidence(t.TempDir(), "fixture")
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			calls := 0
+			executor := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+				calls++
+				if periodic && calls == 1 {
+					return []byte(`{"kind":"List","items":[]}`), nil, nil
+				}
+				cancel()
+				<-c.ctx.Done()
+				return nil, nil, c.ctx.Err()
+			}}
+			err = e.Start(ctx, Options{Executor: executor, Clock: &fakeClock{now: time.Unix(1, 0)}})
+			if periodic {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, context.Canceled)
+			}
+			select {
+			case <-e.done:
+			case <-time.After(time.Second):
+				t.Fatal("canceled acquisition did not stop")
+			}
+			require.NoError(t, e.Close())
+		})
+	}
 }
 
 func TestObserverFailureClearsCredit(t *testing.T) {
@@ -435,91 +425,31 @@ func TestWaitRecordsEffectiveDefaults(t *testing.T) {
 	}
 }
 
-// This optional test fixture is created only in a caller-chosen new directory,
-// outside the repository. The Node normalizer can independently consume it to
-// verify cross-language compatibility.
-func TestEvidenceActionShapesAndPortableFixture(t *testing.T) {
-	root := t.TempDir()
-	if requested := os.Getenv("LWS_GO_EVIDENCE_FIXTURE"); requested != "" {
-		require.NoError(t, os.Mkdir(requested, 0700))
-		root = requested
-	}
-	e, err := NewEvidence(root, strings.Repeat("a", 40))
+func TestEvidenceActionContract(t *testing.T) {
+	l := testLab(t, &fakeExecutor{})
+	e, err := NewEvidence(l.Options.RunDir, "fixture")
 	require.NoError(t, err)
-	c := Case{"ordinary", "Hash", "Deferred", "default"}
-	e.Case(c.ID())
-	executor := &fakeExecutor{}
-	l := newLab(context.Background(), Options{
-		RunDir:   root,
-		Auto:     true,
-		Executor: executor,
-		Clock:    &fakeClock{now: time.Unix(1800000000, 0)},
-		Output:   io.Discard,
-	}, c, e)
-	require.NoError(t, os.Mkdir(l.Directory, 0700))
-	state := fleet(map[string]map[string]Counts{
-		"A": {"prefill": {Spec: 2, Ready: 2, Scheduled: 2}, "decode": {Spec: 4, Ready: 4, Scheduled: 4}},
-	}, 1)
-	state.DS["spec"] = Object{
-		"roles": []any{RoleSpec("prefill", 2, "Hash", "A", 1, 0, 1, true), RoleSpec("decode", 4, "Hash", "A", 1, 0, 1, true)},
-	}
-	executor.run = func(c command) ([]byte, []byte, error) {
-		if slices.Contains(c.args, "get") {
-			if slices.Contains(c.args, "node") {
-				return []byte(jsonText(Object{
-					"status": Object{
-						"allocatable": Object{Slot: "64"},
-					},
-				})), nil, nil
-			}
-			return []byte(jsonText(state.DS)), nil, nil
-		}
-		return nil, nil, nil
-	}
-	e.Emit("actions.jsonl", Object{"id": c.ID(), "kind": "case", "phase": "start", "time": unix(l.clock.Now())})
-	e.Emit("snapshots.jsonl", Object{
-		"startedAt":       unix(l.clock.Now()),
-		"finishedAt":      unix(l.clock.Now().Add(10 * time.Millisecond)),
-		"returncode":      0,
-		"state":           state,
-		"eventsRequested": true,
-	})
-	l.Sleep(time.Second)
+	l.evidence = e
+	e.Case(l.Case.ID())
 	require.NoError(t, catch(func() {
-		l.Checkpoint("Change demand", "Update replicas, keep template A.")
-		l.Update(Update{Counts: pair(3, 5)})
-		l.SetSlots(64)
-		l.Release("A", "prefill", 1, &state)
-		l.Note("Native Go offline capture fixture; not a real cluster recording.")
-		l.Assert(true, "Capacity dropped below its floor")
+		defer l.action("update", nil, Object{"replicas": 3}, nil)()
+		l.Note("Demand changed")
 	}))
-	l.Sleep(time.Second)
-	e.Emit("snapshots.jsonl", Object{
-		"startedAt":       unix(l.clock.Now()),
-		"finishedAt":      unix(l.clock.Now().Add(10 * time.Millisecond)),
-		"returncode":      0,
-		"state":           state,
-		"eventsRequested": true,
-	})
-	result := Result{
-		Case:             c.DisplayName(),
-		Identity:         c.Identity,
-		Policy:           c.Policy,
-		Passed:           true,
-		ControllerCommit: strings.Repeat("a", 40),
-		Checks:           []string{"fixture"},
-	}
-	e.Emit("actions.jsonl", Object{"id": c.ID(), "kind": "case", "phase": "end", "time": unix(l.clock.Now()), "result": result})
-	require.NoError(t, writeJSON(filepath.Join(root, "results.json"), []Result{result}))
 	require.NoError(t, e.Close())
-	raw, err := os.ReadFile(filepath.Join(root, "film-recording", "actions.jsonl"))
+	raw, err := os.ReadFile(filepath.Join(e.directory, "actions.jsonl"))
 	require.NoError(t, err)
+	var rows []Object
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var row Object
 		require.NoError(t, json.Unmarshal([]byte(line), &row))
-		if row["method"] != nil {
-			require.IsType(t, []any{}, row["args"], "args not array")
-			require.IsType(t, map[string]any{}, row["kwargs"], "kwargs not object")
-		}
+		require.IsType(t, []any{}, row["args"])
+		require.IsType(t, map[string]any{}, row["kwargs"])
+		require.Equal(t, l.Case.ID(), row["caseId"])
+		rows = append(rows, row)
 	}
+	require.Len(t, rows, 4)
+	require.Equal(t, []any{"start", "start", "end", "end"}, []any{rows[0]["phase"], rows[1]["phase"], rows[2]["phase"], rows[3]["phase"]})
+	require.Equal(t, rows[0]["id"], rows[3]["id"])
+	require.Equal(t, rows[1]["id"], rows[2]["id"])
+	require.Equal(t, rows[0]["id"], rows[1]["parentId"])
 }

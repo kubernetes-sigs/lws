@@ -159,7 +159,11 @@ func groupKey(p Object) string {
 
 func Groups(s Snapshot, version, role string) [][]Object {
 	groups := map[string][]Object{}
-	for _, p := range Pods(s, version, role) {
+	parent, child, _ := strings.Cut(role, "/")
+	for _, p := range Pods(s, version, parent) {
+		if child != "" && label(p, SubroleLabel) != child {
+			continue
+		}
 		k := groupKey(p)
 		groups[k] = append(groups[k], p)
 	}
