@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Use the pinned source build or published release, and remove only this run's cluster.
+# Test the checked-out commit unless an explicit baseline is selected.
 # Bash 3.2 compatible; no changes to the user's Kubernetes context.
 set -euo pipefail
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPOSITORY="$(cd "$HARNESS_DIR/../.." && pwd)"
-BASELINE_FILE="${LWS_HARNESS_BASELINE:-$HARNESS_DIR/baseline.json}"
+BASELINE_FILE="${LWS_HARNESS_BASELINE:-}"
 suite() {
   (cd "$REPOSITORY" && go run ./test/disaggregatedset_harness/cmd "$@")
 }
@@ -57,23 +57,31 @@ KIND="${KIND:-$(command -v kind || true)}"
 [[ -n "$KIND" ]] || fail 'Install kind on PATH, or set KIND=/absolute/path/to/kind.'
 command -v "$KIND" >/dev/null || fail "Cannot execute kind: $KIND"
 docker info >/dev/null || fail 'Docker is not available.'
-COMMIT="$(jq -er '.commit | select(test("^[0-9a-f]{40}$"))' "$BASELINE_FILE")" || fail 'baseline.json must contain a full controller commit SHA.'
-git -C "$REPOSITORY" cat-file -e "$COMMIT^{commit}" || fail "Pinned controller $COMMIT is missing. Fetch the harness branch without --depth=1."
+select_baseline() {
+  RELEASE_IMAGE=''
+  if [[ -n "$BASELINE_FILE" ]]; then
+    COMMIT="$(jq -er '.commit | select(test("^[0-9a-f]{40}$"))' "$BASELINE_FILE")" || fail 'Baseline must contain a full controller commit SHA.'
+    RELEASE_IMAGE="$(jq -r '.release.image // empty' "$BASELINE_FILE")" || fail 'Cannot read the selected baseline.'
+  else
+    COMMIT="$(git -C "$REPOSITORY" rev-parse --verify 'HEAD^{commit}')" || fail 'Cannot resolve the checked-out controller commit.'
+  fi
+  git -C "$REPOSITORY" cat-file -e "$COMMIT^{commit}" || fail "Controller source $COMMIT is missing. Fetch the selected baseline commit."
+}
+select_baseline
 [[ -d "$HARNESS_DIR/observer" ]] || fail 'Missing shared-observer helper source.'
-RELEASE_IMAGE="$(jq -r '.release.image // empty' "$BASELINE_FILE")"
 RELEASE_DIGEST=''
 RELEASE_MANIFESTS=''
 RELEASE_MANIFEST_SHA=''
 validate_release() {
   local ref
-  ref="$(jq -er '.release.tag | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' "${BASELINE_FILE:-$HARNESS_DIR/baseline.json}")" || fail 'Release baseline needs a version tag.'
+  ref="$(jq -er '.release.tag | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$BASELINE_FILE")" || fail 'Release baseline needs a version tag.'
   [[ "$RELEASE_IMAGE" == "registry.k8s.io/lws/lws:$ref" ]] || fail 'Release image tag does not match the source release.'
   [[ "$(git -C "$REPOSITORY" rev-parse "refs/tags/$ref^{commit}")" == "$COMMIT" ]] || fail 'Release tag and source commit do not match.'
-  RELEASE_DIGEST="$(jq -er '.release.digest | select(test("^sha256:[0-9a-f]{64}$"))' "${BASELINE_FILE:-$HARNESS_DIR/baseline.json}")" || fail 'Release baseline needs an immutable registry digest.'
+  RELEASE_DIGEST="$(jq -er '.release.digest | select(test("^sha256:[0-9a-f]{64}$"))' "$BASELINE_FILE")" || fail 'Release baseline needs an immutable registry digest.'
   RELEASE_DIGEST="registry.k8s.io/lws/lws@$RELEASE_DIGEST"
-  RELEASE_MANIFESTS="$(jq -er '.release.manifests' "${BASELINE_FILE:-$HARNESS_DIR/baseline.json}")"
+  RELEASE_MANIFESTS="$(jq -er '.release.manifests' "$BASELINE_FILE")"
   [[ "$RELEASE_MANIFESTS" == "https://github.com/kubernetes-sigs/lws/releases/download/$ref/manifests.yaml" ]] || fail 'Manifest URL does not match the source release.'
-  RELEASE_MANIFEST_SHA="$(jq -er '.release.manifestSHA256 | select(test("^[0-9a-f]{64}$"))' "${BASELINE_FILE:-$HARNESS_DIR/baseline.json}")" || fail 'Release baseline needs the published manifest SHA256.'
+  RELEASE_MANIFEST_SHA="$(jq -er '.release.manifestSHA256 | select(test("^[0-9a-f]{64}$"))' "$BASELINE_FILE")" || fail 'Release baseline needs the published manifest SHA256.'
   command -v curl >/dev/null || fail 'Release mode requires curl to download the published manifests.'
   command -v shasum >/dev/null || fail 'Release mode requires shasum to verify the published manifests.'
 }
@@ -165,7 +173,10 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 exec > >(tee "$RUN_DIR/transcript.log") 2>&1
 export CLICOLOR_FORCE=1
-section "LWS v1 regression lab · controller ${COMMIT:0:12}"
+section "DisaggregatedSet regression lab · controller ${COMMIT:0:12}"
+if [[ -z "$BASELINE_FILE" ]]; then
+  printf 'Testing committed HEAD; uncommitted controller changes are not included.\n'
+fi
 printf 'Artifacts: %s\nPrivate context: %s\n' "$RUN_DIR" "$CONTEXT"
 
 case "$(docker info --format '{{.Architecture}}')" in

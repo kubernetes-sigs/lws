@@ -1,40 +1,48 @@
 # DisaggregatedSet regression harness
 
-A bounded, isolated regression lab. It runs the **official LWS v1.0.0 image**,
-creates its own kind cluster and private kubeconfig, runs real Pods, and removes
-only its owned cluster on success, failure or interruption. No existing cluster
-or default Kubernetes context is used. The read-only planner observer is built
-against the pinned release source; the controller itself is not rebuilt.
+A bounded, isolated regression lab. By default, it builds the controller and
+read-only planner observer against an immutable archive of the checkout's
+**Git HEAD**. It creates its own kind cluster and private kubeconfig, runs real
+Pods, and removes only its owned cluster on success, failure or interruption.
+No existing cluster or default Kubernetes context is used.
 
 The scenario driver is **native Go**. All small and large cases, readiness
 controls, assertions, and evidence recording run without Python. A small shell
 launcher owns the kind lifecycle. Previously recorded examples remain historical
 evidence, not results from a new run of this driver.
 
-The v1.0.0 baseline is retained deliberately so the recorded examples can be
-reproduced. First-group `BootstrapSurge` checks require the corresponding
-Kubernetes Event. This is not a claim that the latest LWS release or every
-possible interleaving has been tested.
+First-group `BootstrapSurge` checks require the corresponding Kubernetes Event.
+The checks cover the selected scenarios, not every possible interleaving.
 
 ## Requirements and commands
 
-Install Docker (Colima is fine), kind, kubectl, Go compatible with the checkout
-and selected release, jq, Git, Bash, curl, shasum and standard Unix tools. Give Docker roughly
-8 GiB RAM for these demonstrations. Large cases use up to 102 requested workload
+Install Docker (Colima is fine), kind, kubectl, Go compatible with the checkout,
+jq, Git, Bash and standard Unix tools. Historical release baselines also need
+curl and shasum. Give Docker roughly 8 GiB RAM for these demonstrations.
+Large cases use up to 102 requested workload
 Pods, plus terminating and system Pods. Slots are synthetic resources, not GPUs.
 
 From the repository root:
 
 ```sh
-git fetch https://github.com/kubernetes-sigs/lws.git refs/tags/v1.0.0:refs/tags/v1.0.0
+make disaggset-test-harness-small  # 26 small scenarios, real kind cluster
+make disaggset-test-harness-large  # 20 large scenarios, real kind cluster
+
 ./test/disaggregatedset_harness/run.sh --list
 ./test/disaggregatedset_harness/run.sh large-all --dry-run  # no cluster access
-./test/disaggregatedset_harness/run.sh all --auto           # 26 small runs
 ./test/disaggregatedset_harness/run.sh all --include-large --auto  # 28 runs
-./test/disaggregatedset_harness/run.sh large-all --auto     # 20 large runs
 ./test/disaggregatedset_harness/run.sh autoscaler-handoff --auto
 ./test/disaggregatedset_harness/run.sh large-scale-down --identity hash --rollout-chain abc --auto
 ```
+
+The Make targets run `run.sh all --auto` and `run.sh large-all --auto`,
+respectively. They are opt-in; ordinary `make test` does not start a kind cluster.
+
+Commit local controller changes before running: the HEAD archive deliberately
+excludes uncommitted changes. In CI, check out the commit to test and run either
+Make target without `LWS_HARNESS_BASELINE`. Detached HEAD and pull-request merge
+commits are supported; the harness tests that exact commit, not a branch tip or
+an implicit historical baseline.
 
 For selection checks without the shell launcher, use
 `go run ./test/disaggregatedset_harness/cmd list` or
@@ -46,23 +54,31 @@ runtime proof created by the launcher; an arbitrary kubeconfig is refused.
 all selected cases even if one fails; `--fail-fast` stops early. Failures and
 incomplete matrices produce a nonzero exit status.
 
-`LWS_HARNESS_BASELINE=/absolute/path/baseline.json` selects another immutable
-controller baseline. Copy the existing JSON shape: a full source `commit`, and
-optionally a release tag, image digest, manifest URL and SHA-256. Source-only
-baselines build the controller; release baselines verify the published image
-and manifests. This changes what is tested, not the expected scenario contract.
-The default remains v1.0.0. These historical cases **do not test the newer
-`scaleUpDuringRollout` policy**; the `Immediate` label in `large-scale-up` is
-the original `scaleDownDuringRollout` setting, not a scale-up policy comparison.
-The observer does follow both policies when the selected source supports them.
-For v1.0.0, the launcher explicitly selects its legacy policy adapter; a build
-failure never silently switches the observer to different planner semantics.
+The checked-in `baseline.json` is only an explicit option for reproducing
+historical recordings. Select it with an absolute path:
+
+```sh
+LWS_HARNESS_BASELINE="$PWD/test/disaggregatedset_harness/baseline.json" make disaggset-test-harness-small
+```
+
+Another `LWS_HARNESS_BASELINE=/absolute/path/baseline.json` can select a full
+source `commit`, optionally with a release tag, image digest, manifest URL and
+SHA-256. Ensure the referenced commit and any release tag are available locally.
+Source-only baselines build the controller; release baselines verify the
+published image and manifests. Both build the observer against the selected
+source. This changes what is tested, not the expected scenario contract.
+
+The `Immediate` label in `large-scale-up` is the `scaleDownDuringRollout` setting,
+not a comparison of the independent `scaleUpDuringRollout` policies. The observer
+does follow both policies when the selected source supports them. Older sources
+explicitly select a compatibility adapter; a build failure never silently
+switches the observer to different planner semantics.
 
 Use `--interactive` for Enter-to-trigger checkpoints. Press `a` to switch the
 remaining run to automatic mode or `q` to stop. Kubernetes waits remain automatic.
 Checkpoints use the invoking terminal; the harness does not launch a desktop
-terminal or capture k9s. Execution and evidence capture do not need Node.js,
-Python, a browser, or visualization tools.
+terminal. Execution and evidence capture do not need Node.js, Python, a browser,
+or visualization tools.
 
 ## Small matrix
 
@@ -151,24 +167,31 @@ cluster, join only observer samples recorded before an API read, and retain
 unknown counts and explicit failures. Neither the normalizer nor the player is
 included or required by this harness.
 
-Capture does not claim continuous LIST/watch or controller log coverage. Raw
-snapshots and command diagnostics can contain private data; review them before
-sharing. Never publish a run's kubeconfig or ownership token.
+Capture does not claim continuous LIST/watch or controller log coverage. Nothing
+is uploaded automatically. If CI publishes artifacts, explicitly select the
+results and recordings needed, and review their contents before sharing: raw
+snapshots, events and command diagnostics can contain private data.
+
+**Do not upload the whole `.state/` directory.** It also contains the private
+kubeconfig, the ownership token in both `owner` and `runtime.json`, and temporary
+source archives, build outputs and other runtime work files. Never publish the
+kubeconfig, either copy of the ownership token, or an unreviewed run-directory
+archive.
 
 ## Read-only planner observer
 
 `observer/testdata/` contains ordinary Go source files. Go excludes `testdata`
 from normal package discovery, keeping these diagnostic helpers out of production
 builds. The launcher uses a small Go `-overlay` mapping to build the standalone
-observer against the pinned source archive. It gives the diagnostics access to
+observer against the selected source archive. It gives the diagnostics access to
 private planner helpers during that build only, without copying files into the
 archive, changing the controller, or adding production source under
 `pkg/controllers`.
 
 The observer uses a Reader-only Kubernetes client. Its bounds are independent
 observations, not controller write authorization. Current sources propagate
-both scaling policies. Sources predating independent scale-up, such as v1.0.0,
-explicitly select `harness_legacy_scale_up`; inconsistent declarations or build
+both scaling policies. Sources predating independent scale-up explicitly select
+`harness_legacy_scale_up`; inconsistent declarations or build
 errors fail visibly rather than silently switching semantics.
 
 Offline checks:

@@ -297,6 +297,68 @@ func TestLauncherKindConfigurationKeepsOwnedMount(t *testing.T) {
 	require.Equal(t, true, mounts[0]["readOnly"])
 }
 
+func TestLauncherBaselineDefaultsToCheckoutAndHonorsExplicitFile(t *testing.T) {
+	for _, tool := range []string{"git", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " is required for baseline selection")
+		}
+	}
+	root := t.TempDir()
+	git := func(t *testing.T, args ...string) string {
+		t.Helper()
+		command := exec.CommandContext(t.Context(), "git", append([]string{
+			"-c", "user.name=Harness test", "-c", "user.email=harness@example.invalid",
+			"-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+		}, args...)...)
+		command.Dir = root
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, output)
+		return strings.TrimSpace(string(output))
+	}
+	git(t, "init", "-q", "--initial-branch=main")
+	git(t, "commit", "-q", "--allow-empty", "-m", "baseline")
+	baselineCommit := git(t, "rev-parse", "HEAD")
+	git(t, "checkout", "-q", "--detach")
+	git(t, "commit", "-q", "--allow-empty", "-m", "synthetic checkout")
+	detachedCommit := git(t, "rev-parse", "HEAD")
+	image := "registry.example.invalid/lws:historical"
+	for _, tc := range []struct {
+		name, ref, commit, image string
+		baseline                 Object
+		missing                  bool
+	}{
+		{name: "branch HEAD", ref: "main", commit: baselineCommit},
+		{name: "detached HEAD", ref: detachedCommit, commit: detachedCommit},
+		{name: "explicit source", baseline: Object{"commit": baselineCommit}, commit: baselineCommit},
+		{name: "explicit release", baseline: Object{"commit": baselineCommit, "release": Object{"image": image}}, commit: baselineCommit, image: image},
+		{name: "malformed commit", baseline: Object{"commit": "not-a-commit"}},
+		{name: "missing commit object", baseline: Object{"commit": strings.Repeat("0", 40)}},
+		{name: "missing file", missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.ref != "" {
+				git(t, "checkout", "-q", tc.ref)
+			}
+			baselineFile := ""
+			if tc.baseline != nil || tc.missing {
+				baselineFile = filepath.Join(t.TempDir(), "baseline.json")
+				if !tc.missing {
+					require.NoError(t, os.WriteFile(baselineFile, []byte(jsonText(tc.baseline)), 0600))
+				}
+			}
+			env := []string{"REPOSITORY=" + root, "BASELINE_FILE=" + baselineFile, "COMMIT=stale", "RELEASE_IMAGE=stale"}
+			script := scriptFunction(t, "select_baseline") + "printf '%s\\n%s\\n' \"$COMMIT\" \"$RELEASE_IMAGE\"\n"
+			output, err := shell(t, root, env, "-c", script)
+			if tc.commit == "" {
+				require.Error(t, err, "invalid explicit baseline must not fall back to HEAD: %s", output)
+				return
+			}
+			require.NoError(t, err, "%s", output)
+			require.Equal(t, tc.commit+"\n"+tc.image+"\n", string(output))
+		})
+	}
+}
+
 func TestReleaseBaselineRejectsSourceAndTagMismatch(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for release validation")
