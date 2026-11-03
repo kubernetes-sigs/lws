@@ -350,6 +350,46 @@ func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSet
 	return allErrs
 }
 
+// ValidatePodTemplateSecurityContexts rejects container securityContexts in the
+// leader/worker pod templates that combine privileged=true with
+// allowPrivilegeEscalation=false. The API server rejects that combination on
+// every workload carrying a pod template ("cannot set
+// `allowPrivilegeEscalation` to false and `privileged` to true"), but LWS
+// admission is otherwise structural only: without this check an invalid
+// template is persisted and every child StatefulSet/Deployment apply fails
+// validation, wedging the rollout in an endless retry loop with no replica
+// ever coming up.
+func ValidatePodTemplateSecurityContexts(lwTemplatePath *field.Path, template *v1.LeaderWorkerTemplate) field.ErrorList {
+	var allErrs field.ErrorList
+	if template.LeaderTemplate != nil {
+		allErrs = append(allErrs, validatePodSpecSecurityContexts(lwTemplatePath.Child("leaderTemplate", "spec"), &template.LeaderTemplate.Spec)...)
+	}
+	allErrs = append(allErrs, validatePodSpecSecurityContexts(lwTemplatePath.Child("workerTemplate", "spec"), &template.WorkerTemplate.Spec)...)
+	return allErrs
+}
+
+func validatePodSpecSecurityContexts(podSpecPath *field.Path, podSpec *corev1.PodSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	validateContainers := func(containers []corev1.Container, containersPath *field.Path) {
+		for i := range containers {
+			sc := containers[i].SecurityContext
+			if sc == nil || !ptr.Deref(sc.Privileged, false) {
+				continue
+			}
+			if sc.AllowPrivilegeEscalation != nil && !*sc.AllowPrivilegeEscalation {
+				allErrs = append(allErrs, field.Invalid(
+					containersPath.Index(i).Child("securityContext"),
+					sc,
+					"cannot set `allowPrivilegeEscalation` to false and `privileged` to true",
+				))
+			}
+		}
+	}
+	validateContainers(podSpec.Containers, podSpecPath.Child("containers"))
+	validateContainers(podSpec.InitContainers, podSpecPath.Child("initContainers"))
+	return allErrs
+}
+
 // ValidateLeaderWorkerSetTemplate validates static constraints shared by LWS
 // objects and embedded templates. Callers validate replica limits, rollout
 // budgets, object metadata, scheduler support, and update transitions separately.
@@ -368,6 +408,7 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1
 	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidatePodTerminationPolicy(specPath, &lws.Spec)...)
+	allErrs = append(allErrs, ValidatePodTemplateSecurityContexts(specPath.Child("leaderWorkerTemplate"), &lws.Spec.LeaderWorkerTemplate)...)
 	return allErrs
 }
 
