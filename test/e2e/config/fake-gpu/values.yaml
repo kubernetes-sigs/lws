@@ -1,0 +1,33 @@
+# CPU-only configuration for fake-gpu-operator 0.0.72 with real kubelets.
+devicePlugin:
+  image:
+    pullPolicy: IfNotPresent
+statusUpdater:
+  image:
+    pullPolicy: IfNotPresent
+topologyServer:
+  image:
+    pullPolicy: IfNotPresent
+topology:
+  migStrategy: none
+  nodePools:
+    default:
+      gpuCount: 16
+computeDomainController:
+  enabled: true
+  image:
+    pullPolicy: IfNotPresent
+computeDomainDraPlugin:
+  enabled: true
+  image:
+    pullPolicy: IfNotPresent
+statusExporter:
+  enabled: false
+kwokGpuDevicePlugin:
+  enabled: false
+migFaker:
+  enabled: false
+gpuOperator:
+  enabled: false
+runtimeClass:
+  enabled: false
