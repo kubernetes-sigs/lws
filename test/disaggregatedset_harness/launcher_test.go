@@ -151,6 +151,90 @@ func TestLauncherOwnershipPredicateUsesExactMountAndIdentity(t *testing.T) {
 	}
 }
 
+func TestLauncherCleanupRequiresConfirmedOwnershipOrAbsence(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required for the cleanup result")
+	}
+	for _, tc := range []struct {
+		mode               string
+		deleted, succeeded bool
+	}{
+		{"owned", true, true},
+		{"absent", false, true},
+		{"list-error", false, false},
+		{"inspect-error", false, false},
+		{"label-error", false, false},
+		{"mount-error", false, false},
+		{"replacement", false, false},
+		{"extra-node", false, false},
+		{"cleanup-list-error", true, false},
+		{"still-present", true, false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "owner"), []byte("owned-token\n"), 0600))
+			testExecutable(t, root, "docker", `printf '%s\n' "$*" >> "$RUN_DIR/docker-calls"
+case "$1" in
+  ps)
+    case "$TEST_MODE" in
+      list-error) exit 1 ;;
+      absent) exit 0 ;;
+      cleanup-list-error) if [ -e "$RUN_DIR/kind-called" ]; then exit 1; fi ;;
+      still-present) ;;
+      *) if [ -e "$RUN_DIR/kind-called" ]; then exit 0; fi ;;
+    esac
+    printf 'owned-id\n'
+    if [ "$TEST_MODE" = extra-node ]; then printf 'foreign-id\n'; fi
+    ;;
+  inspect)
+    if [ "$TEST_MODE" = inspect-error ]; then exit 1; fi
+    case "$*" in
+      *'{{.Id}}'*)
+        if [ "$TEST_MODE" = replacement ]; then printf 'replacement-id\n'; else printf 'owned-id\n'; fi
+        ;;
+      *io.x-k8s.kind.cluster*)
+        if [ "$TEST_MODE" = label-error ]; then exit 1; fi
+        printf '%s\n' "$CLUSTER"
+        ;;
+      *Mounts*)
+        if [ "$TEST_MODE" = mount-error ]; then exit 1; fi
+        printf '%s\n' "$RUN_DIR/owner"
+        ;;
+      *) exit 91 ;;
+    esac
+    ;;
+  *) exit 91 ;;
+esac
+`)
+			testExecutable(t, root, "kind", `printf '%s\n' "$*" > "$RUN_DIR/kind-called"
+`)
+			owns := strings.TrimSuffix(scriptFunction(t, "owns_node"), "owns_node \"$@\"\n")
+			env := []string{
+				"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"TEST_MODE=" + tc.mode, "RUN_DIR=" + root, "KIND=" + filepath.Join(root, "kind"),
+				"CLUSTER=owned-cluster", "NODE=owned-cluster-control-plane", "NODE_ID=owned-id",
+				"CLUSTER_OWNED=1", "TOKEN=owned-token", "DRIVER_PID=", "RUN_PASSED=1",
+				"KCFG=" + filepath.Join(root, "kubeconfig"),
+			}
+			output, err := shell(t, root, env, "-c", owns+scriptFunction(t, "cleanup"))
+			require.Equal(t, tc.succeeded, err == nil, "cleanup: %s, %v", output, err)
+			_, statErr := os.Stat(filepath.Join(root, "kind-called"))
+			require.Equal(t, tc.deleted, statErr == nil, "kind deletion: %s", output)
+			calls, err := os.ReadFile(filepath.Join(root, "docker-calls"))
+			require.NoError(t, err)
+			require.True(t, strings.HasPrefix(string(calls), "ps -a --no-trunc --filter label=io.x-k8s.kind.cluster=owned-cluster --format {{.ID}}\n"), "cleanup did not first list all matching nodes: %s", calls)
+			if tc.mode == "absent" {
+				require.NotContains(t, string(calls), "inspect", "confirmed absence must not inspect a missing node")
+			}
+			result, err := os.ReadFile(filepath.Join(root, "runtime-result.json"))
+			require.NoError(t, err)
+			var recorded struct{ ExitCode int }
+			require.NoError(t, json.Unmarshal(result, &recorded))
+			require.Equal(t, tc.succeeded, recorded.ExitCode == 0, "incorrect cleanup result: %s", result)
+		})
+	}
+}
+
 func TestLauncherKindConfigurationKeepsOwnedMount(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for launcher JSON")

@@ -105,7 +105,7 @@ owns_node() {
 }
 
 cleanup() {
-  local status=$? owner='' actual_id='' cluster_label='' owner_mount='' deadline
+  local status=$? owner='' actual_id='' cluster_label='' owner_mount='' matching_nodes='' deadline
   trap - EXIT
   trap '' INT TERM HUP PIPE
   set +e
@@ -120,10 +120,17 @@ cleanup() {
   fi
   read -r owner < "$RUN_DIR/owner"
   if (( CLUSTER_OWNED )) && [[ "$owner" == "$TOKEN" ]]; then
-    actual_id=$(docker inspect --type container --format '{{.Id}}' "$NODE" 2>/dev/null)
-    cluster_label=$(docker inspect --type container --format '{{index .Config.Labels "io.x-k8s.kind.cluster"}}' "$NODE" 2>/dev/null)
-    owner_mount=$(docker inspect --type container --format '{{range .Mounts}}{{if eq .Destination "/var/run/lws-v1-harness-owner"}}{{.Source}}{{end}}{{end}}' "$NODE" 2>/dev/null)
-    if [[ -n "$actual_id" ]] && ! owns_node "$actual_id" "$cluster_label" "$owner_mount"; then
+    if ! matching_nodes=$(docker ps -a --no-trunc --filter "label=io.x-k8s.kind.cluster=$CLUSTER" --format '{{.ID}}' 2>/dev/null); then
+      printf 'REFUSING cleanup: cannot list nodes for %s.\n' "$CLUSTER" >&2
+      status=1
+    elif [[ -z "$matching_nodes" ]]; then
+      section "Owned kind cluster $CLUSTER is already absent"
+    elif ! actual_id=$(docker inspect --type container --format '{{.Id}}' "$NODE" 2>/dev/null) ||
+         ! cluster_label=$(docker inspect --type container --format '{{index .Config.Labels "io.x-k8s.kind.cluster"}}' "$NODE" 2>/dev/null) ||
+         ! owner_mount=$(docker inspect --type container --format '{{range .Mounts}}{{if eq .Destination "/var/run/lws-v1-harness-owner"}}{{.Source}}{{end}}{{end}}' "$NODE" 2>/dev/null); then
+      printf 'REFUSING cleanup: cannot inspect ownership of %s.\n' "$NODE" >&2
+      status=1
+    elif [[ "$matching_nodes" != "$actual_id" ]] || ! owns_node "$actual_id" "$cluster_label" "$owner_mount"; then
       printf 'REFUSING cleanup: %s is no longer this run\047s node.\n' "$NODE" >&2
       status=1
     else
@@ -134,7 +141,10 @@ cleanup() {
         k -n lws-system logs deployment/lws-controller-manager --all-containers --tail=3000 > "$RUN_DIR/controller.log" 2>&1
       fi
       "$KIND" delete cluster --name "$CLUSTER" --kubeconfig "$KCFG" > "$RUN_DIR/cleanup.log" 2>&1 || status=1
-      if docker inspect --type container "$NODE" >/dev/null 2>&1; then
+      if ! matching_nodes=$(docker ps -a --no-trunc --filter "label=io.x-k8s.kind.cluster=$CLUSTER" --format '{{.ID}}' 2>/dev/null); then
+        printf 'Cannot confirm cleanup of %s; Docker node listing failed.\n' "$CLUSTER" >&2
+        status=1
+      elif [[ -n "$matching_nodes" ]]; then
         printf 'Cleanup did not remove %s; inspect %s/cleanup.log.\n' "$NODE" "$RUN_DIR" >&2
         status=1
       fi
