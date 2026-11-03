@@ -22,7 +22,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -31,6 +33,7 @@ import (
 
 	v1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	accelerator "sigs.k8s.io/lws/pkg/utils/accelerators"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -663,6 +666,103 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 		if _, err := webhook.ValidateUpdate(ctx, oldLWS, newLWS); err == nil {
 			t.Fatal("expected validation error for a nil subGroupSize")
 		}
+	})
+
+	t.Run("tpu subgroup partitions should stay aligned", func(t *testing.T) {
+		// Regression cases for the TPU env vs subgroup label divergence
+		// described in https://github.com/kubernetes-sigs/lws/issues/1284.
+		tpuLimits := corev1.ResourceList{accelerator.TpuResourceName: resource.MustParse("2")}
+		leaderPod := func(withTPU bool) *corev1.PodTemplateSpec {
+			limits := corev1.ResourceList{}
+			if withTPU {
+				limits = tpuLimits
+			}
+			return &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "leader", Resources: corev1.ResourceRequirements{Limits: limits}}},
+				},
+			}
+		}
+		workerPod := func(withTPU bool) corev1.PodTemplateSpec {
+			limits := corev1.ResourceList{}
+			if withTPU {
+				limits = tpuLimits
+			}
+			return corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{Limits: limits}}},
+				},
+			}
+		}
+		build := func(size int32, subGroupSize int32, policyType *v1.SubGroupPolicyType, leaderTPU, workerTPU bool) *v1.LeaderWorkerSet {
+			return &v1.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+				Spec: v1.LeaderWorkerSetSpec{
+					Replicas: ptr.To[int32](1),
+					LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
+						Size:           ptr.To[int32](size),
+						SubGroupPolicy: &v1.SubGroupPolicy{SubGroupSize: ptr.To[int32](subGroupSize), Type: policyType},
+						LeaderTemplate: leaderPod(leaderTPU),
+						WorkerTemplate: workerPod(workerTPU),
+					},
+				},
+			}
+		}
+
+		t.Run("leader without tpus and tpu workers must not use a leader-in-group partition", func(t *testing.T) {
+			// size=4, subGroupSize=2: the label partition places the leader in
+			// subgroup 0 while the TPU injection shifts it out, so the two
+			// partitions diverge and hostname lists reference nonexistent pods.
+			allErrs := webhook.generalValidate(build(4, 2, nil, false, true))
+			if len(allErrs) != 1 {
+				t.Fatalf("expected one validation error, got %v", allErrs)
+			}
+			if allErrs[0].Type != field.ErrorTypeInvalid {
+				t.Errorf("expected invalid error, got %q", allErrs[0].Type)
+			}
+		})
+
+		t.Run("leader with tpus and tpu workers accept a leader-in-group partition", func(t *testing.T) {
+			allErrs := webhook.generalValidate(build(4, 2, nil, true, true))
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("leader without tpus and tpu workers accept a leader-extra partition", func(t *testing.T) {
+			// size=5, subGroupSize=2: (size-1) is divisible, so the TPU
+			// injection and the labels agree.
+			allErrs := webhook.generalValidate(build(5, 2, nil, false, true))
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("pods without tpus accept a leader-in-group partition", func(t *testing.T) {
+			allErrs := webhook.generalValidate(build(4, 2, nil, false, false))
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("leader-excluded subgroups are not restricted by the tpu check", func(t *testing.T) {
+			leaderExcluded := v1.SubGroupPolicyTypeLeaderExcluded
+			allErrs := webhook.generalValidate(build(5, 2, &leaderExcluded, false, true))
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("implicit leader template with tpu workers accepts a leader-in-group partition", func(t *testing.T) {
+			// Without leaderTemplate the leader uses the worker template, so
+			// the leader requests TPUs too and the partitions stay aligned.
+			lws := build(4, 2, nil, false, true)
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate = nil
+			allErrs := webhook.generalValidate(lws)
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
 	})
 
 	t.Run("nil old network config on update should not panic", func(t *testing.T) {

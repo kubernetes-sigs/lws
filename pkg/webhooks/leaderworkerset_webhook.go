@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
+	accelerator "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
 type LeaderWorkerSetWebhook struct {
@@ -686,6 +687,23 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 		(*policy.Type == v1.SubGroupPolicyTypeLeaderExcluded) &&
 		((size-1)%subGroupSize != 0) {
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
+	}
+	// The subgroup labels, and the topology-exclusiveness scheduling derived
+	// from them, treat the leader as a member of subgroup 0. The TPU env
+	// injection instead shifts its partition by one when the leader requests
+	// no TPUs while the workers do, so the two partitions can disagree and
+	// the injected hostname lists can reference pods that never exist.
+	// They stay aligned only when (size-1) is divisible by subGroupSize, or
+	// when the leader is explicitly excluded from the subgroups.
+	// See https://github.com/kubernetes-sigs/lws/issues/1284.
+	if (policy.Type == nil || *policy.Type != v1.SubGroupPolicyTypeLeaderExcluded) &&
+		subGroupSize > 1 && size%subGroupSize == 0 {
+		if leader := spec.LeaderWorkerTemplate.LeaderTemplate; leader != nil &&
+			!accelerator.PodRequestsTPUs(leader.Spec) &&
+			accelerator.PodRequestsTPUs(spec.LeaderWorkerTemplate.WorkerTemplate.Spec) {
+			allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
+				"the TPU env and subgroup label partitions diverge when size is divisible by subGroupSize and the leader requests no google.com/tpu while the workers do; use size = k*subGroupSize + 1 or set subGroupPolicy.type to LeaderExcluded"))
+		}
 	}
 	return allErrs
 }
