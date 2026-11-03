@@ -685,7 +685,8 @@ func parseNonNegativeInt32(raw string) (int32, error) {
 // resolveRolloutBaseline returns the non-surge replica baseline for an active
 // Ordinal rolling update. Once recorded in rolloutBaselineAnnotationKey, the
 // baseline is preserved across scale-ups and superseding template updates (and
-// clamped down if spec.replicas shrinks below it) until the rollout converges.
+// clamped down if spec.replicas shrinks below it) until the rollout completes
+// (see rolloutBaselineActive).
 func resolveRolloutBaseline(sts *appsv1.StatefulSet, lwsReplicas int32) (int32, error) {
 	if raw := sts.Annotations[rolloutBaselineAnnotationKey]; raw != "" {
 		if baseline, err := parseNonNegativeInt32(raw); err == nil {
@@ -829,7 +830,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 		targetReplicas := wantReplicas(lwsUnreadyReplicas)
 		var nextBaseline *int32
-		if !stsObserved || hasRolloutBaseline || partition > userPartition || targetReplicas != lwsReplicas || !allUpdatedAndReadyFrom(states, userPartition, lwsReplicas) {
+		if !stsObserved || hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
 			nextBaseline = ptr.To(baseline)
 		}
 		return rollingUpdatePlan{
@@ -865,7 +866,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	nextPartition := rollingUpdatePartitionWithFloor(activeStates, floor, min(partition, targetReplicas), userPartition)
 
 	var nextBaseline *int32
-	if nextPartition > userPartition || targetReplicas != lwsReplicas || !allUpdatedAndReadyFrom(states, userPartition, lwsReplicas) {
+	if rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) {
 		nextBaseline = ptr.To(baseline)
 	}
 	return rollingUpdatePlan{
@@ -1576,6 +1577,33 @@ func rollingUpdatePartitionWithFloor(states []replicaState, floor, currentPartit
 		}
 	}
 	return max(userPartition, min(partition, currentPartition))
+}
+
+// rolloutBaselineActive reports whether an Ordinal rollout still needs its
+// recorded baseline: while the partition is above the user partition or a
+// desired group runs an older revision. Readiness does not extend it once every
+// desired group runs the target revision, so an unhealthy group cannot leave a
+// baseline behind that relaxes the floor of the next rollout. While a user
+// partition holds older groups below it, the baseline is kept until the groups
+// at or above it are updated and Ready, so additions that are still Pending do
+// not count against the floor once the partition is lowered.
+func rolloutBaselineActive(states []replicaState, partition, userPartition, lwsReplicas int32) bool {
+	if partition > userPartition {
+		return true
+	}
+	if allUpdatedFrom(states, 0, lwsReplicas) {
+		return false
+	}
+	return !allUpdatedAndReadyFrom(states, userPartition, lwsReplicas)
+}
+
+func allUpdatedFrom(states []replicaState, from, to int32) bool {
+	for idx := max(int32(0), from); idx < to; idx++ {
+		if int(idx) >= len(states) || !states[idx].updated {
+			return false
+		}
+	}
+	return true
 }
 
 func allUpdatedAndReadyFrom(states []replicaState, from, to int32) bool {
