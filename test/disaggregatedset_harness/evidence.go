@@ -125,7 +125,6 @@ func (e *Evidence) Start(ctx context.Context, o Options) error {
 				"eventsRequested":     true,
 				"eventsSource":        "same-snapshot-request",
 				"argv":                append([]string{o.Kubectl}, args...),
-				"stdout":              string(out),
 				"stderr":              string(stderr),
 				"returncode":          0,
 			}
@@ -141,6 +140,9 @@ func (e *Evidence) Start(ctx context.Context, o Options) error {
 				}
 			}
 			if err != nil {
+				// Successful reads already retain the parsed objects in state.
+				// Keep the raw response only when it is needed to diagnose failure.
+				row["stdout"] = string(out)
 				row["returncode"] = nil
 				row["error"] = err.Error()
 			}
