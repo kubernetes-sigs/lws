@@ -178,7 +178,7 @@ func (m *ScalerManager) Reconcile(
 	existing := make(map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler)
 	for i := range list.Items {
 		s := &list.Items[i]
-		if !isControlledBy(s, ds.UID) {
+		if !isControlledBy(s, ds.UID) || !s.DeletionTimestamp.IsZero() {
 			continue
 		}
 		role := childRoleKey(s.Labels[disaggregatedsetv1.RoleLabelKey], s.Labels[disaggregatedsetv1.SubRoleLabelKey])
@@ -191,9 +191,7 @@ func (m *ScalerManager) Reconcile(
 				"Deleted scaler %s (role %s is no longer External)", s.Name, role)
 			continue
 		}
-		if s.DeletionTimestamp.IsZero() {
-			existing[role] = s
-		}
+		existing[role] = s
 	}
 
 	for role := range externalRoles {

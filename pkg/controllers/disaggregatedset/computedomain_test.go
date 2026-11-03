@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -293,4 +294,142 @@ func TestSliceComputeDomainToDisaggregatedSet(t *testing.T) {
 		leaderworkersetv1.SetNameLabelKey: "model",
 		computedomain.OwnerUIDLabelKey:    "lws-uid",
 	})))
+}
+
+func TestDeletingDisaggregatedSetCleansUpComputeDomains(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.AutoComputeDomain, true)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, leaderworkersetv1.AddToScheme(scheme))
+	require.NoError(t, disaggregatedsetv1.AddToScheme(scheme))
+	require.NoError(t, computedomain.AddToScheme(scheme))
+
+	gpuRes := corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			computedomain.NvidiaGPUResourceName: resource.MustParse("4"),
+		},
+	}
+	now := metav1.Now()
+	ds := &disaggregatedsetv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "serving",
+			Namespace:         "default",
+			UID:               types.UID("ds-uid-deleting"),
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"test/hold"},
+			Annotations: map[string]string{
+				disaggregatedsetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainEnabled,
+			},
+		},
+		Spec: disaggregatedsetv1.DisaggregatedSetSpec{
+			Slices: ptr.To[int32](2),
+			Roles: []disaggregatedsetv1.DisaggregatedRoleSpec{{
+				Name: "prefill",
+				LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
+					Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+						Replicas: ptr.To[int32](1),
+						LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+							Size: ptr.To[int32](2),
+							WorkerTemplate: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{{Name: "vllm", Resources: gpuRes}},
+								},
+							},
+						},
+					},
+				},
+			}},
+		},
+	}
+
+	cd0Name := computedomain.SliceComputeDomainName(ds, 0, "rev1")
+	cd1Name := computedomain.SliceComputeDomainName(ds, 1, "rev1")
+
+	cd0 := &computedomain.ComputeDomain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       cd0Name,
+			Namespace:  ds.Namespace,
+			Finalizers: []string{leaderworkersetv1.ComputeDomainProtectionFinalizer},
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: ds.Name,
+				computedomain.OwnerUIDLabelKey:     string(ds.UID),
+			},
+		},
+	}
+	cd1 := &computedomain.ComputeDomain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       cd1Name,
+			Namespace:  ds.Namespace,
+			Finalizers: []string{leaderworkersetv1.ComputeDomainProtectionFinalizer},
+			Labels: map[string]string{
+				disaggregatedsetv1.SetNameLabelKey: ds.Name,
+				computedomain.OwnerUIDLabelKey:     string(ds.UID),
+			},
+		},
+	}
+
+	childSlice0 := &leaderworkersetv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      disaggregatedsetutils.GenerateName(ds.Name, 0, "rev1", "prefill"),
+			Namespace: ds.Namespace,
+			Labels:    disaggregatedsetutils.GenerateLabels(ds.Name, 0, "rev1", "prefill"),
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(ds, disaggregatedsetv1.GroupVersion.WithKind("DisaggregatedSet")),
+			},
+		},
+		Spec: ds.Spec.Roles[0].Spec,
+	}
+
+	drainingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "serving-0-rev1-pod",
+			Namespace: ds.Namespace,
+		},
+		Spec: corev1.PodSpec{
+			ResourceClaims: []corev1.PodResourceClaim{{
+				Name:                      computedomain.ChannelClaimName,
+				ResourceClaimTemplateName: ptr.To(cd0Name),
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}).
+		WithIndex(&corev1.Pod{}, computedomain.PodClaimTemplateIndex, computedomain.PodClaimTemplateNames).
+		WithObjects(ds, cd0, cd1, childSlice0, drainingPod).
+		Build()
+	reconciler := NewDisaggregatedSetReconciler(c, scheme, events.NewFakeRecorder(100))
+	ctx := t.Context()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ds.Namespace, Name: ds.Name}}
+
+	// First reconcile: cd1 is unreferenced (no child LWS, no pod) and must be deleted.
+	// cd0 has both a child LWS and a draining pod, so it must be retained.
+	res, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, res)
+
+	var retainedCD computedomain.ComputeDomain
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: cd0Name}, &retainedCD))
+
+	var deletedCD computedomain.ComputeDomain
+	err = c.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: cd1Name}, &deletedCD)
+	require.True(t, apierrors.IsNotFound(err), "unreferenced slice ComputeDomain must be deleted on deleting DisaggregatedSet")
+
+	// Delete child LWS; cd0 must still be retained because drainingPod references it.
+	require.NoError(t, c.Delete(ctx, childSlice0))
+	res, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, res)
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: cd0Name}, &retainedCD))
+
+	// Delete draining pod; cd0 must now be released and deleted.
+	require.NoError(t, c.Delete(ctx, drainingPod))
+	res, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, res)
+
+	err = c.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: cd0Name}, &deletedCD)
+	require.True(t, apierrors.IsNotFound(err), "slice ComputeDomain must be deleted once its child LWS and referencing pods are gone")
 }
