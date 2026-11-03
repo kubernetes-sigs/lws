@@ -87,6 +87,29 @@ func TestUnserializableInputFailsCaseWithoutExecutingCommand(t *testing.T) {
 	require.Empty(t, executor.calls, "invalid manifest invoked a command")
 }
 
+func TestKubectlProcessDeadlineHonorsWaitTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{[]string{"get", "pods"}, 45 * time.Second},
+		{[]string{"delete", "pods", "--all", "--timeout=90s"}, 105 * time.Second},
+		{[]string{"rollout", "status", "deployment/controller", "--timeout=120s"}, 135 * time.Second},
+		{[]string{"wait", "--timeout", "120s", "pod/example"}, 135 * time.Second},
+		{[]string{"exec", "pod/example", "--", "command", "--timeout=120s"}, 45 * time.Second},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			executor := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+				deadline, ok := c.ctx.Deadline()
+				require.True(t, ok)
+				require.InDelta(t, tc.want.Seconds(), time.Until(deadline).Seconds(), 1)
+				return nil, nil, nil
+			}}
+			require.NoError(t, catch(func() { testLab(t, executor).K(tc.args...) }))
+		})
+	}
+}
+
 func TestAbsentSubroleCountsMatchEmptyTargets(t *testing.T) {
 	for _, lws := range []Object{
 		{},

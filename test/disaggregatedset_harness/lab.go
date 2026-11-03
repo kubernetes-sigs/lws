@@ -124,7 +124,22 @@ func (l *Lab) KInput(input any, args ...string) []byte {
 	if input != nil {
 		stdin = []byte(jsonText(input))
 	}
-	ctx, cancel := context.WithTimeout(l.ctx, 45*time.Second)
+	timeout := 45 * time.Second
+	for i, arg := range args {
+		if arg == "--" {
+			break // Flags of an exec'd command are not kubectl flags.
+		}
+		value, found := strings.CutPrefix(arg, "--timeout=")
+		if arg == "--timeout" && i+1 < len(args) {
+			value, found = args[i+1], true
+		}
+		if found {
+			if wait, err := time.ParseDuration(value); err == nil && wait > 0 {
+				timeout = max(timeout, wait+15*time.Second) // Allow kubectl to report its own timeout.
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(l.ctx, timeout)
 	defer cancel()
 	out, stderr, err := l.Options.Executor.Run(ctx, l.Options.Kubectl, l.Options.kube(args...), stdin)
 	if err != nil {
