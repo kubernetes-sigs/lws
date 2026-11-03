@@ -671,6 +671,11 @@ func converged(s Snapshot, v string, t Targets) bool {
 			return false
 		}
 	}
+	for role, counts := range actual {
+		if _, wanted := t[role]; !wanted && counts != (Counts{}) {
+			return false
+		}
+	}
 	expected := 0
 	for _, lws := range s.LWS {
 		if VersionOf(lws) != v && integer(at(lws, "spec", "replicas"), 1) != 0 {

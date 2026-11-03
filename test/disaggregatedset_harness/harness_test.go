@@ -370,6 +370,17 @@ func TestConvergenceRequiresPhysicalCleanupAndAcknowledgement(t *testing.T) {
 	require.False(t, converged(s, "B", Targets{"prefill": 1}), "unacknowledged generation accepted")
 }
 
+func TestConvergenceRejectsUnexpectedTargetRole(t *testing.T) {
+	s := fleet(map[string]map[string]Counts{
+		"B": {"prefill": {Spec: 1, Ready: 1, Scheduled: 1}, "unexpected": {}},
+	}, 1)
+	require.True(t, converged(s, "B", Targets{"prefill": 1}), "zero-replica role should be harmless")
+	s = fleet(map[string]map[string]Counts{
+		"B": {"prefill": {Spec: 1, Ready: 1, Scheduled: 1}, "unexpected": {Spec: 1, Ready: 1, Scheduled: 1}},
+	}, 1)
+	require.False(t, converged(s, "B", Targets{"prefill": 1}), "surplus target group accepted")
+}
+
 func TestPercentageBounds(t *testing.T) {
 	f, c := percentBounds(initial)
 	require.Equal(t, pair(34, 18), f)
