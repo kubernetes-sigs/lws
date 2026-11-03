@@ -402,6 +402,39 @@ func TestWaitCancellationAndStableSamples(t *testing.T) {
 	require.Len(t, e.calls, before, "read after cancel")
 }
 
+func TestWaitRecordsEffectiveDefaults(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		l := testLab(t, &fakeExecutor{run: func(command) ([]byte, []byte, error) {
+			return []byte(`{"kind":"List","items":[]}`), nil, nil
+		}})
+		e, err := NewEvidence(l.Options.RunDir, "fixture")
+		require.NoError(t, err)
+		l.evidence = e
+		want := Object{"timeout": float64(180), "stable": float64(2)}
+		require.NoError(t, catch(func() {
+			if explicit {
+				want = Object{"timeout": float64(10), "stable": float64(3)}
+				l.Wait("recorded", func(Snapshot) bool { return true }, 10*time.Second, 3, nil)
+			} else {
+				l.WaitFor("recorded", func(Snapshot) bool { return true })
+			}
+		}))
+		require.NoError(t, e.Close())
+		raw, err := os.ReadFile(filepath.Join(e.directory, "actions.jsonl"))
+		require.NoError(t, err)
+		phases := []string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			var row Object
+			require.NoError(t, json.Unmarshal([]byte(line), &row))
+			if row["kind"] == "wait" {
+				require.Equal(t, want, row["kwargs"])
+				phases = append(phases, str(row["phase"]))
+			}
+		}
+		require.Equal(t, []string{"start", "end"}, phases)
+	}
+}
+
 // This optional test fixture is created only in a caller-chosen new directory,
 // outside the repository. The Node normalizer can independently consume it to
 // verify cross-language compatibility.

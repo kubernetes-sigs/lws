@@ -273,13 +273,13 @@ type Predicate func(Snapshot) bool
 type Tick func(Snapshot)
 
 func (l *Lab) Wait(label string, p Predicate, timeout time.Duration, stable int, tick Tick) Snapshot {
-	defer l.action("wait", []any{label}, Object{"timeout": timeout.Seconds(), "stable": stable}, nil)()
 	if timeout == 0 {
 		timeout = 180 * time.Second
 	}
 	if stable == 0 {
 		stable = 2
 	}
+	defer l.action("wait", []any{label}, Object{"timeout": timeout.Seconds(), "stable": stable}, nil)()
 	deadline := l.clock.Now().Add(timeout)
 	hits := 0
 	for l.clock.Now().Before(deadline) {
