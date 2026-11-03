@@ -235,6 +235,48 @@ esac
 	}
 }
 
+func TestLauncherPreservesLeadingRunSubcommand(t *testing.T) {
+	source, err := os.ReadFile("run.sh")
+	require.NoError(t, err)
+	_, launch, found := strings.Cut(string(source), "section 'Run scenarios'\n")
+	require.True(t, found, "missing driver launch section")
+	repository, err := filepath.Abs("../..")
+	require.NoError(t, err)
+	for _, args := range [][]string{
+		{"run", "ordinary", "--auto"},
+		{"ordinary", "--auto", "--process-group=false"},
+	} {
+		root := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(root, "bin"), 0700))
+		testExecutable(t, filepath.Join(root, "bin"), "harness", `printf '%s\n' "$@" > "$RUN_DIR/driver-argv"
+`)
+		env := []string{
+			"RUN_DIR=" + root, "KCFG=" + filepath.Join(root, "kubeconfig"),
+			"CONTEXT=kind-owned", "NODE=owned-control-plane", "COMMIT=" + strings.Repeat("a", 40),
+		}
+		script := "set -euo pipefail\nSUITE_ARGS=(\"$@\")\n" + launch
+		output, err := shell(t, root, env, append([]string{"-c", script, "launch-test"}, args...)...)
+		require.NoError(t, err, "%s", output)
+		raw, err := os.ReadFile(filepath.Join(root, "driver-argv"))
+		require.NoError(t, err)
+		actual := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		require.Greater(t, len(actual), len(args))
+		require.Equal(t, args, actual[:len(args)], "user arguments must remain first")
+		require.Equal(t, "--process-group", actual[len(args)], "launcher isolation must override user flags")
+
+		// Validate the actual launch argv with the real CLI, without ownership
+		// checks, process-group changes, or any Kubernetes operations.
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		validateArgs := append([]string{"run", "./test/disaggregatedset_harness/cmd"}, actual...)
+		command := exec.CommandContext(ctx, "go", append(validateArgs, "--validate")...)
+		command.Dir = repository
+		output, err = command.CombinedOutput()
+		cancel()
+		require.NoError(t, err, "actual launch arguments %q: %s", actual, output)
+		require.Contains(t, string(output), "No Kubernetes operations performed")
+	}
+}
+
 func TestLauncherKindConfigurationKeepsOwnedMount(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for launcher JSON")

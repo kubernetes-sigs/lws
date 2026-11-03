@@ -293,7 +293,7 @@ k create namespace v1-harness
 
 section 'Run scenarios'
 # Isolate cancellation without taking stdin from interactive checkpoints.
-"$RUN_DIR/bin/harness" --process-group "${SUITE_ARGS[@]}" \
+"$RUN_DIR/bin/harness" "${SUITE_ARGS[@]}" --process-group \
   --kubeconfig "$KCFG" --context "$CONTEXT" --run-dir "$RUN_DIR" --node "$NODE" \
   --controller-commit "$COMMIT" --observer "$RUN_DIR/bin/observe" <&0 &
 DRIVER_PID=$!
