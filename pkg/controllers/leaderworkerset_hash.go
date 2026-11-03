@@ -311,14 +311,16 @@ func resolveDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int
 	return min(deployReplicas, lwsReplicas)
 }
 
+// isHashRolloutConverged reports whether every leader runs the target revision.
+// Readiness is not required: an unready or budget-exhausted group must not leave
+// a baseline behind that relaxes the floor of the next rollout.
 func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, deploy *appsv1.Deployment, revisionKey string) (bool, error) {
 	lwsReplicas := *lws.Spec.Replicas
 	if deploy.Status.ObservedGeneration < deploy.Generation ||
 		revisionutils.GetRevisionKey(deploy) != revisionKey ||
 		ptr.Deref(deploy.Spec.Replicas, 0) != lwsReplicas ||
 		deploy.Status.Replicas != lwsReplicas ||
-		deploy.Status.UpdatedReplicas != lwsReplicas ||
-		deploy.Status.ReadyReplicas != lwsReplicas {
+		deploy.Status.UpdatedReplicas != lwsReplicas {
 		return false, nil
 	}
 	var leaderPodList corev1.PodList
@@ -331,9 +333,6 @@ func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, 
 	currentRevisionPods := 0
 	for i := range leaderPodList.Items {
 		pod := &leaderPodList.Items[i]
-		if pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true" {
-			return false, nil
-		}
 		if revisionutils.GetRevisionKey(pod) == revisionKey {
 			currentRevisionPods++
 		} else if pod.DeletionTimestamp == nil {

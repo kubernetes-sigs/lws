@@ -1217,3 +1217,434 @@ func TestHashCombinedRolloutAndScaleUpAvailabilityFloor(t *testing.T) {
 		t.Fatalf("converged deploy maxUnavailable = %d, want restored 0", got)
 	}
 }
+
+func TestRolloutBaselineActive(t *testing.T) {
+	old := replicaState{ready: true}
+	oldDown := replicaState{}
+	updated := replicaState{ready: true, updated: true}
+	updatedDown := replicaState{updated: true}
+
+	for _, tc := range []struct {
+		name                     string
+		states                   []replicaState
+		partition, userPartition int32
+		lwsReplicas              int32
+		want                     bool
+	}{
+		{
+			name:        "partition still protects old groups",
+			states:      []replicaState{old, updated},
+			partition:   1,
+			lwsReplicas: 2,
+			want:        true,
+		},
+		{
+			name:        "a desired group still runs an older revision",
+			states:      []replicaState{oldDown, updated},
+			lwsReplicas: 2,
+			want:        true,
+		},
+		{
+			name:        "every desired group runs the target revision, one unready",
+			states:      []replicaState{updated, updatedDown, updated},
+			lwsReplicas: 3,
+			want:        false,
+		},
+		{
+			name:        "surge ordinal beyond spec.replicas is ignored",
+			states:      []replicaState{updated, updated, oldDown},
+			lwsReplicas: 2,
+			want:        false,
+		},
+		{
+			name:          "user partition holds old groups while an addition above it is Pending",
+			states:        []replicaState{old, old, updated, updatedDown},
+			partition:     2,
+			userPartition: 2,
+			lwsReplicas:   4,
+			want:          true,
+		},
+		{
+			name:          "user partition holds old groups and every group above it is Ready",
+			states:        []replicaState{old, old, updated, updated},
+			partition:     2,
+			userPartition: 2,
+			lwsReplicas:   4,
+			want:          false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rolloutBaselineActive(tc.states, tc.partition, tc.userPartition, tc.lwsReplicas); got != tc.want {
+				t.Errorf("rolloutBaselineActive() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCombinedRolloutUnreadyGroupDoesNotLeaveBaselineForNextRollout verifies
+// that a group still unready after a combined rollout reaches the target
+// revision does not keep rollout-baseline-replicas, so the next template update
+// is paced against a fresh baseline instead of the smaller pre-scale-up one.
+func TestCombinedRolloutUnreadyGroupDoesNotLeaveBaselineForNextRollout(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Replica(2).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	lws.Generation = 1
+
+	c, _ := newCombinedTestClient(t, lws)
+	r := NewLeaderWorkerSetReconciler(c, lwsStatusScheme(t), events.NewFakeRecorder(256))
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+
+	reconcileAndAck := func(step string) *appsv1.StatefulSet {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("%s: Reconcile() error = %v", step, err)
+		}
+		return ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	}
+	createLeader := func(sts *appsv1.StatefulSet, ord int, rev string, ready bool) {
+		t.Helper()
+		for _, obj := range makeOwnedGroupObjects(lws, sts, ord, 1, rev, "sts-"+rev, ready, ready, ready) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating leader %d on %s: %v", ord, rev, err)
+			}
+		}
+	}
+	deleteLeader := func(ord int) {
+		t.Helper()
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", lws.Name, ord), Namespace: lws.Namespace}}
+		if err := c.Delete(ctx, pod); err != nil {
+			t.Fatalf("deleting leader %d: %v", ord, err)
+		}
+	}
+	updateLWS := func(replicas int32, image string) {
+		t.Helper()
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation++
+		lws.Spec.Replicas = ptr.To(replicas)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = image
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+	}
+	expect := func(step string, sts *appsv1.StatefulSet, wantPartition int32, wantBaseline string) {
+		t.Helper()
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != wantPartition {
+			t.Fatalf("%s: partition = %d, want %d", step, got, wantPartition)
+		}
+		got, found := sts.Annotations[rolloutBaselineAnnotationKey]
+		if wantBaseline == "" && found {
+			t.Fatalf("%s: unexpected %s=%q", step, rolloutBaselineAnnotationKey, got)
+		}
+		if wantBaseline != "" && got != wantBaseline {
+			t.Fatalf("%s: %s = %q, want %q", step, rolloutBaselineAnnotationKey, got, wantBaseline)
+		}
+	}
+
+	sts := reconcileAndAck("create")
+	rev1 := revisionutils.GetRevisionKey(sts)
+	createLeader(sts, 0, rev1, true)
+	createLeader(sts, 1, rev1, true)
+
+	// Combined scale-up (2 -> 4) and template update: baseline 2, floor 1.
+	updateLWS(4, "worker:v2")
+	sts = reconcileAndAck("combined update")
+	rev2 := revisionutils.GetRevisionKey(sts)
+	expect("combined update", sts, 2, "2")
+
+	// Both additions are Ready, so both old groups are exposed.
+	createLeader(sts, 2, rev2, true)
+	createLeader(sts, 3, rev2, true)
+	sts = reconcileAndAck("additions ready")
+	expect("additions ready", sts, 0, "2")
+
+	// The old groups are replaced on rev2, but group 1 stays unready.
+	deleteLeader(0)
+	deleteLeader(1)
+	createLeader(sts, 0, rev2, true)
+	createLeader(sts, 1, rev2, false)
+	sts = reconcileAndAck("revision converged with an unready group")
+	expect("revision converged with an unready group", sts, 0, "")
+
+	// The next template update starts from a fresh baseline of 4 (floor 3).
+	// Group 1 is already unavailable, so no Ready group may be replaced.
+	updateLWS(4, "worker:v3")
+	sts = reconcileAndAck("next update")
+	expect("next update", sts, 4, "4")
+	sts = reconcileAndAck("next update, next pass")
+	expect("next update, next pass", sts, 4, "4")
+}
+
+// TestCombinedRolloutPlainScaleDownWithUnreadyGroupRecordsNoBaseline verifies
+// that a replica-only scale-down does not start a rollout baseline because a
+// surviving group is unready, including when a surge replica is kept for it.
+func TestCombinedRolloutPlainScaleDownWithUnreadyGroupRecordsNoBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		maxUnavailable, maxSurge int32
+		wantReplicas             int32
+	}{
+		{name: "maxUnavailable=1, maxSurge=0", maxUnavailable: 1, maxSurge: 0, wantReplicas: 4},
+		{name: "maxUnavailable=0, maxSurge=1 keeps a surge replica", maxUnavailable: 0, maxSurge: 1, wantReplicas: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(4).
+				Size(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						Partition:      ptr.To[int32](0),
+						MaxUnavailable: intstr.FromInt32(tc.maxUnavailable),
+						MaxSurge:       intstr.FromInt32(tc.maxSurge),
+					},
+				}).Obj()
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        lws.Name,
+					Namespace:   lws.Namespace,
+					Annotations: map[string]string{leaderworkerset.ReplicasAnnotationKey: "6"},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](6),
+					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+						Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+					},
+				},
+			}
+			var objs []client.Object
+			for i := 0; i < 6; i++ {
+				objs = append(objs, lwsStatusLeaderPod(lws, i, "rev-1", i != 1))
+			}
+			r, _ := lwsStatusNewReconciler(t, objs...)
+
+			plan, err := r.planRollingUpdate(context.Background(), lws, sts, "rev-1", false)
+			if err != nil {
+				t.Fatalf("planRollingUpdate() error = %v", err)
+			}
+			if plan.baseline != nil {
+				t.Fatalf("baseline = %d, want none for a replica-only scale-down", *plan.baseline)
+			}
+			if plan.replicas != tc.wantReplicas {
+				t.Fatalf("replicas = %d, want %d", plan.replicas, tc.wantReplicas)
+			}
+		})
+	}
+}
+
+func TestIsHashRolloutConvergedIgnoresReadiness(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").Replica(2).Size(1).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+
+	leader := func(name, revisionKey string, ready bool) *corev1.Pod {
+		pod := lwsStatusLeaderPod(lws, 0, revisionKey, ready)
+		pod.Name = name
+		pod.Labels[leaderworkerset.GroupIndexLabelKey] = name
+		return pod
+	}
+	// An exhausted group is terminated and held by finalizers while its
+	// replacement waits behind the group-replacement gate.
+	exhausted := leader("exhausted", "rev-2", true)
+	exhausted.Annotations = map[string]string{leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey: "true"}
+	exhausted.Finalizers = []string{leaderworkerset.GroupRestartBudgetCleanupFinalizer}
+	exhausted.DeletionTimestamp = ptr.To(metav1.Now())
+	converged := appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2}
+	withStatus := func(mutate func(*appsv1.DeploymentStatus)) appsv1.DeploymentStatus {
+		status := converged
+		mutate(&status)
+		return status
+	}
+
+	for _, tc := range []struct {
+		name   string
+		status appsv1.DeploymentStatus
+		pods   []client.Object
+		want   bool
+	}{
+		{
+			name:   "every leader Ready",
+			status: converged,
+			pods:   []client.Object{leader("a", "rev-2", true), leader("b", "rev-2", true)},
+			want:   true,
+		},
+		{
+			name:   "one leader unready",
+			status: withStatus(func(s *appsv1.DeploymentStatus) { s.ReadyReplicas = 1 }),
+			pods:   []client.Object{leader("a", "rev-2", true), leader("b", "rev-2", false)},
+			want:   true,
+		},
+		{
+			name:   "one group exhausted",
+			status: withStatus(func(s *appsv1.DeploymentStatus) { s.ReadyReplicas = 1 }),
+			pods:   []client.Object{leader("a", "rev-2", true), exhausted, leader("replacement", "rev-2", false)},
+			want:   true,
+		},
+		{
+			name:   "an old-revision leader is still running",
+			status: converged,
+			pods:   []client.Object{leader("a", "rev-2", true), leader("old", "rev-1", true)},
+			want:   false,
+		},
+		{
+			name:   "Deployment has not observed its generation",
+			status: withStatus(func(s *appsv1.DeploymentStatus) { s.ObservedGeneration = 1 }),
+			pods:   []client.Object{leader("a", "rev-2", true), leader("b", "rev-2", true)},
+			want:   false,
+		},
+		{
+			name:   "old ReplicaSet still has pods",
+			status: withStatus(func(s *appsv1.DeploymentStatus) { s.UpdatedReplicas = 1 }),
+			pods:   []client.Object{leader("a", "rev-2", true), leader("b", "rev-2", true)},
+			want:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       lws.Name,
+					Namespace:  lws.Namespace,
+					Generation: 2,
+					Labels:     map[string]string{leaderworkerset.RevisionKey: "rev-2"},
+				},
+				Spec:   appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)},
+				Status: tc.status,
+			}
+			pods := make([]client.Object, 0, len(tc.pods))
+			for _, pod := range tc.pods {
+				pods = append(pods, pod.DeepCopyObject().(client.Object))
+			}
+			r, _ := lwsStatusNewReconciler(t, pods...)
+			got, err := r.isHashRolloutConverged(context.Background(), lws, deploy, "rev-2")
+			if err != nil {
+				t.Fatalf("isHashRolloutConverged() error = %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("isHashRolloutConverged() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHashUnreadyGroupDoesNotLeaveBaselineForNextRollout verifies that a Hash
+// group still unready after the leader Deployment reaches the target revision
+// does not carry rollout-baseline-replicas or the widened maxUnavailable into
+// the next template update.
+func TestHashUnreadyGroupDoesNotLeaveBaselineForNextRollout(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Replica(1).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	lws.UID = "lws-hash-uid"
+	lws.Generation = 1
+
+	c, r := newCombinedTestClient(t, lws)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+	var deploy appsv1.Deployment
+
+	reconcileAndGet := func(step string) {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("%s: Reconcile() error = %v", step, err)
+		}
+		if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+			t.Fatalf("%s: reading deploy: %v", step, err)
+		}
+	}
+	updateLWS := func(replicas int32, image string) {
+		t.Helper()
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation++
+		lws.Spec.Replicas = ptr.To(replicas)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = image
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+	}
+	expect := func(step, wantBaseline string, wantMaxUnavailable int32) {
+		t.Helper()
+		got, found := deploy.Annotations[rolloutBaselineAnnotationKey]
+		if wantBaseline == "" && found {
+			t.Fatalf("%s: unexpected %s=%q", step, rolloutBaselineAnnotationKey, got)
+		}
+		if wantBaseline != "" && got != wantBaseline {
+			t.Fatalf("%s: %s = %q, want %q", step, rolloutBaselineAnnotationKey, got, wantBaseline)
+		}
+		if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != wantMaxUnavailable {
+			t.Fatalf("%s: deploy maxUnavailable = %d, want %d", step, got, wantMaxUnavailable)
+		}
+	}
+
+	reconcileAndGet("create")
+
+	// Combined scale-up (1 -> 2) and template update: baseline 1, floor 0.
+	updateLWS(2, "worker:v2")
+	reconcileAndGet("combined update")
+	expect("combined update", "1", 2)
+
+	// Every leader runs rev2, but one group is still unready.
+	rev2 := revisionutils.GetRevisionKey(&deploy)
+	deploy.Generation = 2
+	if err := c.Update(ctx, &deploy); err != nil {
+		t.Fatalf("updating deploy generation: %v", err)
+	}
+	deploy.Status = appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 1}
+	if err := c.Status().Update(ctx, &deploy); err != nil {
+		t.Fatalf("updating deploy status: %v", err)
+	}
+	for i, ready := range []bool{true, false} {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("hash-leader-%d", i),
+				Namespace: lws.Namespace,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:     lws.Name,
+					leaderworkerset.WorkerIndexLabelKey: "0",
+					leaderworkerset.GroupIndexLabelKey:  fmt.Sprintf("hash-%d", i),
+					leaderworkerset.RevisionKey:         rev2,
+				},
+			},
+		}
+		if ready {
+			pod.Status = corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			}
+		}
+		if err := c.Create(ctx, pod); err != nil {
+			t.Fatalf("creating hash leader %d: %v", i, err)
+		}
+	}
+	reconcileAndGet("revision converged with an unready group")
+	expect("revision converged with an unready group", "", 1)
+
+	// The next template update starts from a fresh baseline of 2, so the
+	// configured maxUnavailable is not widened.
+	updateLWS(2, "worker:v3")
+	reconcileAndGet("next update")
+	expect("next update", "2", 1)
+}
