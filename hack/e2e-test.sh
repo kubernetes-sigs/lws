@@ -383,6 +383,11 @@ function run_tests() {
         return
     fi
 
+    local focus_args=()
+    if [ -n "${E2E_FOCUS:-}" ]; then
+        focus_args+=(--focus "$E2E_FOCUS")
+    fi
+
     if [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
         $GINKGO --junit-report=junit.xml --json-report=fake-gpu.json \
             --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=FakeGPU "$CWD/test/e2e"
@@ -393,7 +398,7 @@ function run_tests() {
         $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --label-filter='!WorkloadAwareScheduling' --focus="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
     else
         # Run normal tests, skip gang scheduling tests
-        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --label-filter='!FakeGPU' --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
+        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade "${focus_args[@]}" --label-filter='!FakeGPU' --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
     fi
 }
 
