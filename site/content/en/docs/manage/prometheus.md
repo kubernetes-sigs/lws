@@ -66,3 +66,17 @@ metrics:
 ```
 
 The secrets must reference the cert manager generated secrets.
+
+## LWS metrics
+
+Besides the [controller-runtime metrics](https://book.kubebuilder.io/reference/metrics-reference), the LWS controller manager serves these counters on the same endpoint:
+
+| Metric | Labels | Description |
+|---|---|---|
+| `lws_group_recreations_total` | `namespace`, `name`, `reason` | Groups the pod controller recreated by deleting their leader pod. `reason` is `PodRestart` when the restart policy recreated the group after a container of the group restarted or a pod of the group was deleted, and `UpgradeSplit` when an LWS upgrade split the group across PodGroups. |
+| `lws_group_restart_budget_exhausted_total` | `namespace`, `name` | Groups terminated because they used up `maxGroupRestarts`. Such a group stays down until it is recovered explicitly. |
+| `lws_group_restart_backoffs_total` | `namespace`, `name` | Group recreations delayed by `restartBackoff`. |
+
+`namespace` and `name` identify the LeaderWorkerSet. Its series are removed when the LeaderWorkerSet is deleted.
+
+With the ServiceMonitor that the Kustomize and Helm installations above create, Prometheus sets `namespace` to the namespace of the scraped LWS manager and keeps the LeaderWorkerSet's namespace as `exported_namespace`, unless the ServiceMonitor sets `honorLabels: true`.

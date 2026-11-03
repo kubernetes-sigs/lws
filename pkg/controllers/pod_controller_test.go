@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
@@ -1600,6 +1602,8 @@ func TestPodReconcilerRecreatesGroupSplitByUpgrade(t *testing.T) {
 			}
 			recorder := events.NewFakeRecorder(10)
 			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: recorder, SchedulerProvider: &stubSchedulerProvider{}}
+			splitRecreations := metrics.GroupRecreationsTotal.WithLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit)
+			splitRecreationsBefore := testutil.ToFloat64(splitRecreations)
 
 			result, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(leader, false))
 			if err != nil || !result.IsZero() {
@@ -1610,6 +1614,13 @@ func TestPodReconcilerRecreatesGroupSplitByUpgrade(t *testing.T) {
 				if strings.Contains(event, "RecreateGroup") {
 					recreateEvents = append(recreateEvents, event)
 				}
+			}
+			wantSplitRecreations := 0.0
+			if tc.wantRecreate {
+				wantSplitRecreations = 1
+			}
+			if got := testutil.ToFloat64(splitRecreations) - splitRecreationsBefore; got != wantSplitRecreations {
+				t.Errorf("lws_group_recreations_total{reason=%q} increased by %v, want %v", metrics.GroupRecreateReasonUpgradeSplit, got, wantSplitRecreations)
 			}
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &corev1.Pod{})
 			if !tc.wantRecreate {
