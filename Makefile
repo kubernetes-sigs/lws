@@ -187,7 +187,15 @@ vet: ## Run go vet against code.
 .PHONY: test
 test: manifests fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... -coverprofile  $(ARTIFACTS)/cover.out
+	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... ./test/disaggregatedset_harness/... -coverprofile  $(ARTIFACTS)/cover.out
+
+.PHONY: disaggset-test-harness-small
+disaggset-test-harness-small: ## Run the small DisaggregatedSet harness in an isolated kind cluster.
+	./test/disaggregatedset_harness/run.sh all --auto
+
+.PHONY: disaggset-test-harness-large
+disaggset-test-harness-large: ## Run the large DisaggregatedSet harness in an isolated kind cluster.
+	./test/disaggregatedset_harness/run.sh large-all --auto
 
 KIND = $(shell pwd)/bin/kind
 .PHONY: kind
