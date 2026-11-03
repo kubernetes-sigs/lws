@@ -16,6 +16,9 @@ import (
 // The overlay accesses private planner symbols, so unit CI must compile it
 // against this checkout, not just verify a synthetic overlay's JSON mapping.
 func TestObserverOverlayAgainstRepository(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required to prepare observer overlays")
+	}
 	root, err := filepath.Abs("../..")
 	require.NoError(t, err)
 	prepare, err := filepath.Abs("observer/prepare.sh")
