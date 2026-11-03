@@ -405,7 +405,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	if err := setControllerReferenceWithStatefulSet(&pod, statefulSet, r.Scheme); err != nil {
 		log.Error(err, "Setting controller reference.")
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, err
 	}
 
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(statefulSet)

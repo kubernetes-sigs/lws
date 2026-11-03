@@ -60,10 +60,6 @@ func fromFile(path string, scheme *runtime.Scheme, cfg *configapi.Configuration)
 func addTo(o *ctrl.Options, cfg *configapi.Configuration) {
 	addLeaderElectionTo(o, cfg)
 
-	if o.Metrics.BindAddress == "" && cfg.Metrics.BindAddress != "" {
-		o.Metrics.BindAddress = cfg.Metrics.BindAddress
-	}
-
 	if o.HealthProbeBindAddress == "" && cfg.Health.HealthProbeBindAddress != "" {
 		o.HealthProbeBindAddress = cfg.Health.HealthProbeBindAddress
 	}
@@ -75,9 +71,6 @@ func addTo(o *ctrl.Options, cfg *configapi.Configuration) {
 	if o.LivenessEndpointName == "" && cfg.Health.LivenessEndpointName != "" {
 		o.LivenessEndpointName = cfg.Health.LivenessEndpointName
 	}
-
-	// Webhook server is NOT set here anymore.
-	// It is set in AddWebhookSettingsTo() after TLS is parsed.
 }
 
 // AddWebhookSettingsTo builds and sets the WebhookServer on the options,
@@ -115,10 +108,6 @@ func addLeaderElectionTo(o *ctrl.Options, cfg *configapi.Configuration) {
 
 	if o.LeaderElectionResourceLock == "" && cfg.LeaderElection.ResourceLock != "" {
 		o.LeaderElectionResourceLock = cfg.LeaderElection.ResourceLock
-	}
-
-	if o.LeaderElectionNamespace == "" && cfg.LeaderElection.ResourceNamespace != "" {
-		o.LeaderElectionNamespace = cfg.LeaderElection.ResourceNamespace
 	}
 
 	if o.LeaderElectionID == "" && cfg.LeaderElection.ResourceName != "" {

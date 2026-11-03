@@ -36,7 +36,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	configapi "sigs.k8s.io/lws/api/config/v1"
@@ -197,12 +196,9 @@ webhook:
 	// defaultControlOptions no longer includes WebhookServer because Load() does not
 	// set it anymore. WebhookServer is now set by AddWebhookSettingsTo() after TLS parsing.
 	defaultControlOptions := ctrl.Options{
-		HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
-		ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
-		LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
-		Metrics: metricsserver.Options{
-			BindAddress: configapi.DefaultMetricsBindAddress,
-		},
+		HealthProbeBindAddress:     configapi.DefaultHealthProbeBindAddress,
+		ReadinessEndpointName:      configapi.DefaultReadinessEndpoint,
+		LivenessEndpointName:       configapi.DefaultLivenessEndpoint,
 		LeaderElection:             true,
 		LeaderElectionID:           configapi.DefaultLeaderElectionID,
 		LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
@@ -254,12 +250,9 @@ webhook:
 				ClientConnection:       defaultClientConnection,
 			},
 			wantOptions: ctrl.Options{
-				HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
-				ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
-				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
-				Metrics: metricsserver.Options{
-					BindAddress: configapi.DefaultMetricsBindAddress,
-				},
+				HealthProbeBindAddress:     configapi.DefaultHealthProbeBindAddress,
+				ReadinessEndpointName:      configapi.DefaultReadinessEndpoint,
+				LivenessEndpointName:       configapi.DefaultLivenessEndpoint,
 				LeaderElection:             true,
 				LeaderElectionID:           configapi.DefaultLeaderElectionID,
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
@@ -291,12 +284,9 @@ webhook:
 				ClientConnection:       defaultClientConnection,
 			},
 			wantOptions: ctrl.Options{
-				HealthProbeBindAddress: ":38081",
-				ReadinessEndpointName:  "test",
-				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
-				Metrics: metricsserver.Options{
-					BindAddress: ":38080",
-				},
+				HealthProbeBindAddress:     ":38081",
+				ReadinessEndpointName:      "test",
+				LivenessEndpointName:       configapi.DefaultLivenessEndpoint,
 				LeaderElection:             true,
 				LeaderElectionID:           "test-id",
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
@@ -351,12 +341,9 @@ webhook:
 				ClientConnection:       defaultClientConnection,
 			},
 			wantOptions: ctrl.Options{
-				HealthProbeBindAddress: configapi.DefaultHealthProbeBindAddress,
-				ReadinessEndpointName:  configapi.DefaultReadinessEndpoint,
-				LivenessEndpointName:   configapi.DefaultLivenessEndpoint,
-				Metrics: metricsserver.Options{
-					BindAddress: configapi.DefaultMetricsBindAddress,
-				},
+				HealthProbeBindAddress:     configapi.DefaultHealthProbeBindAddress,
+				ReadinessEndpointName:      configapi.DefaultReadinessEndpoint,
+				LivenessEndpointName:       configapi.DefaultLivenessEndpoint,
 				LeaderElectionID:           configapi.DefaultLeaderElectionID,
 				LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
 				LeaseDuration:              ptr.To(defaultLeaderElectionLeaseDuration),

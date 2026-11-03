@@ -191,6 +191,7 @@ func main() {
 
 	if err := controllers.SetupIndexes(mgr.GetFieldIndexer()); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
+		os.Exit(1)
 	}
 	if cfg.GangSchedulingManagement != nil &&
 		cfg.GangSchedulingManagement.SchedulerProvider != nil &&
@@ -377,7 +378,7 @@ func apply(configFile string,
 		options.LeaderElectionID = leaderElectionID
 	}
 
-	// 1. LWS Pattern: Parse the TLS config first
+	// Parse TLS options from the configuration.
 	var parsedTLSConfig *config.TLS
 	if cfg.TLS != nil { // Note: cfg.TLS, not cfg.Webhook.TLS
 		var err error
@@ -398,7 +399,7 @@ func apply(configFile string,
 
 	serverTLSOpts := []func(*tls.Config){disableHTTP2}
 
-	// 3. LWS Pattern: Build and apply parsed TLS configuration from config
+	// Append TLS options parsed from the configuration.
 	if parsedTLSConfig != nil {
 		tlsOpts := config.BuildTLSOptions(parsedTLSConfig)
 		serverTLSOpts = append(serverTLSOpts, tlsOpts...)
@@ -425,11 +426,6 @@ func apply(configFile string,
 		return options, cfg, fmt.Errorf("unable to configure manager cache options: %w", err)
 	}
 
-	//// 5. Inject into Webhook Server
-	//options.WebhookServer = webhook.NewServer(webhook.Options{
-	//	TLSOpts: serverTLSOpts,
-	//	CertDir: cfg.Webhook.CertDir,
-	//})
 	config.AddWebhookSettingsTo(&options, &cfg, serverTLSOpts)
 
 	setupLog.Info("Successfully loaded configuration", "config", cfgStr)
