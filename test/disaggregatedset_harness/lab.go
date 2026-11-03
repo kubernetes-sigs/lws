@@ -585,33 +585,71 @@ func (l *Lab) Update(u Update) {
 
 func (l *Lab) Release(version, role string, count int, s *Snapshot) {
 	defer l.action("release", nil, Object{"version": version, "role": role, "count": count}, nil)()
-	state := Snapshot{}
-	if s == nil {
-		state = l.Snapshot()
-	} else {
-		state = *s
-	}
-	groups := Groups(state, version, role)
-	sort.SliceStable(groups, func(i, j int) bool {
-		a, b := allPods(groups[i], Ready), allPods(groups[j], Ready)
-		if a != b {
-			return a
+	deadline := l.clock.Now().Add(180 * time.Second)
+	var selected map[string]bool
+	for {
+		abort(l.ctx.Err())
+		abort(l.observerError())
+		state := Snapshot{}
+		if s == nil {
+			state = l.Snapshot()
+		} else {
+			state = *s
 		}
-		return name(groups[i][0]) < name(groups[j][0])
-	})
-	if count >= 0 && count < len(groups) {
-		groups = groups[:count]
-	}
-	for _, g := range groups {
-		for _, p := range g {
-			l.releasePod(p)
+		groups := Groups(state, version, role)
+		sizes := map[string]int{}
+		for _, lws := range state.LWS {
+			sizes[name(lws)] = integer(at(lws, "spec", "leaderWorkerTemplate", "size"), 1)
 		}
+		whole := func(g []Object) bool { return len(g) == sizes[label(g[0], LWSLabel)] }
+		if selected == nil && (count < 0 || len(groups) >= count || s != nil) {
+			sort.SliceStable(groups, func(i, j int) bool {
+				a := whole(groups[i]) && allPods(groups[i], Ready)
+				b := whole(groups[j]) && allPods(groups[j], Ready)
+				if a != b {
+					return a
+				}
+				return name(groups[i][0]) < name(groups[j][0])
+			})
+			if count >= 0 && count < len(groups) {
+				groups = groups[:count]
+			}
+			// A one-shot release must not admit later rollout groups on retry.
+			selected = map[string]bool{}
+			for _, g := range groups {
+				selected[groupKey(g[0])] = true
+			}
+		}
+		complete, found := selected != nil, 0
+		for _, g := range groups {
+			if !selected[groupKey(g[0])] {
+				continue
+			}
+			found++
+			complete = complete && whole(g)
+			for _, p := range g {
+				if !l.releasePod(p) {
+					complete = false
+				}
+			}
+		}
+		// Polling ticks remain best effort; staged releases wait for open gates.
+		if s != nil || complete && found == len(selected) {
+			return
+		}
+		if !l.clock.Now().Before(deadline) {
+			abort(fmt.Errorf("timeout releasing readiness gates for %s/%s", version, role))
+		}
+		l.Sleep(time.Second)
 	}
 }
 
-func (l *Lab) releasePod(p Object) {
-	if Ready(p) || at(p, "status", "phase") != "Running" {
-		return
+func (l *Lab) releasePod(p Object) (released bool) {
+	if Ready(p) {
+		return true
+	}
+	if at(p, "status", "phase") != "Running" {
+		return false
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -622,6 +660,7 @@ func (l *Lab) releasePod(p Object) {
 		}
 	}()
 	l.K("-n", Namespace, "exec", name(p), "-c", "demo", "--", "touch", "/tmp/ready")
+	return true
 }
 
 func (l *Lab) Counts(s Snapshot, v string) map[string]Counts {

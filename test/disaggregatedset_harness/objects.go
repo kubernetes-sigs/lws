@@ -150,13 +150,17 @@ func Pods(s Snapshot, version, role string) []Object {
 	return out
 }
 
+func groupKey(p Object) string {
+	if key := label(p, GroupLabel); key != "" {
+		return key
+	}
+	return label(p, LWSLabel) + ":" + label(p, "leaderworkerset.sigs.k8s.io/group-index")
+}
+
 func Groups(s Snapshot, version, role string) [][]Object {
 	groups := map[string][]Object{}
 	for _, p := range Pods(s, version, role) {
-		k := label(p, GroupLabel)
-		if k == "" {
-			k = label(p, LWSLabel) + ":" + label(p, "leaderworkerset.sigs.k8s.io/group-index")
-		}
+		k := groupKey(p)
 		groups[k] = append(groups[k], p)
 	}
 	out := [][]Object{}

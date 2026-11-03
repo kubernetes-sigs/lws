@@ -327,6 +327,84 @@ func TestReleaseCountsExistingReadyFirst(t *testing.T) {
 	require.Len(t, e.calls, 1)
 	require.Contains(t, e.calls[0].args, name(s.Pods[1]))
 	require.Equal(t, []string{"--kubeconfig", l.Options.Kubeconfig, "--context", l.Options.Context}, e.calls[0].args[:4], "ambient context used")
+
+	// A Ready leader alone must not displace a complete Ready group in the selection.
+	s = fleet(map[string]map[string]Counts{
+		"B": {"prefill": {Spec: 2, Ready: 2, Scheduled: 2}},
+	}, 2)
+	s.Pods = append(s.Pods[:1], s.Pods[2:]...)
+	e.calls = nil
+	e.run = func(c command) ([]byte, []byte, error) {
+		require.NotContains(t, c.args, "exec", "one complete group is already Ready")
+		return []byte(jsonText(Object{"kind": "List", "items": append(s.LWS, s.Pods...)})), nil, nil
+	}
+	require.NoError(t, catch(func() { l.Release("B", "prefill", 1, nil) }))
+	require.Len(t, e.calls, 1, "must not wait on or release the partial group")
+}
+
+func TestOneShotReleaseRetriesOnlySelectedCompleteGroups(t *testing.T) {
+	for _, count := range []int{1, -1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			base := fleet(map[string]map[string]Counts{
+				"B": {"prefill": {Spec: 2, Scheduled: 2}},
+			}, 2)
+			reads, attempts := 0, 0
+			opened := []string{}
+			e := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+				if i := slices.Index(c.args, "exec"); i >= 0 {
+					attempts++
+					if attempts == 1 {
+						return nil, []byte("container is not running"), fmt.Errorf("exit 1")
+					}
+					opened = append(opened, c.args[i+1])
+					return nil, nil, nil
+				}
+				reads++
+				s := copySnapshot(base)
+				switch reads {
+				case 1:
+					// The selected group is assigned, but Pending and missing its worker.
+					s.Pods = s.Pods[:1]
+					obj(s.Pods[0]["status"])["phase"] = "Pending"
+				case 2:
+					// A new group sorts before the selected group; it must remain closed.
+					s.Pods = append(s.Pods[:1], s.Pods[2:]...)
+					obj(s.Pods[1]["metadata"])["name"] = "a-later-group"
+				default:
+					obj(s.Pods[2]["metadata"])["name"] = "a-later-group"
+				}
+				return []byte(jsonText(Object{"kind": "List", "items": append(s.LWS, s.Pods...)})), nil, nil
+			}}
+			l := testLab(t, e)
+			require.NoError(t, catch(func() { l.Release("B", "prefill", count, nil) }))
+			require.Equal(t, 3, reads)
+			require.Equal(t, []string{name(base.Pods[0]), name(base.Pods[1])}, opened)
+		})
+	}
+}
+
+func TestReleasePendingIsBoundedAndTicksDoNotWait(t *testing.T) {
+	s := fleet(map[string]map[string]Counts{
+		"B": {"prefill": {Spec: 1, Scheduled: 1}},
+	}, 1)
+	obj(s.Pods[0]["status"])["phase"] = "Pending"
+	e := &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+		require.NotContains(t, c.args, "exec", "Pending Pod must not be exec'd")
+		return []byte(jsonText(Object{"kind": "List", "items": append(s.LWS, s.Pods...)})), nil, nil
+	}}
+	l := testLab(t, e)
+	start := l.clock.Now()
+	require.NoError(t, catch(func() { l.Release("B", "prefill", 1, &s) }))
+	require.Empty(t, e.calls, "tick must not acquire or wait for another snapshot")
+	require.Equal(t, start, l.clock.Now())
+	require.ErrorContains(t, catch(func() { l.Release("B", "prefill", 1, nil) }), "timeout releasing readiness gates")
+	require.Equal(t, 180*time.Second, l.clock.Now().Sub(start))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	l.ctx = ctx
+	before := len(e.calls)
+	require.ErrorIs(t, catch(func() { l.Release("B", "prefill", 1, nil) }), context.Canceled)
+	require.Len(t, e.calls, before, "cancelled release must not acquire a snapshot")
 }
 
 func TestUpdateExternalOnlyChangesReplicaSource(t *testing.T) {
