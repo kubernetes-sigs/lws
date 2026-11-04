@@ -137,7 +137,8 @@ func TestLauncherCleanupRequiresConfirmedOwnershipOrAbsence(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			root := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(root, "owner"), []byte("owned-token\n"), 0600))
-			testExecutable(t, root, "docker", `case "$1" in
+			testExecutable(t, root, "docker", `printf '%s\n' "$*" >> "$RUN_DIR/docker-calls"
+case "$1" in
   ps)
     case "$TEST_MODE" in
       list-error) exit 1 ;;
@@ -183,6 +184,12 @@ esac
 			require.Equal(t, tc.succeeded, err == nil, "cleanup: %s, %v", output, err)
 			_, statErr := os.Stat(filepath.Join(root, "kind-called"))
 			require.Equal(t, tc.deleted, statErr == nil, "kind deletion: %s", output)
+			calls, err := os.ReadFile(filepath.Join(root, "docker-calls"))
+			require.NoError(t, err)
+			require.True(t, strings.HasPrefix(string(calls), "ps -a --no-trunc --filter label=io.x-k8s.kind.cluster=owned-cluster --format {{.ID}}\n"), "cleanup did not first list all matching nodes: %s", calls)
+			if tc.mode == "absent" {
+				require.NotContains(t, string(calls), "inspect", "confirmed absence must not inspect a missing node")
+			}
 			result, err := os.ReadFile(filepath.Join(root, "runtime-result.json"))
 			require.NoError(t, err)
 			var recorded struct{ ExitCode int }
