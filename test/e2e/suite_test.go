@@ -35,10 +35,13 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	dsv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
@@ -89,6 +92,11 @@ var _ = BeforeSuite(func() {
 	}
 	if schedulerProvider == schedulerprovider.Kubernetes {
 		Expect(schedulingv1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+	}
+	if os.Getenv("USE_FAKE_GPU_OPERATOR") == "true" {
+		Expect(computedomain.AddToScheme(scheme.Scheme)).To(Succeed())
+		Expect(dsv1.AddToScheme(scheme.Scheme)).To(Succeed())
+		Expect(resourcev1.AddToScheme(scheme.Scheme)).To(Succeed())
 	}
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})

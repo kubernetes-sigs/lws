@@ -216,6 +216,11 @@ test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
 test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 	E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GINKGO=$(GINKGO) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS) ./hack/e2e-test.sh
 
+.PHONY: test-e2e-fake-gpu
+test-e2e-fake-gpu: KIND_CLUSTER_NAME = lws-fake-gpu
+test-e2e-fake-gpu: helm ## Run E2E tests with fake GPUs on CPU-only Kind nodes.
+	$(MAKE) test-e2e USE_FAKE_GPU_OPERATOR=true KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME)
+
 .PHONY: test-e2e-upgrade
 test-e2e-upgrade: test-e2e-upgrade-manifests
 
