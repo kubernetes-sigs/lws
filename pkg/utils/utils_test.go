@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"os"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -216,9 +217,29 @@ func Test_NonZeroValue(t *testing.T) {
 }
 
 func Test_GetOperatorNamespace(t *testing.T) {
-	// Outside a pod there is no service account namespace file, so the default
-	// namespace is returned.
-	if got := GetOperatorNamespace(); got != defaultNamespace {
-		t.Errorf("GetOperatorNamespace() = %s, want %s", got, defaultNamespace)
+	for name, tc := range map[string]struct {
+		content *string
+		want    string
+	}{
+		"file present":    {ptr.To("custom-ns\n"), "custom-ns"},
+		"file whitespace": {ptr.To("  \n"), "lws-system"},
+		"file missing":    {nil, "lws-system"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := t.TempDir() + "/namespace"
+			if tc.content != nil {
+				if err := os.WriteFile(path, []byte(*tc.content), 0o600); err != nil {
+					t.Fatalf("failed to write temp file: %v", err)
+				}
+			}
+			// Override the path for this test
+			old := serviceAccountNamespaceFile
+			serviceAccountNamespaceFile = path
+			t.Cleanup(func() { serviceAccountNamespaceFile = old })
+
+			if got := GetOperatorNamespace(); got != tc.want {
+				t.Errorf("GetOperatorNamespace() = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
