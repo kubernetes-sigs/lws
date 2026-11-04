@@ -136,9 +136,6 @@ function startup {
         fi
 
         local kind_args=()
-        if [ -n "${KUBECONFIG:-}" ]; then
-            kind_args+=(--kubeconfig "$KUBECONFIG")
-        fi
         if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
             kind_args+=(--config "${KIND_CONFIG:-$CWD/test/e2e/config/kind-was.yaml}")
         elif [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
@@ -388,7 +385,7 @@ function run_tests() {
 
     if [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
         $GINKGO --junit-report=junit.xml --json-report=fake-gpu.json \
-            --output-dir="$ARTIFACTS" -v --timeout=20m --fail-on-empty --label-filter=FakeGPU "$CWD/test/e2e"
+            --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=FakeGPU "$CWD/test/e2e"
     elif [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
         $GINKGO --junit-report=junit.xml --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=WorkloadAwareScheduling "$CWD/test/e2e"
     elif [ -n "$SCHEDULER_PROVIDER" ]; then

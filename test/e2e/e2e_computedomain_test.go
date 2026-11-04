@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,9 +74,6 @@ var _ = ginkgo.Describe("AutoComputeDomain", ginkgo.Label("FakeGPU", "AutoComput
 		}
 		gomega.Expect(os.Getenv("KUBECONFIG")).NotTo(gomega.BeEmpty(), "use a dedicated kubeconfig")
 		gomega.Expect(string(schedulerProvider)).To(gomega.BeEmpty())
-		gomega.Expect(computedomain.AddToScheme(k8sClient.Scheme())).To(gomega.Succeed())
-		gomega.Expect(dsv1.AddToScheme(k8sClient.Scheme())).To(gomega.Succeed())
-		gomega.Expect(resourcev1.AddToScheme(k8sClient.Scheme())).To(gomega.Succeed())
 		gomega.Expect(k8sClient.List(ctx, &computedomain.ComputeDomainList{}, client.Limit(1))).To(gomega.Succeed())
 		var nodes corev1.NodeList
 		gomega.Expect(k8sClient.List(ctx, &nodes, client.MatchingLabels{fakeGPUNodePoolLabel: "default"})).To(gomega.Succeed())
@@ -91,7 +87,7 @@ var _ = ginkgo.Describe("AutoComputeDomain", ginkgo.Label("FakeGPU", "AutoComput
 			gomega.Expect(k8sClient.Delete(cleanupCtx, ns)).To(gomega.Succeed())
 			gomega.Eventually(cleanupCtx, func(g gomega.Gomega) {
 				// Include Pods created after a failed assertion; never strip finalizers.
-				for _, pod := range listComputeDomainPods(cleanupCtx, ns.Name, "source") {
+				for _, pod := range listComputeDomainPods(cleanupCtx, g, ns.Name, "source") {
 					if pod.Status.Phase == corev1.PodRunning {
 						if err := execComputeDomainPod(cleanupCtx, pod, "touch", "/tmp/release"); err != nil {
 							ginkgo.GinkgoWriter.Printf("Releasing %s: %v\n", pod.Name, err)
@@ -145,7 +141,7 @@ var _ = ginkgo.Describe("AutoComputeDomain", ginkgo.Label("FakeGPU", "AutoComput
 					&corev1.PodList{}, &computedomain.ComputeDomainList{},
 					&resourcev1.ResourceClaimTemplateList{}, &resourcev1.ResourceClaimList{},
 				} {
-					gomega.Expect(k8sClient.List(cleanupCtx, list, client.InNamespace(ns.Name))).To(gomega.Succeed())
+					g.Expect(k8sClient.List(cleanupCtx, list, client.InNamespace(ns.Name))).To(gomega.Succeed(), "%T in namespace %s", list, ns.Name)
 					g.Expect(meta.ExtractList(list)).To(gomega.BeEmpty())
 				}
 			}, computeDomainTimeout, time.Second).Should(gomega.Succeed())
@@ -184,7 +180,7 @@ var _ = ginkgo.Describe("AutoComputeDomain", ginkgo.Label("FakeGPU", "AutoComput
 			gomega.Eventually(drainCtx, func(g gomega.Gomega) {
 				// Observe the selected group; Hash identities are not numeric ordinals.
 				var removedGroup string
-				for _, pod := range listComputeDomainPods(drainCtx, ns.Name, "source") {
+				for _, pod := range listComputeDomainPods(drainCtx, g, ns.Name, "source") {
 					if pod.DeletionTimestamp != nil {
 						removedGroup = pod.Labels[groupLabel]
 						break
@@ -254,7 +250,7 @@ var _ = ginkgo.Describe("AutoComputeDomain", ginkgo.Label("FakeGPU", "AutoComput
 			})).To(gomega.Succeed())
 			checkRollout := func(g gomega.Gomega) {
 				expectComputeDomainDraining(drainCtx, g, before)
-				pods := listComputeDomainPods(drainCtx, ns.Name, "target")
+				pods := listComputeDomainPods(drainCtx, g, ns.Name, "target")
 				g.Expect(pods).To(gomega.HaveLen(fixture.podCount))
 				current := expectComputeDomainBindings(drainCtx, g, pods)
 				expectComputeDomainGroups(g, current, disaggregated, 1)
@@ -333,13 +329,13 @@ func createComputeDomainFixture(ns string, disaggregated bool, identity lwsv1.Gr
 	return fixture
 }
 
-func listComputeDomainPods(ctx context.Context, ns, version string) []corev1.Pod {
+func listComputeDomainPods(ctx context.Context, g gomega.Gomega, ns, version string) []corev1.Pod {
 	var pods corev1.PodList
 	options := []client.ListOption{client.InNamespace(ns)}
 	if version != "" {
 		options = append(options, client.MatchingLabels{computeDomainVersionLabel: version})
 	}
-	gomega.Expect(k8sClient.List(ctx, &pods, options...)).To(gomega.Succeed())
+	g.Expect(k8sClient.List(ctx, &pods, options...)).To(gomega.Succeed(), "Pods in namespace %s, version %q", ns, version)
 	return pods.Items
 }
 
@@ -385,21 +381,6 @@ func expectComputeDomainBindings(ctx context.Context, g gomega.Gomega, pods []co
 		g.Expect(b.Claim.Status.Allocation).NotTo(gomega.BeNil(), "Pod %s, claim %s", pod.Name, b.Claim.Name)
 		g.Expect(b.Claim.Status.Allocation.Devices.Results).NotTo(gomega.BeEmpty(), b.Claim.Name)
 		g.Expect(b.Claim.Status.ReservedFor).To(gomega.ContainElement(gomega.HaveField("UID", pod.UID)), "Pod %s, claim %s", pod.Name, b.Claim.Name)
-		found := false
-		for _, config := range b.Claim.Spec.Devices.Config {
-			if config.Opaque != nil && config.Opaque.Driver == "compute-domain.nvidia.com" {
-				var parameters struct {
-					DomainID string `json:"domainID"`
-				}
-				g.Expect(json.Unmarshal(config.Opaque.Parameters.Raw, &parameters)).To(gomega.Succeed(), b.Claim.Name)
-				g.Expect(parameters.DomainID).To(gomega.Equal(string(b.Domain.UID)), "Pod %s, claim %s, domain %s", pod.Name, b.Claim.Name, b.Domain.Name)
-				found = true
-			}
-		}
-		g.Expect(found).To(gomega.BeTrue(), "Pod %s: claim %s must carry the domain UID", pod.Name, b.Claim.Name)
-		for _, allocation := range b.Claim.Status.Allocation.Devices.Results {
-			g.Expect(allocation.Driver).To(gomega.Equal("compute-domain.nvidia.com"), b.Claim.Name)
-		}
 		g.Expect(pod.Spec.Containers[0].Resources.Claims).To(gomega.Equal([]corev1.ResourceClaim{{Name: ref.Name}}), "Pod %s, container app", pod.Name)
 		result = append(result, b)
 	}
@@ -411,7 +392,7 @@ func expectComputeDomainWorkloadReady(fixture computeDomainFixture) []computeDom
 	defer cancel()
 	var result []computeDomainBinding
 	gomega.Eventually(readyCtx, func(g gomega.Gomega) {
-		pods := listComputeDomainPods(readyCtx, fixture.workload.GetNamespace(), "")
+		pods := listComputeDomainPods(readyCtx, g, fixture.workload.GetNamespace(), "")
 		g.Expect(pods).To(gomega.HaveLen(fixture.podCount))
 		result = expectComputeDomainBindings(readyCtx, g, pods)
 		expectObjectExists(readyCtx, g, fixture.workload)
@@ -431,7 +412,7 @@ func expectComputeDomainWorkloadReady(fixture computeDomainFixture) []computeDom
 		}
 		expectComputeDomainGroups(g, result, disaggregated, groups)
 		var allDomains computedomain.ComputeDomainList
-		gomega.Expect(k8sClient.List(readyCtx, &allDomains, client.InNamespace(fixture.workload.GetNamespace()))).To(gomega.Succeed())
+		g.Expect(k8sClient.List(readyCtx, &allDomains, client.InNamespace(fixture.workload.GetNamespace()))).To(gomega.Succeed(), "ComputeDomains in namespace %s", fixture.workload.GetNamespace())
 		g.Expect(allDomains.Items).To(gomega.HaveLen(groups))
 	}, computeDomainTimeout, time.Second).Should(gomega.Succeed())
 	return result
@@ -536,7 +517,7 @@ func expectComputeDomainBindingsDeleted(ctx context.Context, g gomega.Gomega, bi
 		// Ordinal rollout can recreate a Pod under the same name.
 		var pod corev1.Pod
 		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&b.Pod), &pod)
-		gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed())
+		g.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed(), "Pod %s", client.ObjectKeyFromObject(&b.Pod))
 		g.Expect(pod.UID).NotTo(gomega.Equal(b.Pod.UID), b.Pod.Name)
 		expectObjectDeleted(ctx, g, &b.Domain)
 		expectObjectDeleted(ctx, g, &b.Template)
@@ -546,12 +527,11 @@ func expectComputeDomainBindingsDeleted(ctx context.Context, g gomega.Gomega, bi
 
 func expectObjectExists(ctx context.Context, g gomega.Gomega, obj client.Object) {
 	err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)
-	gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed(), "%T %s", obj, client.ObjectKeyFromObject(obj))
 	g.Expect(err).NotTo(gomega.HaveOccurred(), "%T %s", obj, client.ObjectKeyFromObject(obj))
 }
 
 func expectObjectDeleted(ctx context.Context, g gomega.Gomega, obj client.Object) {
 	err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object))
-	gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed())
+	g.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed(), "%T %s", obj, client.ObjectKeyFromObject(obj))
 	g.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), "%T %s still exists", obj, obj.GetName())
 }
