@@ -63,6 +63,7 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 
 	t.Run("creates one podgroup per leader pod", func(t *testing.T) {
 		lws := volcanoScheduledLWS()
+		lws.Annotations[VolcanoNetworkTopologyTierAnnotationKey] = "1"
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		provider := NewVolcanoProvider(fakeClient)
 
@@ -78,6 +79,9 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 
 			assert.Equal(t, *lws.Spec.LeaderWorkerTemplate.Size, pg.Spec.MinMember)
 			assert.Equal(t, "research", pg.Spec.Queue)
+			assert.Equal(t, &volcanov1beta1.NetworkTopologySpec{
+				Mode: volcanov1beta1.HardNetworkTopologyMode, HighestTierAllowed: ptr.To(1),
+			}, pg.Spec.NetworkTopology)
 			assert.Equal(t, map[string]string{
 				leaderworkerset.SetNameLabelKey:    lws.Name,
 				leaderworkerset.GroupIndexLabelKey: index,
@@ -87,7 +91,8 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 			// name lives under scheduling.volcano.sh/ and is copied into the
 			// spec instead.
 			assert.Equal(t, map[string]string{
-				"volcano.sh/task-spec": "leader",
+				"volcano.sh/task-spec":                  "leader",
+				VolcanoNetworkTopologyTierAnnotationKey: "1",
 			}, pg.Annotations)
 
 			owner := metav1.GetControllerOf(&pg)
@@ -100,6 +105,7 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 	t.Run("is a no-op without spec.scheduling", func(t *testing.T) {
 		lws := volcanoScheduledLWS()
 		lws.Spec.Scheduling = nil
+		lws.Annotations[VolcanoNetworkTopologyTierAnnotationKey] = "rack"
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 		require.NoError(t, NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "rev1"))
@@ -107,6 +113,17 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 		var list volcanov1beta1.PodGroupList
 		require.NoError(t, fakeClient.List(ctx, &list))
 		assert.Empty(t, list.Items)
+	})
+
+	t.Run("rejects invalid topology", func(t *testing.T) {
+		lws := volcanoScheduledLWS()
+		lws.Annotations[VolcanoNetworkTopologyTierAnnotationKey] = "rack"
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		err := NewVolcanoProvider(fakeClient).ReconcileScheduling(ctx, lws, 2, "rev1")
+		var reconcileErr *ReconcileError
+		require.ErrorAs(t, err, &reconcileErr)
+		assert.Equal(t, ReasonInvalidSchedulingConfiguration, reconcileErr.Reason)
 	})
 
 	t.Run("is idempotent", func(t *testing.T) {
