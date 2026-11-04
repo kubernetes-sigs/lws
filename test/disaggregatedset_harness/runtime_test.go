@@ -426,30 +426,55 @@ func TestWaitRecordsEffectiveDefaults(t *testing.T) {
 }
 
 func TestEvidenceActionContract(t *testing.T) {
-	l := testLab(t, &fakeExecutor{})
+	state := fleet(map[string]map[string]Counts{
+		"A": {"prefill": {Spec: 2, Scheduled: 2}},
+	}, 1)
+	state.DS["spec"] = Object{"roles": []any{RoleSpec("prefill", 2, "Hash", "A", 1, 0, 1, false)}}
+	l := testLab(t, &fakeExecutor{run: func(c command) ([]byte, []byte, error) {
+		if slices.Contains(c.args, "get") {
+			if slices.Contains(c.args, "node") {
+				return []byte(jsonText(Object{"status": Object{"allocatable": Object{Slot: "64"}}})), nil, nil
+			}
+			return []byte(jsonText(state.DS)), nil, nil
+		}
+		return nil, nil, nil
+	}})
 	e, err := NewEvidence(l.Options.RunDir, "fixture")
 	require.NoError(t, err)
 	l.evidence = e
 	e.Case(l.Case.ID())
 	require.NoError(t, catch(func() {
-		defer l.action("update", nil, Object{"replicas": 3}, nil)()
+		l.Checkpoint("Change demand", "Update replicas, keep template A.")
+		l.Update(Update{Counts: Targets{"prefill": 3}})
+		l.SetSlots(64)
+		l.Release("A", "prefill", 1, &state)
 		l.Note("Demand changed")
+		l.Assert(true, "Capacity dropped below its floor")
 	}))
 	require.NoError(t, e.Close())
 	raw, err := os.ReadFile(filepath.Join(e.directory, "actions.jsonl"))
 	require.NoError(t, err)
-	var rows []Object
+	actions := map[string][]Object{}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var row Object
 		require.NoError(t, json.Unmarshal([]byte(line), &row))
-		require.IsType(t, []any{}, row["args"])
-		require.IsType(t, map[string]any{}, row["kwargs"])
+		if row["method"] != nil {
+			require.IsType(t, []any{}, row["args"], "method %s", row["method"])
+			require.IsType(t, map[string]any{}, row["kwargs"], "method %s", row["method"])
+		}
 		require.Equal(t, l.Case.ID(), row["caseId"])
-		rows = append(rows, row)
+		kind := str(row["kind"])
+		actions[kind] = append(actions[kind], row)
 	}
-	require.Len(t, rows, 4)
-	require.Equal(t, []any{"start", "start", "end", "end"}, []any{rows[0]["phase"], rows[1]["phase"], rows[2]["phase"], rows[3]["phase"]})
-	require.Equal(t, rows[0]["id"], rows[3]["id"])
-	require.Equal(t, rows[1]["id"], rows[2]["id"])
-	require.Equal(t, rows[0]["id"], rows[1]["parentId"])
+	for _, method := range []string{"checkpoint", "update", "patch_set", "set_slots", "release", "note"} {
+		rows := actions[method]
+		require.Len(t, rows, 2, "method %s", method)
+		require.Equal(t, []any{"start", "end"}, []any{rows[0]["phase"], rows[1]["phase"]})
+		require.Equal(t, rows[0]["id"], rows[1]["id"])
+	}
+	require.Equal(t, actions["update"][0]["id"], actions["patch_set"][0]["parentId"])
+	require.Len(t, actions["assert"], 1)
+	require.Equal(t, "end", actions["assert"][0]["phase"])
+	require.Equal(t, true, actions["assert"][0]["passed"])
+	require.Equal(t, "Capacity dropped below its floor", actions["assert"][0]["message"])
 }
