@@ -585,6 +585,10 @@ func (l *Lab) Update(u Update) {
 
 func (l *Lab) Release(version, role string, count int, s *Snapshot) {
 	defer l.action("release", nil, Object{"version": version, "role": role, "count": count}, nil)()
+	l.release(version, role, count, s)
+}
+
+func (l *Lab) release(version, role string, count int, s *Snapshot) {
 	deadline := l.clock.Now().Add(180 * time.Second)
 	var selected map[string]bool
 	for {

@@ -43,7 +43,7 @@ func testExecutable(t *testing.T, directory, name, body string) {
 	require.NoError(t, os.WriteFile(filepath.Join(directory, name), []byte("#!/bin/sh\n"+body), 0700))
 }
 
-func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
+func TestLauncherUsesValidatedModeBeforeRuntimeSetup(t *testing.T) {
 	root := t.TempDir()
 	harness := filepath.Join(root, "test", "disaggregatedset_harness")
 	require.NoError(t, os.MkdirAll(harness, 0700))
@@ -52,70 +52,36 @@ func TestLauncherReadOnlySelectionSkipsRuntimeSetup(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(harness, "run.sh"), source, 0700))
 	commands := filepath.Join(root, "bin")
 	require.NoError(t, os.Mkdir(commands, 0700))
-	testExecutable(t, commands, "go", "printf '%s\\n' \"$*\"\nexit \"${TEST_GO_EXIT:-0}\"\n")
+	testExecutable(t, commands, "go", `if [ "$3" = launcher-mode ]; then
+  if [ "$TEST_MODE" = invalid ]; then echo 'Invalid selection' >&2; exit 2; fi
+  printf '%s\n' "$TEST_MODE"
+else
+  echo 'Read-only driver output'
+fi
+`)
 	testExecutable(t, commands, "docker", "echo 'Docker must not run' >&2\nexit 91\n")
 	env := []string{"PATH=" + commands + string(os.PathListSeparator) + os.Getenv("PATH"), "HARNESS_MAX_PODS=0"}
-	for _, args := range [][]string{
-		nil, {"--help"}, {"-h"}, {"-help=false"}, {"list"}, {"dry-run", "large-all"},
-		{"--list"}, {"-validate"}, {"-dry-run"}, {"large-all", "--dry-run"},
-		{"--list=true"}, {"-dry-run=1"}, {"--validate=T"}, {"--list=false", "--dry-run=true"},
+	for _, tc := range []struct {
+		mode, message string
+	}{
+		{"readonly", "Read-only driver output"},
+		{"automatic", "HARNESS_MAX_PODS must be"},
+		{"interactive", "Interactive mode needs a terminal"},
+		{"invalid", "Invalid selection"},
+		{"unexpected", "Unexpected launcher mode"},
 	} {
-		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
-		require.NoError(t, err, "selection %q: %s", args, output)
-		require.Contains(t, string(output), "run ./test/disaggregatedset_harness/cmd")
+		output, err := shell(t, root, append(env, "TEST_MODE="+tc.mode), filepath.Join(harness, "run.sh"))
+		require.Equal(t, tc.mode == "readonly", err == nil, "%s: %s", tc.mode, output)
+		require.Contains(t, string(output), tc.message)
 		require.NotContains(t, string(output), "Docker must not run")
 	}
-	for _, args := range [][]string{
-		{"ordinary", "--list=false"}, {"ordinary", "-dry-run=0"}, {"ordinary", "--validate=F"},
-		{"list", "ordinary", "--list=false"}, {"dry-run", "ordinary", "--dry-run=false"},
-		{"ordinary", "--list", "--list=false"},
-	} {
-		output, err := shell(t, root, env, append([]string{filepath.Join(harness, "run.sh")}, args...)...)
-		require.Error(t, err, "selection %q: %s", args, output)
-		require.Contains(t, string(output), "HARNESS_MAX_PODS must be")
-	}
-	output, err := shell(t, root, append(env, "TEST_GO_EXIT=2"), filepath.Join(harness, "run.sh"), "unknown")
-	require.Error(t, err, "%s", output)
-	require.Contains(t, string(output), "--validate")
 	_, err = os.Stat(filepath.Join(harness, ".state"))
-	require.ErrorIs(t, err, os.ErrNotExist, "read-only selection created runtime state")
-}
-
-func TestLauncherCheckpointModesRequireTerminalOnlyWhenInteractive(t *testing.T) {
-	root := t.TempDir()
-	testExecutable(t, root, "go", "exit 0\n")
-	for _, tool := range []string{"docker", "kubectl", "git", "jq", "tar", "kind"} {
-		testExecutable(t, root, tool, "echo 'Runtime setup reached' >&2\nexit 91\n")
-	}
-	script, err := filepath.Abs("run.sh")
-	require.NoError(t, err)
-	env := []string{
-		"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"KIND=" + filepath.Join(root, "kind"),
-		"HARNESS_MAX_PODS=160",
-	}
-	for _, tc := range []struct {
-		flags       []string
-		interactive bool
-	}{
-		{[]string{"-interactive"}, true}, {[]string{"-interactive=1"}, true},
-		{[]string{"--auto=false"}, true}, {[]string{"-auto=F"}, true},
-		{[]string{"--auto", "--interactive=true"}, true},
-		{[]string{"--auto", "--auto=false"}, true},
-		{nil, false}, {[]string{"-auto"}, false},
-		{[]string{"--interactive", "--auto=true"}, false}, {[]string{"-auto=false", "--interactive=false"}, false},
-	} {
-		args := append([]string{script, "ordinary"}, tc.flags...)
-		output, err := shell(t, root, env, args...)
-		require.Error(t, err, "flags %q: %s", tc.flags, output)
-		require.Equal(t, tc.interactive, strings.Contains(string(output), "Interactive mode needs a terminal"), "%q: %s", tc.flags, output)
-		require.Equal(t, !tc.interactive, strings.Contains(string(output), "Runtime setup reached"), "%q: %s", tc.flags, output)
-	}
+	require.ErrorIs(t, err, os.ErrNotExist, "mode selection created runtime state")
 }
 
 func TestLauncherRejectsInvalidPodCapacityBeforeDocker(t *testing.T) {
 	root := t.TempDir()
-	testExecutable(t, root, "go", "exit 0\n")
+	testExecutable(t, root, "go", "printf 'automatic\\n'\n")
 	testExecutable(t, root, "docker", "echo 'Docker must not run' >&2\nexit 91\n")
 	script, err := filepath.Abs("run.sh")
 	require.NoError(t, err)

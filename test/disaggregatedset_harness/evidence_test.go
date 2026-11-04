@@ -32,6 +32,13 @@ func TestEvidenceRetainsRawResponseOnlyOnFailure(t *testing.T) {
 			err = e.Start(t.Context(), Options{Executor: &fakeExecutor{run: func(command) ([]byte, []byte, error) {
 				return []byte(tc.stdout), []byte("kubectl warning"), tc.err
 			}}})
+			if err != nil {
+				select {
+				case <-e.done:
+				default:
+					t.Fatal("failed Start left acquisition running")
+				}
+			}
 			require.NoError(t, e.Close())
 			raw, readErr := os.ReadFile(filepath.Join(root, "film-recording", "snapshots.jsonl"))
 			require.NoError(t, readErr)

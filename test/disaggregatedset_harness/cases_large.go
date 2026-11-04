@@ -5,7 +5,6 @@ package harness
 import (
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
 	"time"
 )
@@ -91,24 +90,7 @@ func bounds(l *Lab, s Snapshot, floors, ceilings Targets, b *firstGroupBootstrap
 
 func largeRelease(l *Lab, s Snapshot, version string, targets Targets) {
 	for _, role := range keys(targets) {
-		parent, child, _ := strings.Cut(role, "/")
-		pods := []Object{}
-		for _, p := range Pods(s, version, parent) {
-			if child == "" || label(p, SubroleLabel) == child {
-				pods = append(pods, p)
-			}
-		}
-		sort.SliceStable(pods, func(i, j int) bool {
-			a, b := Ready(pods[i]), Ready(pods[j])
-			if a != b {
-				return a
-			}
-			return name(pods[i]) < name(pods[j])
-		})
-		n := min(len(pods), targets[role])
-		for _, p := range pods[:n] {
-			l.releasePod(p)
-		}
+		l.release(version, role, targets[role], &s)
 	}
 }
 
@@ -135,6 +117,7 @@ func sharedLayout(s Snapshot, version string, desired Targets) bool {
 	if len(parents) != 2 {
 		return false
 	}
+	counts := SubroleCounts(s, version, true)
 	seen := map[string]bool{}
 	for _, lws := range parents {
 		parent := label(lws, RoleLabel)
@@ -146,21 +129,15 @@ func sharedLayout(s Snapshot, version string, desired Targets) bool {
 		if str(at(lws, "metadata", "annotations", Prefix+"subrole-plan")) != "" || !sameTargets(annotatedCounts(lws), wanted) || integer(at(lws, "spec", "replicas")) != totalTargets(wanted) {
 			return false
 		}
+		if integer(at(lws, "spec", "leaderWorkerTemplate", "size"), 1) != 1 {
+			return false
+		}
 		groups := Groups(s, version, parent)
 		if len(groups) != totalTargets(wanted) {
 			return false
 		}
 		for child, n := range wanted {
-			found := 0
-			for _, g := range groups {
-				if allPods(g, func(p Object) bool { return label(p, SubroleLabel) == child }) {
-					if len(g) != 1 || !Ready(g[0]) {
-						return false
-					}
-					found++
-				}
-			}
-			if found != n {
+			if counts[parent+"/"+child].Ready != n {
 				return false
 			}
 		}
