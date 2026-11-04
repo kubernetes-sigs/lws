@@ -101,6 +101,11 @@ func TestClearLeaderWorkerSet(t *testing.T) {
 func TestRegister(t *testing.T) {
 	resetAll(t)
 	Register()
+	t.Cleanup(func() {
+		metrics.Registry.Unregister(GroupRecreationsTotal)
+		metrics.Registry.Unregister(GroupRestartBudgetExhaustedTotal)
+		metrics.Registry.Unregister(GroupRestartBackoffsTotal)
+	})
 
 	GroupRecreated("ns", "lws", GroupRecreateReasonPodRestart)
 	GroupRestartBudgetExhausted("ns", "lws")
