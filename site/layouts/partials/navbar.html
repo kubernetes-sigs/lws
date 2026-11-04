@@ -2,7 +2,11 @@
 <nav class="js-navbar-scroll navbar navbar-expand-md navbar-dark {{ if $cover}} td-navbar-cover {{ end }} td-navbar{{ if eq .Type "docs" }} td-navbar--docs{{ end }}">
 	<a class="navbar-brand" href="{{ .Site.Home.RelPermalink }}" aria-label="LeaderWorkerSet and DisaggregatedSet home">
 		{{ if .Site.Params.ui.navbar_logo }}
-		<img class="navbar-logo" src="{{ "images/lws-ds-logos.svg" | relURL }}" alt="DisaggregatedSet and LeaderWorkerSet" width="191" height="100">
+		{{/* Inline the shared artwork so navigation cannot flash its image-loading fallback. */}}
+		{{ $logo := readFile "static/images/lws-ds-logos.svg" }}
+		{{ $logo = replaceRE `(id|aria-labelledby)="` `${1}="navbar-` $logo }}
+		{{ $logo = replace $logo `href="#` `href="#navbar-` }}
+		{{ $logo | replaceRE `^<svg ` `<svg class="navbar-logo" width="191" height="100" ` | safeHTML }}
 		{{ else }}{{ .Site.Title }}{{ end }}
 	</a>
 	<div class="navbar-collapse" id="main_navbar">
@@ -29,7 +33,7 @@
 				<a class="nav-link{{if $active }} active{{end}}" href="{{ with .Page }}{{ .RelPermalink }}{{ else }}{{ .URL | relLangURL }}{{ end }}" {{ if ne $url.Host $baseurl.Host }}target="_blank" {{ end }}>{{ with .Pre}}{{ $pre }}{{ end }}<span{{if $active }} class="active"{{end}}>{{ .Name }}</span>{{ with .Post}}{{ $post }}{{ end }}</a>
 			</li>
 			{{ end }}
-			{{ if or .Site.Data.docs_versions .Site.Params.versions }}
+			{{ if and (ne .Layout "trace-visualizer") (or .Site.Data.docs_versions .Site.Params.versions) }}
 			<li class="nav-item dropdown docs-version-nav mt-1 mt-lg-0 mr-2">
 				{{ partial "navbar-version-selector.html" . }}
 			</li>

@@ -16,6 +16,12 @@ This deterministic, idempotent migration changes only hit storage. Captions, fra
 
 Playback draws the prepared frame and interpolates positions. It does not calculate replica counts, availability budgets, fractional windows, or routing shares. All original scene states, metric values, and explanations are retained. Text uses Arial and Menlo.
 
+Optional `themes` names the recorded palettes; color arrays contain one value per
+theme instead of a light/dark pair. The unlisted trace player exposes all six
+palettes with `?themes=all`, while documentation follows the site's LWS theme.
+`paletteSource` identifies the original palette export when its colors were
+carried forward separately from the current scene text and geometry.
+
 Each file's `provenance` and `source` metadata retain the evidence description, original scene checkpoint, fixture references, and SHA-256 hashes of the relevant renderer and source data. The distinction matters: gating uses observed Pod states with calculated routing shares and illustrative requests; scaling replays real Kubernetes runs with controlled model-loading readiness; fractional-window progression is a deterministic teaching schedule. Scaling panels are independent recordings aligned at the replica-change marker, with compressed playback. Counts come from completed API observations, not planner simulations.
 
 ## Regeneration
