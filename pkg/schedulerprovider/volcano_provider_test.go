@@ -24,6 +24,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -406,6 +407,63 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 
 			if diff := cmp.Diff(tt.expectedPG, &actualPG, opts...); diff != "" {
 				t.Errorf("PodGroup mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestVolcanoProvider_PodGroupAnnotation(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		scheduler       string
+		typedScheduling bool
+		annotated       bool
+		wantError       bool
+	}{
+		{name: "existing default scheduler pod", scheduler: corev1.DefaultSchedulerName},
+		{name: "existing KAI pod", scheduler: "kai-scheduler"},
+		{name: "Volcano requires group annotation", scheduler: string(Volcano), wantError: true},
+		{name: "typed scheduling requires group annotation", scheduler: corev1.DefaultSchedulerName, typedScheduling: true, wantError: true},
+		{name: "annotated KAI pod still gets a PodGroup", scheduler: "kai-scheduler", annotated: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			lws := &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](2)},
+				},
+			}
+			if tt.typedScheduling {
+				lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+			}
+			leader := createTestLeaderPod("test-lws-0", lws.Namespace, lws.Name, "0", "rev1")
+			leader.Spec.SchedulerName = tt.scheduler
+			groupName := leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+			if !tt.annotated {
+				delete(leader.Annotations, volcanov1beta1.KubeGroupNameAnnotationKey)
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(leader).Build()
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(leader), leader))
+			before := leader.DeepCopy()
+
+			err := NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, lws, leader)
+			if tt.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, before, leader)
+			var stored corev1.Pod
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(leader), &stored))
+			assert.Equal(t, before, &stored)
+			var groups volcanov1beta1.PodGroupList
+			require.NoError(t, fakeClient.List(ctx, &groups))
+			if tt.annotated {
+				require.Len(t, groups.Items, 1)
+				assert.Equal(t, groupName, groups.Items[0].Name)
+			} else {
+				assert.Empty(t, groups.Items)
 			}
 		})
 	}
