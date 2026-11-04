@@ -935,3 +935,30 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateStatusReplicaGroupsPending(t *testing.T) {
+	ds := newDSWithRoles("ds", staticRole("prefill"))
+	ds.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+		{Name: "a", Replicas: ptr.To[int32](1)},
+	}
+	lws := servingLWS(ds, "prefill", "0", "current", 1, 1)
+	lws.UID = "lws-uid"
+	if lws.Annotations == nil {
+		lws.Annotations = make(map[string]string)
+	}
+	lws.Annotations[subRoleReplicasAnnotation] = `{"a":1}`
+
+	base := newTestClient(ds, lws)
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+				return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := newTestReconciler(c)
+
+	err := r.updateStatus(t.Context(), ds, []string{"prefill"}, "current", map[string]int{"prefill": 1}, nil)
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+}
