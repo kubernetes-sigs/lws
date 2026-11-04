@@ -671,98 +671,351 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 	t.Run("tpu subgroup partitions should stay aligned", func(t *testing.T) {
 		// Regression cases for the TPU env vs subgroup label divergence
 		// described in https://github.com/kubernetes-sigs/lws/issues/1284.
-		tpuLimits := corev1.ResourceList{accelerator.TpuResourceName: resource.MustParse("2")}
-		leaderPod := func(withTPU bool) *corev1.PodTemplateSpec {
-			limits := corev1.ResourceList{}
+		leaderWorker := v1.SubGroupPolicyTypeLeaderWorker
+		leaderExcluded := v1.SubGroupPolicyTypeLeaderExcluded
+		subGroupSizeField := "spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize"
+		subGroupPolicyTypeField := "spec.leaderWorkerTemplate.subGroupPolicy.subGroupPolicyType"
+		divergeDetail := "the TPU env and subgroup label partitions diverge"
+		leaderExcludedDetail := "LeaderExcluded cannot be used when the leader requests google.com/tpu"
+		bothTPUDetail := "size must be divisible by subGroupSize when both leader and workers request google.com/tpu"
+
+		podTemplate := func(name string, withTPU bool) corev1.PodTemplateSpec {
+			var limits corev1.ResourceList
 			if withTPU {
-				limits = tpuLimits
-			}
-			return &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "leader", Resources: corev1.ResourceRequirements{Limits: limits}}},
-				},
-			}
-		}
-		workerPod := func(withTPU bool) corev1.PodTemplateSpec {
-			limits := corev1.ResourceList{}
-			if withTPU {
-				limits = tpuLimits
+				limits = corev1.ResourceList{accelerator.TpuResourceName: resource.MustParse("2")}
 			}
 			return corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{Limits: limits}}},
+					Containers: []corev1.Container{{
+						Name:      name,
+						Image:     "busybox",
+						Resources: corev1.ResourceRequirements{Limits: limits},
+					}},
 				},
 			}
 		}
-		build := func(size int32, subGroupSize int32, policyType *v1.SubGroupPolicyType, leaderTPU, workerTPU bool) *v1.LeaderWorkerSet {
+		build := func(replicas, size, subGroupSize int32, policyType *v1.SubGroupPolicyType, leaderTPU, workerTPU, implicitLeader bool) *v1.LeaderWorkerSet {
+			worker := podTemplate("worker", workerTPU)
+			var leader *corev1.PodTemplateSpec
+			if !implicitLeader {
+				leaderTemplate := podTemplate("leader", leaderTPU)
+				leader = &leaderTemplate
+			}
 			return &v1.LeaderWorkerSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
 				Spec: v1.LeaderWorkerSetSpec{
-					Replicas: ptr.To[int32](1),
+					Replicas: ptr.To(replicas),
 					LeaderWorkerTemplate: v1.LeaderWorkerTemplate{
-						Size:           ptr.To[int32](size),
-						SubGroupPolicy: &v1.SubGroupPolicy{SubGroupSize: ptr.To[int32](subGroupSize), Type: policyType},
-						LeaderTemplate: leaderPod(leaderTPU),
-						WorkerTemplate: workerPod(workerTPU),
+						Size:           ptr.To(size),
+						SubGroupPolicy: &v1.SubGroupPolicy{SubGroupSize: ptr.To(subGroupSize), Type: policyType},
+						LeaderTemplate: leader,
+						WorkerTemplate: worker,
 					},
 				},
 			}
 		}
 
-		t.Run("leader without tpus and tpu workers must not use a leader-in-group partition", func(t *testing.T) {
-			// size=4, subGroupSize=2: the label partition places the leader in
-			// subgroup 0 while the TPU injection shifts it out, so the two
-			// partitions diverge and hostname lists reference nonexistent pods.
-			allErrs := webhook.generalValidate(build(4, 2, nil, false, true))
-			if len(allErrs) != 1 {
-				t.Fatalf("expected one validation error, got %v", allErrs)
-			}
-			if allErrs[0].Type != field.ErrorTypeInvalid {
-				t.Errorf("expected invalid error, got %q", allErrs[0].Type)
-			}
-		})
+		tests := []struct {
+			name           string
+			replicas       int32
+			size           int32
+			subGroupSize   int32
+			policyType     *v1.SubGroupPolicyType
+			leaderTPU      bool
+			workerTPU      bool
+			implicitLeader bool
+			wantField      string
+			wantDetail     string
+		}{
+			{
+				name:         "cpu leader and tpu workers with size divisible by subGroupSize",
+				replicas:     1,
+				size:         4,
+				subGroupSize: 2,
+				leaderTPU:    false,
+				workerTPU:    true,
+				wantField:    subGroupSizeField,
+				wantDetail:   divergeDetail,
+			},
+			{
+				name:         "explicit LeaderWorker matches the defaulted nil type",
+				replicas:     1,
+				size:         4,
+				subGroupSize: 2,
+				policyType:   &leaderWorker,
+				leaderTPU:    false,
+				workerTPU:    true,
+				wantField:    subGroupSizeField,
+				wantDetail:   divergeDetail,
+			},
+			{
+				name:         "tpu leader and tpu workers with size divisible by subGroupSize",
+				replicas:     1,
+				size:         4,
+				subGroupSize: 2,
+				leaderTPU:    true,
+				workerTPU:    true,
+			},
+			{
+				name:         "cpu leader and tpu workers with leader-extra size",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				leaderTPU:    false,
+				workerTPU:    true,
+			},
+			{
+				name:         "pods without tpus accept a leader-in-group partition",
+				replicas:     1,
+				size:         4,
+				subGroupSize: 2,
+				leaderTPU:    false,
+				workerTPU:    false,
+			},
+			{
+				name:         "LeaderExcluded with a cpu leader and tpu workers",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				policyType:   &leaderExcluded,
+				leaderTPU:    false,
+				workerTPU:    true,
+			},
+			{
+				name:           "implicit leader template inherits worker tpus when size is divisible",
+				replicas:       1,
+				size:           4,
+				subGroupSize:   2,
+				leaderTPU:      false,
+				workerTPU:      true,
+				implicitLeader: true,
+			},
+			{
+				name:         "subGroupSize 1 stays valid for a cpu leader and tpu workers",
+				replicas:     1,
+				size:         3,
+				subGroupSize: 1,
+				leaderTPU:    false,
+				workerTPU:    true,
+			},
+			{
+				name:         "subGroupSize 1 stays valid with explicit LeaderWorker",
+				replicas:     1,
+				size:         3,
+				subGroupSize: 1,
+				policyType:   &leaderWorker,
+				leaderTPU:    false,
+				workerTPU:    true,
+			},
+			{
+				name:         "LeaderExcluded rejects a tpu leader",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				policyType:   &leaderExcluded,
+				leaderTPU:    true,
+				workerTPU:    true,
+				wantField:    subGroupPolicyTypeField,
+				wantDetail:   leaderExcludedDetail,
+			},
+			{
+				name:         "LeaderExcluded rejects a tpu leader even when workers request no tpu",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				policyType:   &leaderExcluded,
+				leaderTPU:    true,
+				workerTPU:    false,
+				wantField:    subGroupPolicyTypeField,
+				wantDetail:   leaderExcludedDetail,
+			},
+			{
+				name:           "LeaderExcluded rejects an implicit leader that inherits worker tpus",
+				replicas:       1,
+				size:           5,
+				subGroupSize:   2,
+				policyType:     &leaderExcluded,
+				leaderTPU:      false,
+				workerTPU:      true,
+				implicitLeader: true,
+				wantField:      subGroupPolicyTypeField,
+				wantDetail:     leaderExcludedDetail,
+			},
+			{
+				name:         "tpu leader and tpu workers reject a leader-extra partition",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				leaderTPU:    true,
+				workerTPU:    true,
+				wantField:    subGroupSizeField,
+				wantDetail:   bothTPUDetail,
+			},
+			{
+				name:         "explicit LeaderWorker rejects a both-tpu leader-extra partition",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				policyType:   &leaderWorker,
+				leaderTPU:    true,
+				workerTPU:    true,
+				wantField:    subGroupSizeField,
+				wantDetail:   bothTPUDetail,
+			},
+			{
+				name:           "implicit leader inheriting worker tpus rejects a leader-extra partition",
+				replicas:       1,
+				size:           5,
+				subGroupSize:   2,
+				leaderTPU:      false,
+				workerTPU:      true,
+				implicitLeader: true,
+				wantField:      subGroupSizeField,
+				wantDetail:     bothTPUDetail,
+			},
+			{
+				name:         "tpu leader and cpu workers accept a leader-extra partition",
+				replicas:     1,
+				size:         5,
+				subGroupSize: 2,
+				leaderTPU:    true,
+				workerTPU:    false,
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				lws := build(tc.replicas, tc.size, tc.subGroupSize, tc.policyType, tc.leaderTPU, tc.workerTPU, tc.implicitLeader)
+				allErrs := webhook.generalValidate(lws)
+				if tc.wantField == "" {
+					if len(allErrs) != 0 {
+						t.Fatalf("expected no validation errors, got %v", allErrs)
+					}
+					return
+				}
+				if len(allErrs) != 1 {
+					t.Fatalf("expected one validation error, got %v", allErrs)
+				}
+				if allErrs[0].Type != field.ErrorTypeInvalid {
+					t.Errorf("expected invalid error, got %q", allErrs[0].Type)
+				}
+				if allErrs[0].Field != tc.wantField {
+					t.Errorf("expected field %q, got %q", tc.wantField, allErrs[0].Field)
+				}
+				if !strings.Contains(allErrs[0].Detail, tc.wantDetail) {
+					t.Errorf("expected detail to contain %q, got %q", tc.wantDetail, allErrs[0].Detail)
+				}
+			})
+		}
 
-		t.Run("leader with tpus and tpu workers accept a leader-in-group partition", func(t *testing.T) {
-			allErrs := webhook.generalValidate(build(4, 2, nil, true, true))
-			if len(allErrs) != 0 {
-				t.Fatalf("expected no validation errors, got %v", allErrs)
-			}
-		})
-
-		t.Run("leader without tpus and tpu workers accept a leader-extra partition", func(t *testing.T) {
-			// size=5, subGroupSize=2: (size-1) is divisible, so the TPU
-			// injection and the labels agree.
-			allErrs := webhook.generalValidate(build(5, 2, nil, false, true))
-			if len(allErrs) != 0 {
-				t.Fatalf("expected no validation errors, got %v", allErrs)
-			}
-		})
-
-		t.Run("pods without tpus accept a leader-in-group partition", func(t *testing.T) {
-			allErrs := webhook.generalValidate(build(4, 2, nil, false, false))
-			if len(allErrs) != 0 {
-				t.Fatalf("expected no validation errors, got %v", allErrs)
-			}
-		})
-
-		t.Run("leader-excluded subgroups are not restricted by the tpu check", func(t *testing.T) {
-			leaderExcluded := v1.SubGroupPolicyTypeLeaderExcluded
-			allErrs := webhook.generalValidate(build(5, 2, &leaderExcluded, false, true))
-			if len(allErrs) != 0 {
-				t.Fatalf("expected no validation errors, got %v", allErrs)
-			}
-		})
-
-		t.Run("implicit leader template with tpu workers accepts a leader-in-group partition", func(t *testing.T) {
-			// Without leaderTemplate the leader uses the worker template, so
-			// the leader requests TPUs too and the partitions stay aligned.
-			lws := build(4, 2, nil, false, true)
-			lws.Spec.LeaderWorkerTemplate.LeaderTemplate = nil
+		t.Run("size 0 does not add a tpu subgroup error on top of the size errors", func(t *testing.T) {
+			lws := build(1, 0, 2, nil, false, true, false)
 			allErrs := webhook.generalValidate(lws)
-			if len(allErrs) != 0 {
-				t.Fatalf("expected no validation errors, got %v", allErrs)
+			if len(allErrs) == 0 {
+				t.Fatal("expected size validation errors")
+			}
+			for _, err := range allErrs {
+				if strings.Contains(err.Detail, "google.com/tpu") {
+					t.Errorf("size 0 should not report a TPU subgroup error, got %v", err)
+				}
 			}
 		})
+
+		updateTests := []struct {
+			name       string
+			old        *v1.LeaderWorkerSet
+			new        *v1.LeaderWorkerSet
+			wantDetail string
+		}{
+			{
+				name: "annotation update keeps a legacy divergent partition",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new: func() *v1.LeaderWorkerSet {
+					updated := build(1, 4, 2, nil, false, true, false)
+					updated.Annotations = map[string]string{"example.com/touch": "1"}
+					return updated
+				}(),
+			},
+			{
+				name: "defaulting nil type to LeaderWorker keeps a legacy divergent partition",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new: func() *v1.LeaderWorkerSet {
+					updated := build(1, 4, 2, &leaderWorker, false, true, false)
+					updated.Annotations = map[string]string{"example.com/touch": "1"}
+					return updated
+				}(),
+			},
+			{
+				name: "worker image change keeps a legacy divergent partition",
+				old:  build(2, 4, 2, nil, false, true, false),
+				new: func() *v1.LeaderWorkerSet {
+					updated := build(2, 4, 2, nil, false, true, false)
+					updated.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "other-image"
+					return updated
+				}(),
+			},
+			{
+				name: "scaling replicas down keeps a legacy divergent partition",
+				old:  build(2, 4, 2, nil, false, true, false),
+				new:  build(1, 4, 2, nil, false, true, false),
+			},
+			{
+				name:       "scaling replicas up rejects a legacy divergent partition",
+				old:        build(1, 4, 2, nil, false, true, false),
+				new:        build(2, 4, 2, nil, false, true, false),
+				wantDetail: divergeDetail,
+			},
+			{
+				name:       "resizing to another divisible size rejects the divergent partition",
+				old:        build(1, 4, 2, nil, false, true, false),
+				new:        build(1, 6, 2, nil, false, true, false),
+				wantDetail: divergeDetail,
+			},
+			{
+				name: "resizing to a leader-extra size makes the partition valid",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new:  build(1, 5, 2, nil, false, true, false),
+			},
+			{
+				name: "adding tpus to the leader makes a divisible partition valid",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new:  build(1, 4, 2, nil, true, true, false),
+			},
+			{
+				name:       "a valid object cannot be updated into a divergent partition",
+				old:        build(1, 5, 2, nil, false, true, false),
+				new:        build(1, 4, 2, nil, false, true, false),
+				wantDetail: divergeDetail,
+			},
+			{
+				name:       "LeaderWorker both-tpu leader-extra cannot switch to LeaderExcluded",
+				old:        build(1, 5, 2, &leaderWorker, true, true, false),
+				new:        build(1, 5, 2, &leaderExcluded, true, true, false),
+				wantDetail: leaderExcludedDetail,
+			},
+			{
+				name:       "LeaderExcluded with a tpu leader cannot switch to LeaderWorker",
+				old:        build(1, 5, 2, &leaderExcluded, true, true, false),
+				new:        build(1, 5, 2, &leaderWorker, true, true, false),
+				wantDetail: bothTPUDetail,
+			},
+		}
+		for _, tc := range updateTests {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := webhook.ValidateUpdate(ctx, tc.old, tc.new)
+				if tc.wantDetail == "" {
+					if err != nil {
+						t.Fatalf("expected update to succeed, got %v", err)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if !strings.Contains(err.Error(), tc.wantDetail) {
+					t.Fatalf("expected error to contain %q, got %v", tc.wantDetail, err)
+				}
+			})
+		}
 	})
 
 	t.Run("nil old network config on update should not panic", func(t *testing.T) {
