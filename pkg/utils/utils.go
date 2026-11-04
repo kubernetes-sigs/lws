@@ -70,9 +70,12 @@ func SortByIndex[T appsv1.StatefulSet | corev1.Pod | int](indexFunc func(T) (int
 	return result
 }
 
+// serviceAccountNamespaceFile is the path to the namespace file in a pod.
+var serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 // GetOperatorNamespace will pick the namespace based on the serviceaccount
 func GetOperatorNamespace() string {
-	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+	if data, err := os.ReadFile(serviceAccountNamespaceFile); err == nil {
 		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
 			return ns
 		}
