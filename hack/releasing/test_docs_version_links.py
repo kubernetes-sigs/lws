@@ -24,7 +24,18 @@ import subprocess
 import tempfile
 import unittest
 
-HUGO = shutil.which(os.environ.get("HUGO", "hugo"))
+def validate_hugo_path():
+    """Validate HUGO environment variable to prevent command injection."""
+    hugo_env = os.environ.get("HUGO", "hugo")
+    # Only allow simple executable names or absolute paths, no shell metacharacters
+    if any(c in hugo_env for c in [';', '|', '&', '$', '`', '\n', '\r']):
+        raise ValueError(f"Invalid HUGO path contains shell metacharacters: {hugo_env}")
+    hugo_path = shutil.which(hugo_env)
+    if hugo_path is None:
+        raise FileNotFoundError(f"Hugo executable not found: {hugo_env}")
+    return hugo_path
+
+HUGO = validate_hugo_path()
 PARTIALS = Path(__file__).resolve().parents[2] / "site/layouts/partials"
 MISSING = "Page unavailable → Overview"
 

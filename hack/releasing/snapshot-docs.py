@@ -44,6 +44,28 @@ MARKER = ".snapshot-docs-generated"
 STABLE_TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
+def validate_safe_path(path, base_dir):
+    """Validate path is within base_dir and contains no traversal patterns."""
+    if not isinstance(path, Path):
+        path = Path(path)
+    try:
+        resolved = path.resolve()
+        base_resolved = Path(base_dir).resolve()
+        resolved.relative_to(base_resolved)
+        return resolved
+    except (ValueError, RuntimeError):
+        raise ValueError(f"Path traversal detected: {path} is outside {base_dir}")
+
+
+def validate_safe_name(name):
+    """Validate name contains only safe characters (alphanumeric, dash, underscore, dot)."""
+    if not re.match(r'^[a-zA-Z0-9._-]+$', name):
+        raise ValueError(f"Unsafe name contains invalid characters: {name}")
+    if '..' in name:
+        raise ValueError(f"Unsafe name contains path traversal: {name}")
+    return name
+
+
 def git(repo, *args):
     # In a partial clone --no-fetch must not quietly initiate lazy blob fetches.
     env = dict(os.environ, GIT_NO_LAZY_FETCH="1")
@@ -192,7 +214,16 @@ def rewrite_page(text, version, asset_roots):
     # Explicit URLs otherwise escape the version namespace.
     front = re.sub(r"^url:\s*[\"']?(/[^\"'\n]*)[\"']?\s*$",
                    lambda m: "url: " + json.dumps(f"/{key}{m[1].strip()}"), front, flags=re.MULTILINE)
-    roots = "|".join(re.escape(root) for root in sorted({"docs", *asset_roots}))
+    # Validate asset_roots to prevent ReDoS attacks
+    safe_roots = set()
+    for root in asset_roots:
+        try:
+            validate_safe_name(root)
+            safe_roots.add(root)
+        except ValueError:
+            # Skip unsafe root names
+            continue
+    roots = "|".join(re.escape(root) for root in sorted({"docs", *safe_roots}))
     # Convert absolute links to this website first, then namespace local links.
     body = re.sub(r"https?://lws\.sigs\.k8s\.io(?=/(?:" + roots + r")(?:[/#?\s\"')>]|$))", "", body)
     body = re.sub(r"(?P<before>[\s(\"'=<>])/(?P<root>" + roots + r")(?=[/#?\s\"')>]|$)",
@@ -259,47 +290,57 @@ def generate(repo, manifest, output, offline=False):
     site = repo / "site"
     if output.is_symlink() or (output.exists() and not (output / MARKER).is_file()):
         raise ValueError(f"Refusing to replace {output}: not a recognized generated site")
+    # Validate output path is within repo
+    validate_safe_path(output, repo)
     with tempfile.TemporaryDirectory(prefix=".docs-snapshot-", dir=site) as temp:
         staging = Path(temp) / "generated"
         staging.mkdir()
         # Current presentation, not the old branch's theme or executable code.
         for name in ("hugo.toml", "go.mod", "go.sum", "package.json", "package-lock.json", "postcss.config.js",
                      "layouts", "assets", "archetypes", "i18n", "content", "static", "data"):
+            validate_safe_name(name)  # Validate name doesn't contain path traversal
             source = site / name
             if source.is_symlink() or (source.is_dir() and any(p.is_symlink() for p in source.rglob("*"))):
                 raise ValueError(f"Refusing symlink in website source: {source}")
             if source.is_dir():
-                shutil.copytree(source, staging / name)
+                safe_dest = validate_safe_path(staging / name, staging)
+                shutil.copytree(source, safe_dest)
             elif source.is_file():
-                shutil.copy2(source, staging / name)
+                safe_dest = validate_safe_path(staging / name, staging)
+                shutil.copy2(source, safe_dest)
         for docs in (staging / "content").glob("*/docs"):
-            shutil.rmtree(docs)
+            safe_docs = validate_safe_path(docs, staging)
+            shutil.rmtree(safe_docs)
         routes, latest_routes, latest_aliases, redirects = set(), set(), {}, {}
         for version in manifest["versions"]:
-            key = version["key"]
-            prefix = version["prefix"]
-            source = Path(temp) / key
+            key = validate_safe_name(version["key"])
+            prefix = validate_safe_name(version["prefix"])
+            source = validate_safe_path(Path(temp) / key, Path(temp))
             extract_sources(repo, version["commit"], source, offline)
             docs_trees = sorted((source / "site/content").glob("*/docs"))
             if not docs_trees or not any((p / "_index.md").is_file() for p in docs_trees):
                 raise ValueError(f"{version['branch']} has no website docs; choose a newer --min-version")
             static = source / "site/static"
-            roots = {p.name for p in static.iterdir()} if static.is_dir() else set()
+            roots = {validate_safe_name(p.name) for p in static.iterdir()} if static.is_dir() else set()
             if static.is_dir():
-                shutil.copytree(static, staging / "static" / prefix)
+                safe_static_dest = validate_safe_path(staging / "static" / prefix, staging)
+                shutil.copytree(static, safe_static_dest)
             # Keep branding consistent with the current site shell, including
             # historical pages that reference their own versioned image paths.
             for name in ("lws-ds-logos.svg", "ds-concept.svg", "ds-logo.svg"):
+                validate_safe_name(name)
                 branding = staging / "static/images" / name
                 if branding.is_file():
                     destination = staging / "static" / prefix / "images" / name
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(branding, destination)
+                    safe_dest = validate_safe_path(destination, staging)
+                    shutil.copy2(branding, safe_dest)
                     roots.add("images")
             for docs in docs_trees:
-                locale = docs.parent.name
+                locale = validate_safe_name(docs.parent.name)
                 destination = staging / "content" / locale / prefix / "docs"
-                shutil.copytree(docs, destination)
+                safe_dest = validate_safe_path(destination, staging)
+                shutil.copytree(docs, safe_dest)
                 for page in sorted(destination.rglob("*")):
                     if page.suffix not in (".md", ".html") or not page.is_file():
                         continue
