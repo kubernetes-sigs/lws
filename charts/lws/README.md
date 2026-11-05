@@ -174,10 +174,10 @@ The following table lists the configurable parameters of the LWS chart and their
 
 To enable the Volcano provider, set `gangSchedulingManagement.schedulerProvider=volcano`.
 Existing pods without `scheduling.k8s.io/group-name` keep using their current
-scheduler without a Volcano PodGroup, unless their `schedulerName` is `volcano`
-or their LWS sets `spec.scheduling`. LWS does not add the annotation to existing
-pods. Pods that require Volcano gang scheduling must have the annotation;
-otherwise reconciliation reports an error.
+scheduler without a Volcano PodGroup, unless the leader or workers use
+`schedulerName: volcano` or their LWS sets `spec.scheduling`. LWS does not add
+the annotation to existing pods. Pods that require Volcano gang scheduling
+must have the annotation; otherwise reconciliation reports an error.
 
 The provider still adds the annotation to newly created LWS pods, including
 those using other schedulers. New replicas and replacement leaders therefore

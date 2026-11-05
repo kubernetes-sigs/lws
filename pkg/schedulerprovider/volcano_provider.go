@@ -73,7 +73,9 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	var pg volcanov1beta1.PodGroup
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
 	if pgName == "" {
-		if lws.Spec.Scheduling != nil || leaderPod.Spec.SchedulerName == string(Volcano) {
+		if lws.Spec.Scheduling != nil ||
+			leaderPod.Spec.SchedulerName == string(Volcano) ||
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName == string(Volcano) {
 			return fmt.Errorf("pod %s/%s is missing annotation %q required for Volcano gang scheduling", leaderPod.Namespace, leaderPod.Name, volcanov1beta1.KubeGroupNameAnnotationKey)
 		}
 		// Pods created before the provider was enabled did not receive the

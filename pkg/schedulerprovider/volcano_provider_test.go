@@ -416,6 +416,7 @@ func TestVolcanoProvider_PodGroupAnnotation(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
 		scheduler       string
+		workerScheduler string
 		typedScheduling bool
 		annotated       bool
 		wantError       bool
@@ -423,6 +424,7 @@ func TestVolcanoProvider_PodGroupAnnotation(t *testing.T) {
 		{name: "existing default scheduler pod", scheduler: corev1.DefaultSchedulerName},
 		{name: "existing KAI pod", scheduler: "kai-scheduler"},
 		{name: "Volcano requires group annotation", scheduler: string(Volcano), wantError: true},
+		{name: "Volcano workers require group annotation", scheduler: corev1.DefaultSchedulerName, workerScheduler: string(Volcano), wantError: true},
 		{name: "typed scheduling requires group annotation", scheduler: corev1.DefaultSchedulerName, typedScheduling: true, wantError: true},
 		{name: "annotated KAI pod still gets a PodGroup", scheduler: "kai-scheduler", annotated: true},
 	} {
@@ -437,6 +439,7 @@ func TestVolcanoProvider_PodGroupAnnotation(t *testing.T) {
 			if tt.typedScheduling {
 				lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
 			}
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName = tt.workerScheduler
 			leader := createTestLeaderPod("test-lws-0", lws.Namespace, lws.Name, "0", "rev1")
 			leader.Spec.SchedulerName = tt.scheduler
 			groupName := leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
