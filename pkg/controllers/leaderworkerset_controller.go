@@ -741,8 +741,28 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	lwsReplicas := *lws.Spec.Replicas
 	userPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 
+	// readyGroups and updatedReadyGroups are filled by the cases that read
+	// replica states and logged with the plan, so a rollout that the floor
+	// holds in place leaves a trace of why.
+	var readyGroups, updatedReadyGroups int32
 	defer func() {
 		plan.partition = max(plan.partition, userPartition)
+		if err != nil || plan.baseline == nil {
+			return
+		}
+		var currentPartition any
+		if sts != nil && sts.Spec.UpdateStrategy.RollingUpdate != nil && sts.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
+			currentPartition = *sts.Spec.UpdateStrategy.RollingUpdate.Partition
+		}
+		log.V(2).Info("Planned Ordinal rolling update step",
+			"baseline", *plan.baseline,
+			"floor", plan.floor,
+			"currentPartition", currentPartition,
+			"nextPartition", plan.partition,
+			"targetReplicas", plan.replicas,
+			"readyGroups", readyGroups,
+			"updatedReadyGroups", updatedReadyGroups,
+			"requeue", plan.requeue)
 	}()
 
 	// Case 1: Initial StatefulSet creation creates all groups on the current revision.
@@ -797,6 +817,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 			if err != nil {
 				return rollingUpdatePlan{}, err
 			}
+			readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 			if hasUncertain {
 				targetReplicas = min(stsReplicas, burstReplicas)
 				requeue = true
@@ -863,6 +884,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		if err != nil {
 			return rollingUpdatePlan{}, err
 		}
+		readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 		lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
 		if hasUncertain {
@@ -900,6 +922,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	if err != nil {
 		return rollingUpdatePlan{}, err
 	}
+	readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 	if hasUncertain {
 		return rollingUpdatePlan{
 			partition: partition,
@@ -1026,6 +1049,9 @@ func (r *LeaderWorkerSetReconciler) deleteStaleOrdinalLeaders(
 		if conflict {
 			return true, nil
 		}
+		r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupsUpdating, Delete,
+			"Deleted stale leader pod %s to continue the rolling update of group %s past Pending ordinal %d",
+			pod.Name, pod.Labels[leaderworkerset.GroupIndexLabelKey], highestUnready)
 	}
 	return false, nil
 }
@@ -1406,10 +1432,16 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
 		return nil, nil, false, nil
 	}
 
+	// Every pod of the LWS is listed so that an unready or terminating worker
+	// withdraws its group's readiness before the worker StatefulSet status
+	// catches up. This runs on every rollout pass, so read straight from the
+	// informer cache without deep copies. Nothing downstream mutates these
+	// objects: the states are derived values, and the returned leader pods are
+	// only used for name, UID, and ResourceVersion in conditional Deletes.
 	var podList corev1.PodList
 	if err := r.List(ctx, &podList, client.InNamespace(lws.Namespace), client.MatchingLabels{
 		leaderworkerset.SetNameLabelKey: lws.Name,
-	}); err != nil {
+	}, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, nil, false, err
 	}
 
@@ -1427,7 +1459,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
 		leaderStsUID = leaderSts.UID
 	}
 	leaders := make([]*corev1.Pod, stsReplicas)
-	workersByGroup := make([][]corev1.Pod, stsReplicas)
+	workersByGroup := make([][]*corev1.Pod, stsReplicas)
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		ord, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
@@ -1441,14 +1473,14 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
 			continue
 		}
 		if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "" {
-			workersByGroup[ord] = append(workersByGroup[ord], *pod)
+			workersByGroup[ord] = append(workersByGroup[ord], pod)
 		}
 	}
 
 	var stsList appsv1.StatefulSetList
 	if err := r.List(ctx, &stsList, client.InNamespace(lws.Namespace), client.MatchingLabels{
 		leaderworkerset.SetNameLabelKey: lws.Name,
-	}); err != nil {
+	}, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, nil, hasUncertain, err
 	}
 	workerStsByGroup := make([]*appsv1.StatefulSet, stsReplicas)
@@ -1764,28 +1796,27 @@ func (p *pendingLeaderDeletes) markReplayAwaitInformer(podKey client.ObjectKey, 
 	}
 }
 
-func filterOwnedWorkerPods(pods []corev1.Pod, workerSts *appsv1.StatefulSet) []corev1.Pod {
+func filterOwnedWorkerPods(pods []*corev1.Pod, workerSts *appsv1.StatefulSet) []*corev1.Pod {
 	if len(pods) == 0 {
 		return nil
 	}
-	owned := make([]corev1.Pod, 0, len(pods))
-	for i := range pods {
-		if isControlledByUID(&pods[i], workerSts.UID) {
-			owned = append(owned, pods[i])
+	owned := make([]*corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if isControlledByUID(pod, workerSts.UID) {
+			owned = append(owned, pod)
 		}
 	}
 	return owned
 }
 
-func checkWorkerPods(pods []corev1.Pod, workerSts *appsv1.StatefulSet, leaderName string, groupSize int, targetRevision string) (workersReady, workersUpdated bool) {
+func checkWorkerPods(pods []*corev1.Pod, workerSts *appsv1.StatefulSet, leaderName string, groupSize int, targetRevision string) (workersReady, workersUpdated bool) {
 	expectedRevision := revisionutils.GetRevisionKey(workerSts)
 	readySeen := make([]bool, groupSize)
 	updatedSeen := make([]bool, groupSize)
 	readyCount := 0
 	updatedCount := 0
 
-	for i := range pods {
-		pod := &pods[i]
+	for _, pod := range pods {
 		wIdx, err := strconv.Atoi(pod.Labels[leaderworkerset.WorkerIndexLabelKey])
 		if err != nil || wIdx < 1 || wIdx >= groupSize || pod.Name != fmt.Sprintf("%s-%d", leaderName, wIdx) {
 			continue
@@ -1941,6 +1972,16 @@ func countReadyStates(states []replicaState) int32 {
 		}
 	}
 	return ready
+}
+
+func countUpdatedReadyStates(states []replicaState) int32 {
+	var updatedReady int32
+	for i := range states {
+		if states[i].ready && states[i].updated {
+			updatedReady++
+		}
+	}
+	return updatedReady
 }
 
 // preserveFloorDuringSurgeTrim avoids reclaiming higher Ready surge ordinals
