@@ -333,20 +333,18 @@ map `ExclusiveTopology` onto it and lift the restriction.
 ### Interaction With DisaggregatedSet
 
 `validatePlacement` rejects a non-`None` DisaggregatedSet `placementPolicy`
-together with either exclusive annotation on a role. KEP-848 explains that slice
-placement and group exclusivity conflict only at the same topology level and
-compose across levels, for example slice co-location on a rack label with group
-or subgroup exclusivity on `kubernetes.io/hostname`.
+together with either exclusive annotation on a role. With this KEP it also
+rejects a role's replica-level or subgroup-level exclusive placement from
+`spec.placementPolicy`, on any topology key, alongside a non-`None`
+DisaggregatedSet `placementPolicy`.
 
-With this KEP, `validatePlacement` rejects a role's replica-level or
-subgroup-level placement, from the field or the annotation, only when its
-`topology` key equals the DisaggregatedSet `spec.placementPolicy.topology`. This
-relaxes the blanket rejection of the annotations, which is a compatible change,
-and matches the cross-level rule this KEP applies between the replica and
-subgroup levels. Admission cannot see how node labels nest, so a role level
-coarser than the slice level still cannot schedule; the docs say that the role
-level must be finer than the slice level. The change ships with the field so the
-check never misses it.
+The rejection does not depend on the keys. The slice affinity and the group or
+subgroup affinity are two required `PodAffinityTerm` entries with disjoint
+selectors on the same pod, and kube-scheduler requires one existing pod to match
+every required term. Once the first group of a slice is placed, no pod matches
+both terms for the next group, role or subgroup, so kube-scheduler places it in
+another domain and splits the slice. Composing them, for example a slice per
+rack with a group per host, is therefore not supported.
 
 ### Interaction With Kueue Topology-Aware Scheduling
 
@@ -479,9 +477,12 @@ None identified.
   revisions without placement.
 - `pkg/schedulerprovider`: rule 10 with the replica-level field, and subgroup
   placement accepted with WAS constraints.
-- `pkg/webhooks/disaggregatedset`: `validatePlacement` rejects a role whose
-  replica or subgroup key matches the DisaggregatedSet key, from the field or the
-  annotation, and accepts different keys.
+- `pkg/webhooks/disaggregatedset`: `validatePlacement` rejects a role with
+  replica or subgroup exclusive placement, from the field or the annotation, on
+  any topology key, when the DisaggregatedSet `placementPolicy` is not `None`.
+- `pkg/utils/disaggregatedset`: `ComputeRevisionV1` changes when a role's
+  `spec.placementPolicy` sets, changes or clears exclusive placement, and keeps
+  the existing hash for roles without exclusive placement.
 - `pkg/utils/revision`: the annotation and the field produce the same revision;
   a LeaderWorkerSet without placement keeps its revision; a revision created
   before this change still matches after the upgrade; changing the effective
@@ -491,7 +492,8 @@ None identified.
 ##### Integration tests
 
 - Webhook accept and reject cases, including WAS constraints at both levels and
-  DisaggregatedSet roles with matching and different keys.
+  DisaggregatedSet roles with exclusive placement on the slice key and on other
+  keys.
 - A LeaderWorkerSet that uses only the field produces the same pod templates and
   the same revision as one that uses only the annotation.
 - Moving the value from the annotation to the field, in one update and in two,
@@ -535,6 +537,10 @@ domain, once with the field and once with the annotation.
   DisaggregatedSet check limited to matching topology keys.
 - 2026-11-01: Marked implementable and retargeted alpha to v1.1, since LWS
   went from v0.11 to v1.0.0. Implementation in kubernetes-sigs/lws#1165.
+- 2026-11-05: Revised after review: the DisaggregatedSet check rejects role
+  exclusive placement on any topology key again, since the slice and group
+  affinity terms cannot both hold, and unversioned DisaggregatedSet revisions
+  include the role's `spec.placementPolicy`.
 
 ## Drawbacks
 

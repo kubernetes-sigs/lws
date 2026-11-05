@@ -1746,33 +1746,39 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 		{
 			name:     "group placementPolicy on the slice topology",
 			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: sliceTopology},
-			errorMsg: "spec.roles[0].spec.placementPolicy.topology: Forbidden",
+			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
 		},
 		{
 			name: "subgroup placementPolicy on the slice topology",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: sliceTopology}},
 			subGroups: true,
-			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.topology: Forbidden",
+			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
-			name:   "group placementPolicy on a finer topology",
-			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"},
+			// The slice affinity and the group affinity are both required, so
+			// later groups of a slice cannot satisfy both and the slice splits.
+			name:     "group placementPolicy on a finer topology",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"},
+			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
 		},
 		{
 			name: "subgroup placementPolicy on a finer topology",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "kubernetes.io/hostname"}},
 			subGroups: true,
+			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
 			name:        "exclusive-topology annotation on a finer topology",
 			annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "kubernetes.io/hostname"},
+			errorMsg:    "spec.roles[0]: Forbidden",
 		},
 		{
 			name:        "subgroup-exclusive-topology annotation on a finer topology",
 			annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "kubernetes.io/hostname"},
 			subGroups:   true,
+			errorMsg:    "spec.roles[0]: Forbidden",
 		},
 		{
 			name:   "placementPolicy None",

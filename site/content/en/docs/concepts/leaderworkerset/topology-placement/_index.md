@@ -38,7 +38,7 @@ The field replaces the annotations described below, which are deprecated and sti
 - Setting a level in the field and in the matching annotation is accepted only when both name the same topology key. A level whose `type` is `None` uses the annotation.
 - The effective placement, from the field or the annotations, is part of the LeaderWorkerSet revision. Moving a value from an annotation to the field keeps the revision and replaces no group. Changing the placement, through either one, rolls out through a new revision.
 - Group level exclusive placement cannot be combined with gang scheduling or workload topology constraints in `spec.scheduling`. Subgroup level placement can.
-- In a DisaggregatedSet role, exclusive placement must not use the same topology key as the DisaggregatedSet `spec.placementPolicy`, and should use a finer one, for example a slice per rack with a group per host.
+- DisaggregatedSet roles cannot combine exclusive placement, from the field or the annotations, with a non-`None` DisaggregatedSet `spec.placementPolicy`, on any topology key. The slice and group affinity terms cannot both hold, so kube-scheduler would split a slice across domains, and admission rejects the combination.
 - Kueue topology-aware scheduling does not account for the affinity that exclusive placement injects. Admission returns a warning when a pod template also carries Kueue topology annotations.
 
 ## Exclusive Topology Annotation
