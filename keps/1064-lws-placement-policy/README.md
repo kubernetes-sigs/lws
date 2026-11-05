@@ -289,7 +289,7 @@ resolver:
 | `type: ExclusiveTopology` at either level | `topology` must be a valid label key. |
 | `type: None` or unset at either level | `topology` must be empty. |
 | `placementPolicy.subGroup` without subgroups defined | Rejected, as the annotation is today without `subGroupSize`. See [Interaction With SubGroup Placement](#interaction-with-subgroup-placement). |
-| Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. |
+| Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. Checked only when `placementPolicy` is set, so an object that sets both levels through the annotations alone is validated as before and an existing one stays updatable. |
 | Field and annotation both set for one level | Rejected if the field is `ExclusiveTopology` with a different key. A level whose `type` is `None` uses the annotation, since the API server defaults `type` to `None` whenever `placementPolicy` is set, including when only `subGroup` is. |
 | Replica-level policy or annotation with WAS gang or topology constraints at the selected level | Rejected, as rule 10 does for the annotation today. Subgroup-level placement stays allowed. See [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling). |
 | Non-`None` policy on a template that carries Kueue topology annotations | Admission warning. See [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling). |
@@ -310,7 +310,9 @@ worker StatefulSet is rebuilt.
 
 Revisions created before this change carry no placement in their data. The
 worker StatefulSet takes its key from the group's leader pod in every case, so a
-group on such a revision also keeps the key it was created with.
+group on such a revision also keeps the key it was created with. The controller
+records placement in such a revision the first time it reconciles the
+LeaderWorkerSet after the upgrade, as described in Update Semantics item 2.
 
 ### Interaction With Workload-Aware Scheduling
 
@@ -331,20 +333,18 @@ map `ExclusiveTopology` onto it and lift the restriction.
 ### Interaction With DisaggregatedSet
 
 `validatePlacement` rejects a non-`None` DisaggregatedSet `placementPolicy`
-together with either exclusive annotation on a role. KEP-848 explains that slice
-placement and group exclusivity conflict only at the same topology level and
-compose across levels, for example slice co-location on a rack label with group
-or subgroup exclusivity on `kubernetes.io/hostname`.
+together with either exclusive annotation on a role. With this KEP it also
+rejects a role's replica-level or subgroup-level exclusive placement from
+`spec.placementPolicy`, on any topology key, alongside a non-`None`
+DisaggregatedSet `placementPolicy`.
 
-With this KEP, `validatePlacement` rejects a role's replica-level or
-subgroup-level placement, from the field or the annotation, only when its
-`topology` key equals the DisaggregatedSet `spec.placementPolicy.topology`. This
-relaxes the blanket rejection of the annotations, which is a compatible change,
-and matches the cross-level rule this KEP applies between the replica and
-subgroup levels. Admission cannot see how node labels nest, so a role level
-coarser than the slice level still cannot schedule; the docs say that the role
-level must be finer than the slice level. The change ships with the field so the
-check never misses it.
+The rejection does not depend on the keys. The slice affinity and the group or
+subgroup affinity are two required `PodAffinityTerm` entries with disjoint
+selectors on the same pod, and kube-scheduler requires one existing pod to match
+every required term. Once the first group of a slice is placed, no pod matches
+both terms for the next group, role or subgroup, so kube-scheduler places it in
+another domain and splits the slice. Composing them, for example a slice per
+rack with a group per host, is therefore not supported.
 
 ### Interaction With Kueue Topology-Aware Scheduling
 
@@ -400,20 +400,27 @@ annotation. Both sources produce the same revision, so:
 
 1. Moving a value between the annotation and the field, in one update or two,
    keeps the revision and replaces no group.
-2. Upgrading the controller keeps the revision. `SetMatchesRevision` applies the
-   existing revision to the live object and regenerates the patch, which picks
-   up the live annotation, so it matches the new patch even though the stored
-   bytes lack placement.
+2. Upgrading the controller keeps the revision. The first time the controller
+   reconciles a LeaderWorkerSet whose current revision does not record
+   placement, it creates a revision under the same revision key that records
+   the placement the groups run with. It reads that placement from the
+   exclusive-topology annotations on the pod template of the leader
+   StatefulSet (or Deployment), which the previous controller set, and removes
+   the old revision. The key is unchanged, so the partition and the revision
+   labels on pods and StatefulSets do not move, and no group is replaced.
+   Reading the leader template rather than the live annotation means that an
+   annotation changed while the controller was being upgraded still rolls out.
 3. Changing the effective placement, through either source, creates a new
    revision and rolls out under `maxUnavailable` and `maxSurge`, replacing the
    untracked rollout above.
 4. `ApplyRevision` restores placement from the revision itself and ignores
    the live annotations, so a revision without placement stays without it.
    When the revision predates this change and carries no `placementPolicy`, the
-   restored object keeps the live field and annotations, as placement was not
-   part of the revision then. Moving between the annotation and the field
-   therefore keeps such a revision too, and a placement change on it behaves as
-   it does today until the next template change records a new revision.
+   restored object clears the field and keeps the live annotations, as the
+   annotations were the only way to set placement then. The controller replaces
+   such a revision before it compares revisions (item 2), so after an upgrade
+   moving between the annotation and the field keeps the revision, and a
+   placement change creates a new revision, as on any other revision.
 
 The field is not defaulted when absent, and an absent policy hashes the same as
 `type: None`, so objects without placement keep their revision.
@@ -470,9 +477,12 @@ None identified.
   revisions without placement.
 - `pkg/schedulerprovider`: rule 10 with the replica-level field, and subgroup
   placement accepted with WAS constraints.
-- `pkg/webhooks/disaggregatedset`: `validatePlacement` rejects a role whose
-  replica or subgroup key matches the DisaggregatedSet key, from the field or the
-  annotation, and accepts different keys.
+- `pkg/webhooks/disaggregatedset`: `validatePlacement` rejects a role with
+  replica or subgroup exclusive placement, from the field or the annotation, on
+  any topology key, when the DisaggregatedSet `placementPolicy` is not `None`.
+- `pkg/utils/disaggregatedset`: `ComputeRevisionV1` changes when a role's
+  `spec.placementPolicy` sets, changes or clears exclusive placement, and keeps
+  the existing hash for roles without exclusive placement.
 - `pkg/utils/revision`: the annotation and the field produce the same revision;
   a LeaderWorkerSet without placement keeps its revision; a revision created
   before this change still matches after the upgrade; changing the effective
@@ -482,12 +492,17 @@ None identified.
 ##### Integration tests
 
 - Webhook accept and reject cases, including WAS constraints at both levels and
-  DisaggregatedSet roles with matching and different keys.
+  DisaggregatedSet roles with exclusive placement on the slice key and on other
+  keys.
 - A LeaderWorkerSet that uses only the field produces the same pod templates and
   the same revision as one that uses only the annotation.
 - Moving the value from the annotation to the field, in one update and in two,
   replaces no group.
-- Changing the annotation value rolls out through a new revision.
+- Changing the annotation value, or the field, rolls out through a new revision
+  under `maxUnavailable`.
+- After an upgrade, a LeaderWorkerSet whose revision does not record placement
+  keeps its leader and worker StatefulSets, and a later annotation change rolls
+  out through a new revision.
 
 ##### e2e tests
 
@@ -497,7 +512,7 @@ domain, once with the field and once with the annotation.
 
 ### Graduation Criteria
 
-**Alpha (v0.12)**
+**Alpha (v1.1)**
 
 - API, validation, propagation, revision handling and the DisaggregatedSet check
   implemented.
@@ -520,6 +535,12 @@ domain, once with the field and once with the annotation.
 - 2026-10-14: Revised after review: top-level `spec.placementPolicy`, effective
   placement in the revision, rule 10 kept at replica level, and the
   DisaggregatedSet check limited to matching topology keys.
+- 2026-11-01: Marked implementable and retargeted alpha to v1.1, since LWS
+  went from v0.11 to v1.0.0. Implementation in kubernetes-sigs/lws#1165.
+- 2026-11-05: Revised after review: the DisaggregatedSet check rejects role
+  exclusive placement on any topology key again, since the slice and group
+  affinity terms cannot both hold, and unversioned DisaggregatedSet revisions
+  include the role's `spec.placementPolicy`.
 
 ## Drawbacks
 

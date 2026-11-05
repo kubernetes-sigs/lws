@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1555,6 +1556,234 @@ func TestGetUpdatedRevision(t *testing.T) {
 	}
 }
 
+// legacyRevision turns a revision into one created before revisions recorded
+// placement: no placement-recorded marker and no placementPolicy in its data.
+func legacyRevision(t *testing.T, revision *appsv1.ControllerRevision) *appsv1.ControllerRevision {
+	t.Helper()
+	revision = revision.DeepCopy()
+	revision.Annotations = nil
+	var patch map[string]interface{}
+	if err := json.Unmarshal(revision.Data.Raw, &patch); err != nil {
+		t.Fatal(err)
+	}
+	delete(patch["spec"].(map[string]interface{}), "placementPolicy")
+	raw, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Data.Raw = raw
+	return revision
+}
+
+// leaderTemplateAnnotations returns the exclusive-topology annotations a
+// controller puts on the leader pod template of lws.
+func leaderTemplateAnnotations(lws *leaderworkerset.LeaderWorkerSet) map[string]string {
+	annotations := map[string]string{}
+	for _, key := range []string{leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.SubGroupExclusiveKeyAnnotationKey} {
+		if value := lws.Annotations[key]; value != "" {
+			annotations[key] = value
+		}
+	}
+	return annotations
+}
+
+func TestGetUpdatedRevisionRecordsPlacementInLegacyRevision(t *testing.T) {
+	withAnnotation := func(lws *leaderworkerset.LeaderWorkerSet, topology string) *leaderworkerset.LeaderWorkerSet {
+		lws = lws.DeepCopy()
+		if lws.Annotations == nil {
+			lws.Annotations = map[string]string{}
+		}
+		if topology == "" {
+			delete(lws.Annotations, leaderworkerset.ExclusiveKeyAnnotationKey)
+		} else {
+			lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topology
+		}
+		return lws
+	}
+	base := wrappers.BuildLeaderWorkerSet("default").Obj()
+	base.UID = "lws-uid"
+
+	tests := []struct {
+		name string
+		// live is the LeaderWorkerSet when the upgraded controller first
+		// reconciles; next is the same LeaderWorkerSet after a later change.
+		live, next *leaderworkerset.LeaderWorkerSet
+	}{
+		{
+			name: "annotation added after upgrade",
+			live: base,
+			next: withAnnotation(base, "rack"),
+		},
+		{
+			name: "annotation changed after upgrade",
+			live: withAnnotation(base, "rack"),
+			next: withAnnotation(base, "zone"),
+		},
+		{
+			name: "annotation removed after upgrade",
+			live: withAnnotation(base, "rack"),
+			next: withAnnotation(base, ""),
+		},
+		{
+			name: "annotation moved to a different field value after upgrade",
+			live: withAnnotation(base, "rack"),
+			next: func() *leaderworkerset.LeaderWorkerSet {
+				lws := withAnnotation(base, "")
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "zone"}
+				return lws
+			}(),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.TODO()
+			k8sClient := fake.NewClientBuilder().Build()
+			reconciler := &LeaderWorkerSetReconciler{
+				Client:                k8sClient,
+				Record:                fakeEventRecorder{},
+				revisionEqualityCache: lru.New(100),
+			}
+			fresh, err := revisionutils.NewRevision(ctx, k8sClient, tc.live, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy := legacyRevision(t, fresh)
+			if err := k8sClient.Create(ctx, legacy); err != nil {
+				t.Fatal(err)
+			}
+			revisionKey := revisionutils.GetRevisionKey(legacy)
+
+			// The first reconcile after the upgrade re-records the legacy
+			// revision under the same key, with the placement the previous
+			// controller put into the leader template, and then keeps it.
+			if _, err := reconciler.recordPlacementInRevision(ctx, tc.live, legacy, leaderTemplateAnnotations(tc.live)); err != nil {
+				t.Fatal(err)
+			}
+			revisions := &appsv1.ControllerRevisionList{}
+			if err := k8sClient.List(ctx, revisions); err != nil {
+				t.Fatal(err)
+			}
+			if len(revisions.Items) != 1 {
+				t.Fatalf("got %d revisions, want the legacy revision replaced by one re-recorded revision", len(revisions.Items))
+			}
+			migrated := &revisions.Items[0]
+			if migrated.Name == legacy.Name {
+				t.Fatal("the legacy revision was not replaced")
+			}
+			if got := revisionutils.GetRevisionKey(migrated); got != revisionKey {
+				t.Errorf("re-recorded revision key = %q, want %q", got, revisionKey)
+			}
+			if recorded, err := revisionutils.RecordsPlacement(migrated); err != nil || !recorded {
+				t.Errorf("re-recorded revision records placement = %t (err %v), want true", recorded, err)
+			}
+
+			// A later reconcile of the unchanged object keeps the revision.
+			if updated, err := reconciler.getUpdatedRevision(ctx, tc.live, migrated); err != nil || updated != nil {
+				t.Errorf("unchanged object after re-recording: update = %v, err = %v; want no update", updated != nil, err)
+			}
+
+			// A placement change now creates a new revision, so it rolls out.
+			next := tc.next.DeepCopy()
+			next.Generation = tc.live.Generation
+			updated, err := reconciler.getUpdatedRevision(ctx, next, migrated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated == nil {
+				t.Error("a placement change after re-recording did not create a new revision")
+			}
+		})
+	}
+}
+
+// TestRecordPlacementInLegacyRevisionBeforeComparing covers changes that are
+// already in the LeaderWorkerSet when the upgraded controller first reconciles
+// it. Placement is recorded from the leader template before revisions are
+// compared, so a move that keeps placement keeps the revision, and a change the
+// groups do not run with yet rolls out.
+func TestRecordPlacementInLegacyRevisionBeforeComparing(t *testing.T) {
+	base := wrappers.BuildLeaderWorkerSet("default").Obj()
+	base.UID = "lws-uid"
+	rack := base.DeepCopy()
+	rack.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}
+	withField := func(lws *leaderworkerset.LeaderWorkerSet, topology string) *leaderworkerset.LeaderWorkerSet {
+		lws = lws.DeepCopy()
+		delete(lws.Annotations, leaderworkerset.ExclusiveKeyAnnotationKey)
+		lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: topology}
+		return lws
+	}
+	zone := base.DeepCopy()
+	zone.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "zone"}
+
+	tests := []struct {
+		name string
+		// applied is the LeaderWorkerSet the previous controller last applied;
+		// live is what the upgraded controller first reconciles.
+		applied, live *leaderworkerset.LeaderWorkerSet
+		wantUpdate    bool
+	}{
+		{
+			name:    "annotation moved to an equal field in one update",
+			applied: rack,
+			live:    withField(rack, "rack"),
+		},
+		{
+			name:       "annotation moved to a different field value",
+			applied:    rack,
+			live:       withField(rack, "zone"),
+			wantUpdate: true,
+		},
+		{
+			name:       "annotation changed while the controller was upgraded",
+			applied:    rack,
+			live:       zone,
+			wantUpdate: true,
+		},
+		{
+			name:       "field added while the controller was upgraded",
+			applied:    base,
+			live:       withField(base, "rack"),
+			wantUpdate: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.TODO()
+			k8sClient := fake.NewClientBuilder().Build()
+			reconciler := &LeaderWorkerSetReconciler{
+				Client:                k8sClient,
+				Record:                fakeEventRecorder{},
+				revisionEqualityCache: lru.New(100),
+			}
+			fresh, err := revisionutils.NewRevision(ctx, k8sClient, tc.applied, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy := legacyRevision(t, fresh)
+			if err := k8sClient.Create(ctx, legacy); err != nil {
+				t.Fatal(err)
+			}
+			live := tc.live.DeepCopy()
+			live.Generation = tc.applied.Generation
+
+			migrated, err := reconciler.recordPlacementInRevision(ctx, live, legacy, leaderTemplateAnnotations(tc.applied))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := revisionutils.GetRevisionKey(migrated), revisionutils.GetRevisionKey(legacy); got != want {
+				t.Fatalf("re-recorded revision key = %q, want %q", got, want)
+			}
+			updated, err := reconciler.getUpdatedRevision(ctx, live, migrated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := updated != nil; got != tc.wantUpdate {
+				t.Errorf("creates a new revision = %t, want %t", got, tc.wantUpdate)
+			}
+		})
+	}
+}
+
 func TestEnqueueLWSRequests(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2557,4 +2786,60 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 			t.Errorf("expected worker statefulset to be retained under Sequential policy, got %d", len(stsList.Items))
 		}
 	})
+}
+
+func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
+	annotations := map[string]string{
+		leaderworkerset.ExclusiveKeyAnnotationKey:         "zone",
+		leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack",
+	}
+	tests := []struct {
+		name            string
+		annotations     map[string]string
+		policy          *leaderworkerset.PlacementPolicy
+		wantGroupKey    string
+		wantSubGroupKey string
+	}{
+		{
+			name: "placementPolicy",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			wantGroupKey:    "block",
+			wantSubGroupKey: "host",
+		},
+		{
+			name:        "placementPolicy takes precedence over the annotations",
+			annotations: annotations,
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			wantGroupKey:    "block",
+			wantSubGroupKey: "host",
+		},
+		{
+			name:        "a None group level falls back to the annotation",
+			annotations: annotations,
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack"}},
+			wantGroupKey:    "zone",
+			wantSubGroupKey: "rack",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).
+				SubGroupType(leaderworkerset.SubGroupPolicyTypeLeaderWorker).Annotation(tc.annotations).Obj()
+			lws.Spec.PlacementPolicy = tc.policy
+			podTemplate, err := buildLeaderPodTemplateApplyConfiguration(lws, "revision-1")
+			if err != nil {
+				t.Fatalf("failed with error: %s", err.Error())
+			}
+			if got := podTemplate.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; got != tc.wantGroupKey {
+				t.Errorf("exclusive-topology annotation = %q, want %q", got, tc.wantGroupKey)
+			}
+			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; got != tc.wantSubGroupKey {
+				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
+			}
+		})
+	}
 }

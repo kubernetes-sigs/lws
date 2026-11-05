@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -636,6 +637,232 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("Leader/worker pods/Statefulset have required labels and annotations when exclusive placement is set by placementPolicy", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).ExclusivePlacementPolicy()
+			},
+			updates: []*update{
+				{
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, false)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("changing the exclusive-topology annotation rolls out under maxUnavailable", func() *testCase {
+			var oldKey string
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2).ExclusivePlacement()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 4)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+						},
+					},
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) { setExclusiveAnnotation(lws, "rack") })
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+							gomega.Expect(leaderStatefulSetRevisionKey(lws)).NotTo(gomega.Equal(oldKey))
+						},
+					},
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 1)
+						},
+					},
+				},
+			}
+		}()),
+		ginkgo.Entry("changing spec.placementPolicy rolls out under maxUnavailable", func() *testCase {
+			var oldKey string
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(4).MaxUnavailable(2).ExclusivePlacementPolicy()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 4)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+						},
+					},
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) { lws.Spec.PlacementPolicy.Topology = "rack" })
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
+							gomega.Expect(leaderStatefulSetRevisionKey(lws)).NotTo(gomega.Equal(oldKey))
+						},
+					},
+				},
+			}
+		}()),
+		ginkgo.Entry("moving the exclusive-topology annotation to an equal spec.placementPolicy keeps the revision", func() *testCase {
+			var oldKey string
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).ExclusivePlacement()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 2)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+						},
+					},
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) {
+								topology := lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+								setExclusiveAnnotation(lws, "")
+								lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: topology}
+							})
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							expectRevisionKeyStays(lws, oldKey)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+						},
+					},
+				},
+			}
+		}()),
+		ginkgo.Entry("after a controller upgrade, a revision without recorded placement is re-recorded and later annotation changes roll out", func() *testCase {
+			var oldKey string
+			var workerSpecs map[string]appsv1.StatefulSetSpec
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).ExclusivePlacement()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 2)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+							workerSpecs = workerStatefulSetSpecs(lws)
+							gomega.Expect(workerSpecs).To(gomega.HaveLen(2))
+						},
+					},
+					{
+						// Simulate the upgrade: the revision is one an older
+						// controller created, and the new controller reconciles it.
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							replaceWithLegacyRevision(lws)
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) {
+								if lws.Labels == nil {
+									lws.Labels = map[string]string{}
+								}
+								lws.Labels["test.lws/reconcile"] = "upgrade"
+							})
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							expectRevisionRecordsPlacement(lws, oldKey)
+							expectRevisionKeyStays(lws, oldKey)
+							gomega.Consistently(func(g gomega.Gomega) {
+								got := workerStatefulSetSpecs(lws)
+								g.Expect(got).To(gomega.HaveLen(len(workerSpecs)))
+								for name, spec := range workerSpecs {
+									g.Expect(apiequality.Semantic.DeepEqual(got[name], spec)).To(gomega.BeTrue(), "worker StatefulSet %s spec changed", name)
+								}
+							}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
+						},
+					},
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) { setExclusiveAnnotation(lws, "rack") })
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 0)
+							gomega.Expect(leaderStatefulSetRevisionKey(lws)).NotTo(gomega.Equal(oldKey))
+						},
+					},
+				},
+			}
+		}()),
+		ginkgo.Entry("after a controller upgrade, moving the annotation to an equal spec.placementPolicy in one update keeps the revision", func() *testCase {
+			var oldKey string
+			var workerSpecs map[string]appsv1.StatefulSetSpec
+			return &testCase{
+				makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+					return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).ExclusivePlacement()
+				},
+				updates: []*update{
+					{
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							scheduleLeaderPods(lws, 2)
+							testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
+							testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 2, 2)
+							oldKey = leaderStatefulSetRevisionKey(lws)
+							workerSpecs = workerStatefulSetSpecs(lws)
+							gomega.Expect(workerSpecs).To(gomega.HaveLen(2))
+						},
+					},
+					{
+						// The upgraded controller first reconciles the LeaderWorkerSet
+						// after the annotation was already moved to the field.
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							replaceWithLegacyRevision(lws)
+							updateLeaderWorkerSet(lws, func(lws *leaderworkerset.LeaderWorkerSet) {
+								lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+									Type:     leaderworkerset.PlacementExclusiveTopology,
+									Topology: lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey],
+								}
+								setExclusiveAnnotation(lws, "")
+							})
+						},
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							gomega.Expect(lws.Spec.PlacementPolicy).NotTo(gomega.BeNil())
+							expectRevisionRecordsPlacement(lws, oldKey)
+							expectRevisionKeyStays(lws, oldKey)
+							testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+							gomega.Consistently(func(g gomega.Gomega) {
+								got := workerStatefulSetSpecs(lws)
+								g.Expect(got).To(gomega.HaveLen(len(workerSpecs)))
+								for name, spec := range workerSpecs {
+									g.Expect(apiequality.Semantic.DeepEqual(got[name], spec)).To(gomega.BeTrue(), "worker StatefulSet %s spec changed", name)
+								}
+							}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
+						},
+					},
+				},
+			}
+		}()),
 		ginkgo.Entry("Pod restart will not recreate the pod group when restart policy is None", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).RestartPolicy(leaderworkerset.NoneRestartPolicy).Replica(1).Size(4)
@@ -3407,4 +3634,138 @@ func ToUnstructured(o client.Object) (*unstructured.Unstructured, error) {
 	}
 	u := &unstructured.Unstructured{}
 	return u, json.Unmarshal(serialized, u)
+}
+
+// updateLeaderWorkerSet applies mutate to the latest LeaderWorkerSet, retrying
+// on conflicts with the controller's status updates.
+func updateLeaderWorkerSet(lws *leaderworkerset.LeaderWorkerSet, mutate func(*leaderworkerset.LeaderWorkerSet)) {
+	gomega.Eventually(func() error {
+		var latest leaderworkerset.LeaderWorkerSet
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &latest); err != nil {
+			return err
+		}
+		mutate(&latest)
+		return k8sClient.Update(ctx, &latest)
+	}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+}
+
+func setExclusiveAnnotation(lws *leaderworkerset.LeaderWorkerSet, topology string) {
+	if topology == "" {
+		delete(lws.Annotations, leaderworkerset.ExclusiveKeyAnnotationKey)
+		return
+	}
+	if lws.Annotations == nil {
+		lws.Annotations = map[string]string{}
+	}
+	lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topology
+}
+
+func leaderStatefulSetRevisionKey(lws *leaderworkerset.LeaderWorkerSet) string {
+	var sts appsv1.StatefulSet
+	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+	return revisionutils.GetRevisionKey(&sts)
+}
+
+// expectRevisionKeyStays checks that the leader StatefulSet and every leader
+// pod keep the given revision key and that no group is being replaced.
+func expectRevisionKeyStays(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) {
+	gomega.Consistently(func(g gomega.Gomega) {
+		var sts appsv1.StatefulSet
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &sts)).To(gomega.Succeed())
+		g.Expect(revisionutils.GetRevisionKey(&sts)).To(gomega.Equal(revisionKey))
+		g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(int32(0)))
+		var leaders corev1.PodList
+		g.Expect(k8sClient.List(ctx, &leaders, client.InNamespace(lws.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		})).To(gomega.Succeed())
+		g.Expect(leaders.Items).NotTo(gomega.BeEmpty())
+		for _, pod := range leaders.Items {
+			g.Expect(pod.DeletionTimestamp).To(gomega.BeNil(), "leader pod %s is being replaced", pod.Name)
+			g.Expect(revisionutils.GetRevisionKey(&pod)).To(gomega.Equal(revisionKey), "leader pod %s", pod.Name)
+		}
+	}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
+}
+
+// replaceWithLegacyRevision replaces the LeaderWorkerSet's only revision with
+// one a controller from before spec.placementPolicy would have created: same
+// revision key, no placement-recorded marker and no placementPolicy in its data.
+func replaceWithLegacyRevision(lws *leaderworkerset.LeaderWorkerSet) {
+	var revisions appsv1.ControllerRevisionList
+	gomega.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+	gomega.Expect(revisions.Items).To(gomega.HaveLen(1))
+	current := revisions.Items[0]
+
+	var patch map[string]interface{}
+	gomega.Expect(json.Unmarshal(current.Data.Raw, &patch)).To(gomega.Succeed())
+	delete(patch["spec"].(map[string]interface{}), "placementPolicy")
+	raw, err := json.Marshal(patch)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	legacy := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            current.Name + "-legacy",
+			Namespace:       current.Namespace,
+			Labels:          current.Labels,
+			OwnerReferences: current.OwnerReferences,
+		},
+		Data:     current.Data,
+		Revision: current.Revision,
+	}
+	legacy.Data.Raw = raw
+	gomega.Expect(k8sClient.Delete(ctx, &current)).To(gomega.Succeed())
+	gomega.Expect(k8sClient.Create(ctx, legacy)).To(gomega.Succeed())
+}
+
+// expectRevisionRecordsPlacement waits for the LeaderWorkerSet to have exactly
+// one revision, with the given key, that records placement.
+func expectRevisionRecordsPlacement(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		var revisions appsv1.ControllerRevisionList
+		g.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+		g.Expect(revisions.Items).To(gomega.HaveLen(1))
+		g.Expect(revisionutils.GetRevisionKey(&revisions.Items[0])).To(gomega.Equal(revisionKey))
+		recorded, err := revisionutils.RecordsPlacement(&revisions.Items[0])
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(recorded).To(gomega.BeTrue())
+	}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+}
+
+// workerStatefulSetSpecs returns the specs of the LeaderWorkerSet's worker
+// StatefulSets by name.
+func workerStatefulSetSpecs(lws *leaderworkerset.LeaderWorkerSet) map[string]appsv1.StatefulSetSpec {
+	var list appsv1.StatefulSetList
+	gomega.Expect(k8sClient.List(ctx, &list, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+	specs := map[string]appsv1.StatefulSetSpec{}
+	for _, sts := range list.Items {
+		if sts.Name != lws.Name {
+			specs[sts.Name] = sts.Spec
+		}
+	}
+	return specs
+}
+
+// scheduleLeaderPods binds each leader pod to its own node, labelled for the
+// topology keys these tests use, so the pod controller creates the worker
+// StatefulSets of an exclusively placed group.
+func scheduleLeaderPods(lws *leaderworkerset.LeaderWorkerSet, replicas int) {
+	for i := 0; i < replicas; i++ {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-node-%d", lws.Namespace, i),
+			Labels: map[string]string{
+				"cloud.google.com/gke-nodepool": fmt.Sprintf("pool-%d", i),
+				"rack":                          fmt.Sprintf("rack-%d", i),
+			},
+		}}
+		gomega.Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, node))).To(gomega.Succeed())
+		var pod corev1.Pod
+		gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%d", lws.Name, i), Namespace: lws.Namespace}, &pod)).To(gomega.Succeed())
+		if pod.Spec.NodeName != "" {
+			continue
+		}
+		binding := &corev1.Binding{
+			ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+			Target:     corev1.ObjectReference{Kind: "Node", Name: node.Name},
+		}
+		gomega.Expect(k8sClient.SubResource("binding").Create(ctx, &pod, binding)).To(gomega.Succeed())
+	}
 }
