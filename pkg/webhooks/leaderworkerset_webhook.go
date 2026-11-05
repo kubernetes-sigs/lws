@@ -137,6 +137,7 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), nil, &lws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
@@ -147,13 +148,7 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
-	// A layout that already disagrees with TPU injection must stay updatable
-	// for annotation cleanup, scale-down, and finalizer removal. Scale-ups,
-	// size changes, and edits that move the object to a different invalid
-	// partition are rejected.
-	if preserveLegacyTPUSubGroup(oldLws, newLws) {
-		allErrs = withoutTPUSubGroupPolicyErrors(allErrs, &newLws.Spec)
-	}
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), &oldLws.Spec, &newLws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
@@ -695,7 +690,6 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 		((size-1)%subGroupSize != 0) {
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
 	}
-	allErrs = append(allErrs, validateTPUSubGroupPolicy(specPath, spec)...)
 	return allErrs
 }
 
@@ -703,132 +697,132 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 // env injection describe different partitions, or that cannot admit a TPU
 // leader. See https://github.com/kubernetes-sigs/lws/issues/1284.
 //
-// LeaderExcluded omits subgroup-index on the leader pod, so a leader that
-// requests google.com/tpu fails subgroup parsing in addTPUVariablesSubGroup.
-// When both the leader and the workers request TPUs, injection assumes size
-// is divisible by subGroupSize; the leader-extra layout (size-1 divisible,
-// size not) places subGroupSize+1 TPU pods in subgroup 0. When only the
-// workers request TPUs, injection shifts its partition by one, which matches
-// the labels only for that leader-extra layout. The divergence checks require
-// subGroupSize > 1 because one pod per subgroup never references a missing
-// peer, while the LeaderExcluded rejection applies at any subGroupSize: the
-// leader pod has no subgroup-index label to parse regardless.
+// A pod is injected only when its TPU container does not already set
+// TPU_WORKER_HOSTNAMES or TPU_WORKER_ID. LeaderExcluded with a TPU leader is
+// rejected when any pod is still injected: the leader has no subgroup-index
+// label, and workers are labeled without the leader while injection still
+// writes the leader into their hostname list. Otherwise subGroupSize 1 is
+// always one pod per subgroup. With a larger subgroup, leader-extra size
+// ((size-1) divisible, which implies size is not) breaks injection when both
+// pods request TPUs, and divisible size breaks it when only workers do.
 func validateTPUSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
 	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
-	if policy == nil || policy.SubGroupSize == nil {
+	if policy == nil || policy.SubGroupSize == nil || *policy.SubGroupSize < 1 {
 		return nil
 	}
 	subGroupSize := *policy.SubGroupSize
-	if subGroupSize < 1 {
-		return nil
-	}
 	size := ptr.Deref(spec.LeaderWorkerTemplate.Size, 1)
-	leaderSpec := spec.LeaderWorkerTemplate.WorkerTemplate.Spec
-	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-		leaderSpec = spec.LeaderWorkerTemplate.LeaderTemplate.Spec
-	}
+	leaderSpec := leaderPodSpec(spec)
+	workerSpec := spec.LeaderWorkerTemplate.WorkerTemplate.Spec
 	leaderTPU := accelerator.PodRequestsTPUs(leaderSpec)
-	workerTPU := accelerator.PodRequestsTPUs(spec.LeaderWorkerTemplate.WorkerTemplate.Spec)
+	workerTPU := accelerator.PodRequestsTPUs(workerSpec)
+	leaderInjected := !tpuInjectionSkipped(leaderSpec)
+	workerInjected := !tpuInjectionSkipped(workerSpec)
 	leaderExcluded := policy.Type != nil && *policy.Type == v1.SubGroupPolicyTypeLeaderExcluded
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
+	// subGroupSize > 1 precedes the remainder, so subGroupSize 0 cannot reach it.
+	// For that range, (size-1) divisible already implies size is not.
+	partitionSized := subGroupSize > 1 && size >= subGroupSize
 
 	var allErrs field.ErrorList
 	switch {
-	case leaderTPU && leaderExcluded:
+	case leaderTPU && leaderExcluded && (leaderInjected || workerInjected):
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupPolicyType"), *policy.Type,
 			"LeaderExcluded cannot be used when the leader requests google.com/tpu"))
-	case leaderTPU && workerTPU && subGroupSize > 1 && size >= subGroupSize && size%subGroupSize != 0 && (size-1)%subGroupSize == 0:
+	case leaderTPU && workerTPU && partitionSized && (size-1)%subGroupSize == 0 && (leaderInjected || workerInjected):
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
 			"size must be divisible by subGroupSize when both leader and workers request google.com/tpu"))
-	case !leaderTPU && workerTPU && !leaderExcluded && subGroupSize > 1 && size >= subGroupSize && size%subGroupSize == 0:
+	case !leaderTPU && workerInjected && !leaderExcluded && partitionSized && size%subGroupSize == 0:
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
 			"the TPU env and subgroup label partitions diverge when size is divisible by subGroupSize and the leader requests no google.com/tpu while the workers do; use size = k*subGroupSize + 1 (optionally with subGroupPolicy.subGroupPolicyType: LeaderExcluded)"))
 	}
 	return allErrs
 }
 
-// preserveLegacyTPUSubGroup reports whether an update may keep a TPU subgroup
-// layout that already fails validateTPUSubGroupPolicy. Replica scale-ups and
-// any change to the partition inputs are revalidated. Those inputs are size,
-// subGroupSize, who requests google.com/tpu, and subGroupPolicyType: holding
-// only size and replicas fixed still allows a swap between "LeaderExcluded
-// with a TPU leader" and "both pods request TPUs in the leader-extra layout",
-// which are different invalid partitions. nil and LeaderWorker are the same
-// policy, matching CRD defaulting.
-func preserveLegacyTPUSubGroup(oldLws, newLws *v1.LeaderWorkerSet) bool {
-	if oldLws == nil || newLws == nil {
-		return false
+// ValidateTPUSubGroupOnWrite checks TPU subgroup partitions for a create
+// (oldSpec nil) or an update. A previously failing spec stays writable while
+// its partition key is unchanged, so annotation cleanup and finalizer removal
+// still succeed. Replicas are outside that key: the scale subresource bypasses
+// this webhook. A key change is rechecked, including a move between invalid layouts.
+func ValidateTPUSubGroupOnWrite(specPath *field.Path, oldSpec, newSpec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	if oldSpec != nil && len(validateTPUSubGroupPolicy(specPath, oldSpec)) > 0 && tpuPartitionKey(oldSpec) == tpuPartitionKey(newSpec) {
+		return nil
 	}
-	if ptr.Deref(newLws.Spec.Replicas, 1) > ptr.Deref(oldLws.Spec.Replicas, 1) {
-		return false
-	}
-	if ptr.Deref(newLws.Spec.LeaderWorkerTemplate.Size, 1) != ptr.Deref(oldLws.Spec.LeaderWorkerTemplate.Size, 1) {
-		return false
-	}
-	if !sameSubGroupSize(oldLws.Spec.LeaderWorkerTemplate.SubGroupPolicy, newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy) {
-		return false
-	}
-	oldLeaderTPU, oldWorkerTPU := tpuRequests(&oldLws.Spec)
-	newLeaderTPU, newWorkerTPU := tpuRequests(&newLws.Spec)
-	if oldLeaderTPU != newLeaderTPU || oldWorkerTPU != newWorkerTPU {
-		return false
-	}
-	if normalizedSubGroupPolicyType(&oldLws.Spec) != normalizedSubGroupPolicyType(&newLws.Spec) {
-		return false
-	}
-	return len(validateTPUSubGroupPolicy(field.NewPath("spec"), &oldLws.Spec)) > 0
+	return validateTPUSubGroupPolicy(specPath, newSpec)
 }
 
-func tpuRequests(spec *v1.LeaderWorkerSetSpec) (leader bool, worker bool) {
-	worker = accelerator.PodRequestsTPUs(spec.LeaderWorkerTemplate.WorkerTemplate.Spec)
+// tpuSubGroupKey is the part of a spec that selects a TPU subgroup partition.
+// Whether a pod requests TPUs is not stored separately: injection runs only
+// when that bool is true and the pod has not supplied its own TPU env, and a
+// change to the bool alone cannot alter a failing partition without also
+// changing tpuInjectionSkipped.
+type tpuSubGroupKey struct {
+	size          int32
+	subGroupSize  int32
+	hasSubGroup   bool
+	policy        v1.SubGroupPolicyType
+	leaderSkipped bool
+	workerSkipped bool
+}
+
+func tpuPartitionKey(spec *v1.LeaderWorkerSetSpec) tpuSubGroupKey {
+	key := tpuSubGroupKey{
+		size:          ptr.Deref(spec.LeaderWorkerTemplate.Size, 1),
+		policy:        normalizedSubGroupPolicyType(spec),
+		leaderSkipped: tpuInjectionSkipped(leaderPodSpec(spec)),
+		workerSkipped: tpuInjectionSkipped(spec.LeaderWorkerTemplate.WorkerTemplate.Spec),
+	}
+	if policy := spec.LeaderWorkerTemplate.SubGroupPolicy; policy != nil && policy.SubGroupSize != nil {
+		key.subGroupSize = *policy.SubGroupSize
+		key.hasSubGroup = true
+	}
+	return key
+}
+
+func leaderPodSpec(spec *v1.LeaderWorkerSetSpec) corev1.PodSpec {
 	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
-		leader = accelerator.PodRequestsTPUs(spec.LeaderWorkerTemplate.LeaderTemplate.Spec)
-		return leader, worker
+		return spec.LeaderWorkerTemplate.LeaderTemplate.Spec
 	}
-	// A nil leader template inherits the worker template, including its TPU request.
-	return worker, worker
+	return spec.LeaderWorkerTemplate.WorkerTemplate.Spec
 }
 
+// tpuInjectionSkipped reports whether addTPUVariablesSubGroup returns before
+// reading subgroup labels. A pod with no TPU container takes that path too.
+func tpuInjectionSkipped(spec corev1.PodSpec) bool {
+	container := firstContainerRequestingTPUs(spec.Containers)
+	if container == nil {
+		container = firstContainerRequestingTPUs(spec.InitContainers)
+	}
+	if container == nil {
+		return true
+	}
+	for _, env := range container.Env {
+		if env.Name == accelerator.TpuWorkerHostNames || env.Name == accelerator.TpuWorkerId {
+			return true
+		}
+	}
+	return false
+}
+
+func firstContainerRequestingTPUs(containers []corev1.Container) *corev1.Container {
+	for i := range containers {
+		if accelerator.ContainersRequestTPUs(containers[i]) {
+			return &containers[i]
+		}
+	}
+	return nil
+}
+
+// normalizedSubGroupPolicyType treats an empty type as LeaderWorker. The CRD
+// defaults that field, so a stored nil and an explicit LeaderWorker are the
+// same partition.
 func normalizedSubGroupPolicyType(spec *v1.LeaderWorkerSetSpec) v1.SubGroupPolicyType {
 	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
 	if policy == nil || policy.Type == nil || *policy.Type == "" || *policy.Type == v1.SubGroupPolicyTypeLeaderWorker {
 		return v1.SubGroupPolicyTypeLeaderWorker
 	}
 	return *policy.Type
-}
-
-func sameSubGroupSize(oldPolicy, newPolicy *v1.SubGroupPolicy) bool {
-	if oldPolicy == nil || newPolicy == nil {
-		return oldPolicy == nil && newPolicy == nil
-	}
-	if oldPolicy.SubGroupSize == nil || newPolicy.SubGroupSize == nil {
-		return oldPolicy.SubGroupSize == nil && newPolicy.SubGroupSize == nil
-	}
-	return *oldPolicy.SubGroupSize == *newPolicy.SubGroupSize
-}
-
-// withoutTPUSubGroupPolicyErrors drops TPU subgroup errors already reported for
-// spec. generalValidate always runs the check; ValidateUpdate calls this only
-// after preserveLegacyTPUSubGroup has accepted the previous layout.
-func withoutTPUSubGroupPolicyErrors(allErrs field.ErrorList, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
-	tpuErrs := validateTPUSubGroupPolicy(field.NewPath("spec"), spec)
-	if len(tpuErrs) == 0 {
-		return allErrs
-	}
-	drop := make(map[string]int, len(tpuErrs))
-	for _, err := range tpuErrs {
-		drop[err.Error()]++
-	}
-	filtered := make(field.ErrorList, 0, len(allErrs))
-	for _, err := range allErrs {
-		if drop[err.Error()] > 0 {
-			drop[err.Error()]--
-			continue
-		}
-		filtered = append(filtered, err)
-	}
-	return filtered
 }
 
 func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWorkerSet) (admission.Warnings, field.ErrorList) {

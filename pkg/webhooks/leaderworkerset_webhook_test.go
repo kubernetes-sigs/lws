@@ -882,10 +882,30 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				workerTPU:    false,
 			},
 		}
+		createErrs := func(t *testing.T, lws *v1.LeaderWorkerSet) field.ErrorList {
+			t.Helper()
+			_, err := webhook.ValidateCreate(ctx, lws)
+			if err == nil {
+				return nil
+			}
+			agg, ok := err.(interface{ Errors() []error })
+			if !ok {
+				t.Fatalf("expected an aggregate validation error, got %T: %v", err, err)
+			}
+			var allErrs field.ErrorList
+			for _, item := range agg.Errors() {
+				fieldErr, ok := item.(*field.Error)
+				if !ok {
+					t.Fatalf("expected a field error, got %T: %v", item, item)
+				}
+				allErrs = append(allErrs, fieldErr)
+			}
+			return allErrs
+		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
 				lws := build(tc.replicas, tc.size, tc.subGroupSize, tc.policyType, tc.leaderTPU, tc.workerTPU, tc.implicitLeader)
-				allErrs := webhook.generalValidate(lws)
+				allErrs := createErrs(t, lws)
 				if tc.wantField == "" {
 					if len(allErrs) != 0 {
 						t.Fatalf("expected no validation errors, got %v", allErrs)
@@ -907,9 +927,89 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 			})
 		}
 
+		setUserTPUEnv := func(tpl *corev1.PodTemplateSpec) {
+			tpl.Spec.Containers[0].Env = []corev1.EnvVar{{
+				Name:  accelerator.TpuWorkerHostNames,
+				Value: "custom.default",
+			}}
+		}
+
+		t.Run("worker-supplied tpu env is not injected so a cpu leader stays valid", func(t *testing.T) {
+			lws := build(1, 4, 2, nil, false, true, false)
+			setUserTPUEnv(&lws.Spec.LeaderWorkerTemplate.WorkerTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("worker-supplied tpu env does not hide a leader that still fails admission", func(t *testing.T) {
+			lws := build(1, 5, 2, &leaderExcluded, true, true, false)
+			setUserTPUEnv(&lws.Spec.LeaderWorkerTemplate.WorkerTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 1 {
+				t.Fatalf("expected one validation error, got %v", allErrs)
+			}
+			if allErrs[0].Field != subGroupPolicyTypeField {
+				t.Errorf("expected field %q, got %q", subGroupPolicyTypeField, allErrs[0].Field)
+			}
+			if !strings.Contains(allErrs[0].Detail, leaderExcludedDetail) {
+				t.Errorf("expected detail to contain %q, got %q", leaderExcludedDetail, allErrs[0].Detail)
+			}
+		})
+
+		t.Run("leader-supplied tpu env still rejects LeaderExcluded when workers are injected", func(t *testing.T) {
+			lws := build(1, 5, 2, &leaderExcluded, true, true, false)
+			setUserTPUEnv(lws.Spec.LeaderWorkerTemplate.LeaderTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 1 {
+				t.Fatalf("expected one validation error, got %v", allErrs)
+			}
+			if allErrs[0].Field != subGroupPolicyTypeField {
+				t.Errorf("expected field %q, got %q", subGroupPolicyTypeField, allErrs[0].Field)
+			}
+			if !strings.Contains(allErrs[0].Detail, leaderExcludedDetail) {
+				t.Errorf("expected detail to contain %q, got %q", leaderExcludedDetail, allErrs[0].Detail)
+			}
+		})
+
+		t.Run("leader-supplied tpu env allows LeaderExcluded when workers request no tpu", func(t *testing.T) {
+			lws := build(1, 5, 2, &leaderExcluded, true, false, false)
+			setUserTPUEnv(lws.Spec.LeaderWorkerTemplate.LeaderTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("both pods supplying tpu env skip LeaderExcluded injection", func(t *testing.T) {
+			lws := build(1, 5, 2, &leaderExcluded, true, true, false)
+			setUserTPUEnv(lws.Spec.LeaderWorkerTemplate.LeaderTemplate)
+			setUserTPUEnv(&lws.Spec.LeaderWorkerTemplate.WorkerTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 0 {
+				t.Fatalf("expected no validation errors, got %v", allErrs)
+			}
+		})
+
+		t.Run("worker-supplied tpu env does not hide a leader that is still injected", func(t *testing.T) {
+			lws := build(1, 5, 2, nil, true, true, false)
+			setUserTPUEnv(&lws.Spec.LeaderWorkerTemplate.WorkerTemplate)
+			allErrs := createErrs(t, lws)
+			if len(allErrs) != 1 {
+				t.Fatalf("expected one validation error, got %v", allErrs)
+			}
+			if allErrs[0].Field != subGroupSizeField {
+				t.Errorf("expected field %q, got %q", subGroupSizeField, allErrs[0].Field)
+			}
+			if !strings.Contains(allErrs[0].Detail, bothTPUDetail) {
+				t.Errorf("expected detail to contain %q, got %q", bothTPUDetail, allErrs[0].Detail)
+			}
+		})
+
 		t.Run("size 0 does not add a tpu subgroup error on top of the size errors", func(t *testing.T) {
 			lws := build(1, 0, 2, nil, false, true, false)
-			allErrs := webhook.generalValidate(lws)
+			allErrs := createErrs(t, lws)
 			if len(allErrs) == 0 {
 				t.Fatal("expected size validation errors")
 			}
@@ -959,10 +1059,9 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				new:  build(1, 4, 2, nil, false, true, false),
 			},
 			{
-				name:       "scaling replicas up rejects a legacy divergent partition",
-				old:        build(1, 4, 2, nil, false, true, false),
-				new:        build(2, 4, 2, nil, false, true, false),
-				wantDetail: divergeDetail,
+				name: "scaling replicas up keeps a legacy divergent partition",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new:  build(2, 4, 2, nil, false, true, false),
 			},
 			{
 				name:       "resizing to another divisible size rejects the divergent partition",
@@ -996,6 +1095,35 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				name:       "LeaderExcluded with a tpu leader cannot switch to LeaderWorker",
 				old:        build(1, 5, 2, &leaderExcluded, true, true, false),
 				new:        build(1, 5, 2, &leaderWorker, true, true, false),
+				wantDetail: bothTPUDetail,
+			},
+			{
+				name: "adding worker tpu env makes a divergent partition valid",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new: func() *v1.LeaderWorkerSet {
+					updated := build(1, 4, 2, nil, false, true, false)
+					setUserTPUEnv(&updated.Spec.LeaderWorkerTemplate.WorkerTemplate)
+					return updated
+				}(),
+			},
+			{
+				name: "leader tpu env alone does not make LeaderExcluded workers valid",
+				old:  build(1, 5, 2, &leaderExcluded, true, true, false),
+				new: func() *v1.LeaderWorkerSet {
+					updated := build(1, 5, 2, &leaderExcluded, true, true, false)
+					setUserTPUEnv(updated.Spec.LeaderWorkerTemplate.LeaderTemplate)
+					return updated
+				}(),
+				wantDetail: leaderExcludedDetail,
+			},
+			{
+				name: "removing leader tpu env on an invalid both-tpu group stays rejected",
+				old: func() *v1.LeaderWorkerSet {
+					existing := build(1, 5, 2, nil, true, true, false)
+					setUserTPUEnv(existing.Spec.LeaderWorkerTemplate.LeaderTemplate)
+					return existing
+				}(),
+				new:        build(1, 5, 2, nil, true, true, false),
 				wantDetail: bothTPUDetail,
 			},
 		}

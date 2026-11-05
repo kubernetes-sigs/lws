@@ -118,6 +118,11 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 			allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: role.ObjectMeta, Spec: role.Spec}
 			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws)...)
+			var oldSpec *leaderworkerset.LeaderWorkerSetSpec
+			if oldRole != nil {
+				oldSpec = &oldRole.Spec
+			}
+			allErrs = append(allErrs, webhooks.ValidateTPUSubGroupOnWrite(rolePath.Child("spec"), oldSpec, &role.Spec)...)
 		}
 		if len(role.SubRoles) > 0 {
 			if role.Scaling != nil && !unchanged {
