@@ -279,6 +279,9 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if topologyKey, _ := utils.ExclusiveTopologyKey(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
+			if subGroupTopologyKey, _ := utils.SubGroupExclusiveTopologyKey(&lws); subGroupTopologyKey != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
+				return fmt.Errorf("mismatch subgroup exclusive placement annotation between worker statefulset and leaderworkerset")
+			}
 			cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")
 			if err != nil {
 				return err

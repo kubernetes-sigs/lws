@@ -430,7 +430,7 @@ func TestValidateCreate(t *testing.T) {
 						{
 							Name: "prefill",
 							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
 								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
 							},
 						},
@@ -458,7 +458,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										WorkerTemplate: corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack"}},
 										},
 									},
 								},
@@ -484,7 +484,7 @@ func TestValidateCreate(t *testing.T) {
 						{
 							Name: "prefill",
 							LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
 								Spec:       leaderworkerset.LeaderWorkerSetSpec{Replicas: ptr.To(int32(2))},
 							},
 						},
@@ -512,7 +512,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										LeaderTemplate: &corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
 										},
 									},
 								},
@@ -542,7 +542,7 @@ func TestValidateCreate(t *testing.T) {
 									Replicas: ptr.To(int32(2)),
 									LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
 										WorkerTemplate: corev1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "cloud.google.com/gke-nodepool"}},
+											ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}},
 										},
 									},
 								},

@@ -216,6 +216,11 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 		if role.Spec.PodTerminationPolicy == leaderworkersetv1.SequentialPodTerminationPolicy {
 			role.Spec.PodTerminationPolicy = ""
 		}
+
+		// An absent policy and one without exclusive placement hash the same, so
+		// setting type None does not roll the slices. A nil policy stays nil, so
+		// existing hashes do not change.
+		role.Spec.PlacementPolicy = normalizedPlacementPolicy(role.Spec.PlacementPolicy)
 	}
 
 	// spec.roles is a map-style list keyed by name, so its order has no

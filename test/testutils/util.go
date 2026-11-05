@@ -210,6 +210,9 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
 		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
+	if subGroupTopologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+		pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = subGroupTopologyKey
+	}
 	// Set the controller owner reference for garbage collection and reconciliation.
 	if err := ctrl.SetControllerReference(&leaderSts, pod, scheme.Scheme); err != nil {
 		return nil, err

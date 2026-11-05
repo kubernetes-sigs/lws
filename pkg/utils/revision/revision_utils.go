@@ -270,11 +270,12 @@ func revisionRecordsPlacement(revision *appsv1.ControllerRevision, placementInDa
 // revision before it compares revisions, so later placement changes create a
 // new revision.
 func RecordsPlacement(revision *appsv1.ControllerRevision) (bool, error) {
-	placementInData, err := revisionDataHasPlacement(revision)
-	if err != nil {
-		return false, err
+	// The controller calls this on every reconcile, so check the marker first
+	// and unmarshal the revision data only for revisions without it.
+	if revision.Annotations[placementRecordedAnnotationKey] == "true" {
+		return true, nil
 	}
-	return revisionRecordsPlacement(revision, placementInData), nil
+	return revisionDataHasPlacement(revision)
 }
 
 // NewRevisionRecordingPlacement returns a revision that records placement for a
