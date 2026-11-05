@@ -136,6 +136,7 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
+	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
 	allErrs = append(allErrs, cdErrs...)
 	return warnings, allErrs.ToAggregate()
@@ -145,6 +146,7 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
+	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
 	allErrs = append(allErrs, cdErrs...)
 	specPath := field.NewPath("spec")
@@ -174,6 +176,34 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	}
 
 	return warnings, allErrs.ToAggregate()
+}
+
+func (r *LeaderWorkerSetWebhook) validateVolcanoTopology(oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
+	if r.SchedulerProvider != schedulerprovider.Volcano {
+		return nil
+	}
+	if oldLws != nil {
+		// Allow unrelated updates to objects that already have invalid annotations.
+		unchanged := true
+		for _, key := range []string{
+			schedulerprovider.VolcanoNetworkTopologyTierAnnotationKey,
+			schedulerprovider.VolcanoNetworkTopologyModeAnnotationKey,
+		} {
+			oldValue, oldSet := oldLws.Annotations[key]
+			newValue, newSet := lws.Annotations[key]
+			if oldSet != newSet || oldValue != newValue {
+				unchanged = false
+				break
+			}
+		}
+		if unchanged {
+			return nil
+		}
+	}
+	if _, err := schedulerprovider.NetworkTopologyFromAnnotations(lws); err != nil {
+		return field.ErrorList{field.Invalid(field.NewPath("metadata", "annotations"), field.OmitValueType{}, err.Error())}
+	}
+	return nil
 }
 
 func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {

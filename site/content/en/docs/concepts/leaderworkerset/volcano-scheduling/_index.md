@@ -22,9 +22,9 @@ gangSchedulingManagement:
   schedulerProvider: volcano
 ```
 
-Enabling the provider also creates Volcano PodGroups for LWS workloads using
-other schedulers. Without the topology annotations, those PodGroups have no
-`networkTopology` setting.
+When you enable this provider, LWS also creates Volcano PodGroups for newly
+created pods that use other schedulers. Without the topology annotations, those
+PodGroups have no `networkTopology` setting.
 
 ## Configure a LeaderWorkerSet
 
@@ -61,18 +61,21 @@ spec:
 
 Each replica's four pods must fit within one rack. The two replicas can use
 different racks. Use `LeaderCreated` to schedule the leader and workers as a
-gang; `LeaderReady` sets `minMember` to `1`.
+gang. `LeaderReady` sets `minMember` to `1`.
 
-The tier must be a non-negative integer. Mode defaults to `hard`; use `soft`
-to allow placement across topology domains. Mode requires a tier.
+The tier must be a non-negative integer. Mode defaults to `hard`. Set mode to
+`soft` to allow placement across topology domains. Mode requires the tier
+annotation.
 
-Invalid values stop the controller from creating the PodGroup. With
-`spec.scheduling`, LWS also reports `WorkloadSchedulingCreated=False` with
-reason `InvalidSchedulingConfiguration` and a Warning event. These checks
-run in the controller, not during LWS admission.
+When the Volcano provider is enabled, the LWS webhook rejects invalid topology
+annotations on create and when these annotations change on update. If an
+existing LWS has invalid values, updates that leave both annotations unchanged
+are still allowed, including scaling. Invalid values stop PodGroup creation.
+For workloads with `spec.scheduling`, the LWS controller also reports
+`WorkloadSchedulingCreated=False` with reason `InvalidSchedulingConfiguration`.
 
 ## Existing workloads
 
-Changing the annotations does not update existing PodGroups or restart their
-pods. Groups created later during scaling or recovery use the new values.
-To change the topology policy for the whole workload, create a new LWS.
+Annotation updates do not change current PodGroups or restart their pods. LWS
+applies the new values only when it creates new PodGroups. To change the
+topology policy for the whole workload, create a new LWS.

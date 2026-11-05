@@ -33,6 +33,73 @@ import (
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
+func TestVolcanoTopologyAdmission(t *testing.T) {
+	tierKey := schedulerprovider.VolcanoNetworkTopologyTierAnnotationKey
+	modeKey := schedulerprovider.VolcanoNetworkTopologyModeAnnotationKey
+	for _, tc := range []struct {
+		name        string
+		provider    schedulerprovider.ProviderType
+		old         map[string]string
+		annotations map[string]string
+		wantError   bool
+	}{
+		{name: "no topology", provider: schedulerprovider.Volcano},
+		{name: "valid tier", provider: schedulerprovider.Volcano, annotations: map[string]string{tierKey: "1"}},
+		{name: "invalid tier on create", provider: schedulerprovider.Volcano, annotations: map[string]string{tierKey: "rack"}, wantError: true},
+		{name: "provider disabled", annotations: map[string]string{tierKey: "rack"}},
+		{name: "other provider", provider: schedulerprovider.Kubernetes, annotations: map[string]string{tierKey: "rack"}},
+		{
+			name: "unchanged invalid annotations allow scaling", provider: schedulerprovider.Volcano,
+			old: map[string]string{tierKey: "rack"}, annotations: map[string]string{tierKey: "rack", "example.com/note": "updated"},
+		},
+		{
+			name: "changed invalid tier is rejected", provider: schedulerprovider.Volcano,
+			old: map[string]string{tierKey: "rack"}, annotations: map[string]string{tierKey: "invalid"}, wantError: true,
+		},
+		{
+			name: "invalid mode on update", provider: schedulerprovider.Volcano,
+			old: map[string]string{tierKey: "1"}, annotations: map[string]string{tierKey: "1", modeKey: "invalid"}, wantError: true,
+		},
+		{
+			name: "adding an empty tier is rejected", provider: schedulerprovider.Volcano,
+			old: map[string]string{}, annotations: map[string]string{tierKey: ""}, wantError: true,
+		},
+		{
+			name: "correcting an invalid tier", provider: schedulerprovider.Volcano,
+			old: map[string]string{tierKey: "rack"}, annotations: map[string]string{tierKey: "2"},
+		},
+		{
+			name: "removing topology annotations", provider: schedulerprovider.Volcano,
+			old: map[string]string{tierKey: "rack", modeKey: "invalid"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			hook := &LeaderWorkerSetWebhook{SchedulerProvider: tc.provider}
+			lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+			if err := hook.Default(ctx, lws); err != nil {
+				t.Fatal(err)
+			}
+			lws.Annotations = tc.annotations
+			var err error
+			if tc.old == nil {
+				_, err = hook.ValidateCreate(ctx, lws)
+			} else {
+				oldLws := lws.DeepCopy()
+				oldLws.Annotations = tc.old
+				lws.Spec.Replicas = ptr.To[int32](0)
+				_, err = hook.ValidateUpdate(ctx, oldLws, lws)
+			}
+			if (err != nil) != tc.wantError {
+				t.Fatalf("validation error = %v, want error = %v", err, tc.wantError)
+			}
+			if err != nil && !strings.Contains(err.Error(), "metadata.annotations") {
+				t.Fatalf("expected an annotation validation error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestGetPercentValue(t *testing.T) {
 	tests := []struct {
 		name           string

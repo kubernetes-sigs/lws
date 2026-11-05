@@ -69,7 +69,7 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
 		}
 	}
-	if _, err := networkTopologyFromAnnotations(lws); err != nil {
+	if _, err := NetworkTopologyFromAnnotations(lws); err != nil {
 		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
 	}
 	return nil
@@ -138,7 +138,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		return err
 	}
 
-	networkTopology, err := networkTopologyFromAnnotations(lws)
+	networkTopology, err := NetworkTopologyFromAnnotations(lws)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,9 @@ func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	return nil
 }
 
-func networkTopologyFromAnnotations(lws *leaderworkerset.LeaderWorkerSet) (*volcanov1beta1.NetworkTopologySpec, error) {
+// NetworkTopologyFromAnnotations parses the Volcano topology annotations shared
+// by admission validation and PodGroup creation. It returns nil when neither is set.
+func NetworkTopologyFromAnnotations(lws *leaderworkerset.LeaderWorkerSet) (*volcanov1beta1.NetworkTopologySpec, error) {
 	tierValue, hasTier := lws.Annotations[VolcanoNetworkTopologyTierAnnotationKey]
 	modeValue, hasMode := lws.Annotations[VolcanoNetworkTopologyModeAnnotationKey]
 	if !hasTier {

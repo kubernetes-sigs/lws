@@ -33,6 +33,18 @@ spec:
                   - type: integer
                   - type: string
                   x-kubernetes-int-or-string: true
+              networkTopology:
+                type: object
+                properties:
+                  mode:
+                    type: string
+                    enum:
+                    - hard
+                    - soft
+                    default: hard
+                  highestTierAllowed:
+                    type: integer
+                    default: 1
           status:
             type: object
             properties:
