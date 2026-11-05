@@ -72,6 +72,17 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
 	var pg volcanov1beta1.PodGroup
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+	if pgName == "" {
+		if lws.Spec.Scheduling != nil ||
+			leaderPod.Spec.SchedulerName == string(Volcano) ||
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName == string(Volcano) {
+			return fmt.Errorf("pod %s/%s is missing annotation %q required for Volcano gang scheduling", leaderPod.Namespace, leaderPod.Name, volcanov1beta1.KubeGroupNameAnnotationKey)
+		}
+		// Pods created before the provider was enabled did not receive the
+		// annotation from the CREATE webhook. Leave those groups on their
+		// existing scheduler without adding a PodGroup.
+		return nil
+	}
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
 	// With spec.scheduling, Ordinal PodGroups are owned by the LWS since an

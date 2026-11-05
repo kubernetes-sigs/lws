@@ -42,8 +42,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -683,6 +685,26 @@ func TestPodCtrlReconcilePodCreatesWorkerStatefulSet(t *testing.T) {
 	}
 	if len(stored.Status.Conditions) != 0 {
 		t.Errorf("leader pod conditions = %v, want none", stored.Status.Conditions)
+	}
+}
+
+func TestPodCtrlCreatesWorkersAfterEnablingVolcano(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	if err := volcanov1beta1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	lws := podCtrlBasicLWS()
+	leader := podCtrlLeaderPod(lws, "test-lws-0")
+	leader.Spec.SchedulerName = corev1.DefaultSchedulerName
+	revision := podCtrlRevisionFor(t, scheme, lws, leader)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, revision).Build()
+	reconciler := NewPodReconciler(c, scheme, events.NewFakeRecorder(10), schedulerprovider.NewVolcanoProvider(c))
+
+	if _, err := reconciler.reconcilePod(context.Background(), podReconcileRequestForPod(leader, false)); err != nil {
+		t.Fatalf("reconcilePod() error = %v", err)
+	}
+	if _, found := podCtrlGetStatefulSet(t, c, client.ObjectKeyFromObject(leader)); !found {
+		t.Fatal("reconcilePod() did not create workers for the existing leader")
 	}
 }
 
