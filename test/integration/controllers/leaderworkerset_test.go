@@ -3485,6 +3485,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				makeLeaderWorkerSet func(nsName string) *wrappers.LeaderWorkerSetWrapper
 				updates             []*update
 				checkPodGroups      func(context.Context, client.Client, *leaderworkerset.LeaderWorkerSet) // New function to check PodGroups
+				expectedTopology    *volcanov1beta1.NetworkTopologySpec
 			}
 
 			ginkgo.DescribeTable("gang scheduling integration tests",
@@ -3520,6 +3521,16 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					if tc.checkPodGroups != nil {
 						tc.checkPodGroups(ctx, k8sClient, lws)
 					}
+					gomega.Eventually(func(g gomega.Gomega) {
+						var groups volcanov1beta1.PodGroupList
+						g.Expect(k8sClient.List(ctx, &groups, client.InNamespace(lws.Namespace), client.MatchingLabels{
+							leaderworkerset.SetNameLabelKey: lws.Name,
+						})).To(gomega.Succeed())
+						g.Expect(groups.Items).To(gomega.HaveLen(int(*lws.Spec.Replicas)))
+						for _, group := range groups.Items {
+							g.Expect(group.Spec.NetworkTopology).To(gomega.Equal(tc.expectedTopology))
+						}
+					}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 
 					// Perform a series of updates to LeaderWorkerSet resources and check
 					// resulting LeaderWorkerSet state after each update.
@@ -3546,6 +3557,27 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 					},
 					checkPodGroups: func(ctx context.Context, c client.Client, lws *leaderworkerset.LeaderWorkerSet) {
 						testing.ExpectValidPodGroups(ctx, c, schedulerprovider.Volcano, lws, int(*lws.Spec.Replicas))
+					},
+				}),
+				ginkgo.Entry("PodGroup persists hard topology from a tier annotation", &gangTestCase{
+					makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+						return wrappers.BuildLeaderWorkerSet(nsName).Name("test-topology-hard").Replica(2).Size(2).Annotation(map[string]string{
+							schedulerprovider.VolcanoNetworkTopologyTierAnnotationKey: "1",
+						})
+					},
+					expectedTopology: &volcanov1beta1.NetworkTopologySpec{
+						Mode: volcanov1beta1.HardNetworkTopologyMode, HighestTierAllowed: ptr.To(1),
+					},
+				}),
+				ginkgo.Entry("PodGroup persists soft topology with a different tier", &gangTestCase{
+					makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+						return wrappers.BuildLeaderWorkerSet(nsName).Name("test-topology-soft").Replica(1).Size(2).Annotation(map[string]string{
+							schedulerprovider.VolcanoNetworkTopologyTierAnnotationKey: "2",
+							schedulerprovider.VolcanoNetworkTopologyModeAnnotationKey: "soft",
+						})
+					},
+					expectedTopology: &volcanov1beta1.NetworkTopologySpec{
+						Mode: volcanov1beta1.SoftNetworkTopologyMode, HighestTierAllowed: ptr.To(2),
 					},
 				}),
 				ginkgo.Entry("Rolling update with PodGroup recreation", &gangTestCase{

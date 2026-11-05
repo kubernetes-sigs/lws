@@ -44,6 +44,11 @@ description:  A reference for all labels, annotations, and environment variables
 | `leaderworkerset.sigs.k8s.io/compute-domain-containers`   | Comma-separated container names to inject the ComputeDomain DRA claim into. | vllm                         | PodTemplateSpec (`leaderTemplate`, `workerTemplate`)                                   |
 | `leaderworkerset.sigs.k8s.io/compute-domain-prefix`       | Controller-managed prefix (`<lwsName>-<uid5>`) used by the pod webhook to derive replica ComputeDomain names. | deepseek-r1-391a8 | PodTemplateSpec (leader)                                                        |
 | `leaderworkerset.sigs.k8s.io/compute-domain-name`         | Controller-managed ComputeDomain name shared by a replica's leader and worker pods. | deepseek-r1-391a8-abc-0-x7k9p | Pod (leader), PodTemplateSpec (worker)                                          |
+| `volcano.sh/network-topology-highest-tier-allowed` | Highest HyperNode tier allowed for each replica. Must be a non-negative integer. | `"1"` | LeaderWorkerSet |
+| `volcano.sh/network-topology-mode` | Volcano topology mode: `hard` (default) or `soft`. Requires the tier annotation. | `hard` | LeaderWorkerSet |
+
+See [Volcano Network Topology](/docs/concepts/leaderworkerset/volcano-scheduling/)
+for setup and examples.
 
 # Environment Variables
 
