@@ -474,14 +474,16 @@ helm: ## Download helm locally if necessary.
 	GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install helm.sh/helm/v3/cmd/helm@$(HELM_VERSION)
 
 HELM_PLUGINS_DIR = $(PROJECT_DIR)/bin/helm-plugins
+HELM_CACHE_DIR = $(PROJECT_DIR)/bin/helm-cache
+HELM_ENV = HELM_PLUGINS=$(HELM_PLUGINS_DIR) HELM_CACHE_HOME=$(HELM_CACHE_DIR)
 .PHONY: helm-unittest
 helm-unittest: update-helm helm ## Run Helm chart unit tests (helm-unittest plugin).
-	@if [ "$$(HELM_PLUGINS=$(HELM_PLUGINS_DIR) $(HELM) plugin list 2>/dev/null | awk '$$1=="unittest"{print "v"$$2}')" != "$(HELM_UNITTEST_VERSION)" ]; then \
-		HELM_PLUGINS=$(HELM_PLUGINS_DIR) $(HELM) plugin uninstall unittest >/dev/null 2>&1 || true; \
-		HELM_PLUGINS=$(HELM_PLUGINS_DIR) $(HELM) plugin install https://github.com/helm-unittest/helm-unittest.git --version $(HELM_UNITTEST_VERSION) || \
-			{ HELM_PLUGINS=$(HELM_PLUGINS_DIR) $(HELM) plugin uninstall unittest >/dev/null 2>&1; exit 1; }; \
+	@if [ "$$($(HELM_ENV) $(HELM) plugin list 2>/dev/null | awk '$$1=="unittest"{print "v"$$2}')" != "$(HELM_UNITTEST_VERSION)" ]; then \
+		$(HELM_ENV) $(HELM) plugin uninstall unittest >/dev/null 2>&1 || true; \
+		$(HELM_ENV) $(HELM) plugin install https://github.com/helm-unittest/helm-unittest.git --version $(HELM_UNITTEST_VERSION) || \
+			{ $(HELM_ENV) $(HELM) plugin uninstall unittest >/dev/null 2>&1; exit 1; }; \
 	fi
-	HELM_PLUGINS=$(HELM_PLUGINS_DIR) $(HELM) unittest charts/lws --strict
+	$(HELM_ENV) $(HELM) unittest charts/lws --strict
 
 .PHONY: helm-verify
 helm-verify: update-helm helm helm-unittest ## Verify the Helm chart and generated RBAC templates.
