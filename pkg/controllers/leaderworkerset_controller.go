@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -73,6 +74,7 @@ type LeaderWorkerSetReconciler struct {
 	SchedulerProvider schedulerprovider.SchedulerProvider
 
 	revisionEqualityCache *lru.Cache
+	pendingDeletes        pendingLeaderDeletes
 }
 
 var (
@@ -87,6 +89,8 @@ const (
 	// active rolling update so concurrent or subsequent scale-ups do not consume
 	// the maxUnavailable budget of existing groups.
 	rolloutBaselineAnnotationKey = "leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"
+
+	pendingDeleteRequeueDelay = 100 * time.Millisecond
 )
 
 const (
@@ -163,10 +167,15 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Get leaderworkerset object
 	lws := &leaderworkerset.LeaderWorkerSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, lws); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			r.pendingDeletes.forgetParent(req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	if lws.DeletionTimestamp != nil {
+		r.pendingDeletes.forgetParent(req.NamespacedName)
 		if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {
 			if err := r.deleteWorkerStatefulSets(ctx, lws); err != nil {
 				return ctrl.Result{}, err
@@ -184,6 +193,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	ctx = ctrl.LoggerInto(ctx, log)
 
 	if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash {
+		r.pendingDeletes.forgetParent(req.NamespacedName)
 		return r.reconcileHash(ctx, lws)
 	}
 
@@ -290,6 +300,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	var requeueDelete bool
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
@@ -304,7 +315,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, updateMsg, updateMsg)
 	} else if !lwsUpdated && plan.baseline != nil {
-		if err := r.deleteStaleOrdinalLeaders(ctx, lws, leaderSts, targetRevisionKey, partition, replicas, plan.floor, plan.states); err != nil {
+		var err error
+		requeueDelete, err = r.deleteStaleOrdinalLeaders(ctx, lws, leaderSts, targetRevisionKey, partition, replicas, plan.floor)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -337,6 +350,12 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}
 	log.V(2).Info("Leader Reconcile completed.")
+	if plan.requeue || r.pendingDeletes.hasUncertain(client.ObjectKeyFromObject(lws)) {
+		return ctrl.Result{RequeueAfter: pendingDeleteRequeueDelay}, nil
+	}
+	if requeueDelete {
+		return ctrl.Result{Requeue: true}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -668,7 +687,7 @@ type rollingUpdatePlan struct {
 	// recorded on the leader StatefulSet via rolloutBaselineAnnotationKey.
 	baseline *int32
 	floor    int32
-	states   []replicaState
+	requeue  bool
 }
 
 func parseNonNegativeInt32(raw string) (int32, error) {
@@ -745,14 +764,12 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	}
 	burstReplicas := lwsReplicas + int32(maxSurge)
 
-	wantReplicas := func(unreadyReplicas int32) int32 {
-		finalReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), unreadyReplicas)
+	recordSurgeDeletionEvent := func(finalReplicas int32) {
 		if finalReplicas == stsReplicas-1 {
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
 		} else if finalReplicas < stsReplicas {
 			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1))
 		}
-		return finalReplicas
 	}
 
 	// Case 2: New or superseding template revision. Publish the new template and
@@ -770,11 +787,30 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 				baseline:  ptr.To(baseline),
 			}, nil
 		}
-		targetReplicas := wantReplicas(lwsReplicas)
+		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsReplicas)
+		effectiveBaseline := min(baseline, lwsReplicas)
+		effectiveUnavailable := int32(min(maxUnavailable, int(lwsReplicas)))
+		floor := utils.NonZeroValue(effectiveBaseline - effectiveUnavailable)
+		var requeue bool
+		if targetReplicas < min(stsReplicas, burstReplicas) && floor > 0 {
+			states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
+			if err != nil {
+				return rollingUpdatePlan{}, err
+			}
+			if hasUncertain {
+				targetReplicas = min(stsReplicas, burstReplicas)
+				requeue = true
+			} else {
+				targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, burstReplicas, floor)
+			}
+		}
+		recordSurgeDeletionEvent(targetReplicas)
 		return rollingUpdatePlan{
 			partition: min(targetReplicas, stsReplicas),
 			replicas:  targetReplicas,
 			baseline:  ptr.To(baseline),
+			floor:     floor,
+			requeue:   requeue,
 		}, nil
 	}
 
@@ -823,14 +859,20 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	// the previous generation) so condemned ordinals are retired and
 	// ReplicasAnnotationKey stays synchronized before advancing partition.
 	if lwsReplicas < originalLwsReplicas {
-		states, err := r.getReplicaStatesForStatefulSet(ctx, lws, sts, stsReplicas, revisionKey)
+		states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
 		if err != nil {
 			return rollingUpdatePlan{}, err
 		}
 		lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
-		targetReplicas := wantReplicas(lwsUnreadyReplicas)
+		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+		if hasUncertain {
+			targetReplicas = max(targetReplicas, min(stsReplicas, burstReplicas))
+		} else {
+			targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, burstReplicas, floor)
+		}
+		recordSurgeDeletionEvent(targetReplicas)
 		var nextBaseline *int32
-		if !stsObserved || hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
+		if !stsObserved || hasRolloutBaseline || hasUncertain || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
 			nextBaseline = ptr.To(baseline)
 		}
 		return rollingUpdatePlan{
@@ -838,7 +880,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 			replicas:  targetReplicas,
 			baseline:  nextBaseline,
 			floor:     floor,
-			states:    states,
+			requeue:   hasUncertain,
 		}, nil
 	}
 
@@ -854,14 +896,25 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		}, nil
 	}
 
-	states, err := r.getReplicaStatesForStatefulSet(ctx, lws, sts, stsReplicas, revisionKey)
+	states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
 	if err != nil {
 		return rollingUpdatePlan{}, err
+	}
+	if hasUncertain {
+		return rollingUpdatePlan{
+			partition: partition,
+			replicas:  stsReplicas,
+			baseline:  ptr.To(baseline),
+			floor:     floor,
+			requeue:   true,
+		}, nil
 	}
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 
 	// Case 5: Advance partition as far as the availability floor allows.
-	targetReplicas := wantReplicas(lwsUnreadyReplicas)
+	rawTargetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+	targetReplicas := preserveFloorDuringSurgeTrim(states, rawTargetReplicas, stsReplicas, burstReplicas, floor)
+	recordSurgeDeletionEvent(targetReplicas)
 	activeStates := states[:min(len(states), int(targetReplicas))]
 	nextPartition := rollingUpdatePartitionWithFloor(activeStates, floor, min(partition, targetReplicas), userPartition)
 
@@ -874,7 +927,6 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		replicas:  targetReplicas,
 		baseline:  nextBaseline,
 		floor:     floor,
-		states:    states,
 	}, nil
 }
 
@@ -907,18 +959,17 @@ func (r *LeaderWorkerSetReconciler) applyLeaderStatefulSet(ctx context.Context, 
 // higher ordinals (e.g. MaxUnavailableStatefulSet disabled prior to K8s 1.35).
 // Once the leader StatefulSet has observed both the target revision and the
 // lowered partition, stale non-terminating leader pods in [partition, replicas)
-// that sit below an unready higher ordinal are foreground-deleted with a UID
-// precondition so StatefulSetController immediately recreates them on UpdateRevision.
+// that sit below an unready higher ordinal are foreground-deleted with UID and
+// ResourceVersion preconditions and tracked in pendingDeletes until observed.
 func (r *LeaderWorkerSetReconciler) deleteStaleOrdinalLeaders(
 	ctx context.Context,
 	lws *leaderworkerset.LeaderWorkerSet,
 	leaderSts *appsv1.StatefulSet,
 	revisionKey string,
 	partition, replicas, floor int32,
-	states []replicaState,
-) error {
+) (bool, error) {
 	if leaderSts == nil ||
-		len(states) == 0 ||
+		replicas <= 0 ||
 		leaderSts.Status.ObservedGeneration == 0 ||
 		leaderSts.Status.ObservedGeneration < leaderSts.Generation ||
 		revisionutils.GetRevisionKey(leaderSts) != revisionKey ||
@@ -926,16 +977,19 @@ func (r *LeaderWorkerSetReconciler) deleteStaleOrdinalLeaders(
 		leaderSts.Spec.UpdateStrategy.RollingUpdate == nil ||
 		leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition == nil ||
 		*leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition != partition {
-		return nil
+		return false, nil
+	}
+
+	states, leaders, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, leaderSts, replicas, revisionKey)
+	if err != nil {
+		return false, err
+	}
+	if hasUncertain || len(states) == 0 {
+		return hasUncertain, nil
 	}
 
 	activeLimit := min(len(states), int(replicas))
-	var survivingReady int32
-	for idx := 0; idx < activeLimit; idx++ {
-		if states[idx].ready {
-			survivingReady++
-		}
-	}
+	survivingReady := countReadyStates(states[:activeLimit])
 
 	highestUnready := int32(-1)
 	for idx := replicas - 1; idx > partition; idx-- {
@@ -945,65 +999,35 @@ func (r *LeaderWorkerSetReconciler) deleteStaleOrdinalLeaders(
 		}
 	}
 	if highestUnready <= partition {
-		return nil
+		return false, nil
 	}
 
-	canDeleteAny := false
-	for idx := partition; idx < highestUnready; idx++ {
-		if int(idx) < len(states) && !states[idx].updated && (!states[idx].ready || survivingReady > floor) {
-			canDeleteAny = true
-			break
-		}
-	}
-	if !canDeleteAny {
-		return nil
-	}
-
-	var leaderPodList corev1.PodList
-	if err := r.List(ctx, &leaderPodList, client.InNamespace(lws.Namespace), client.MatchingLabels{
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.WorkerIndexLabelKey: "0",
-	}); err != nil {
-		return err
-	}
-
-	staleByOrd := make(map[int32]*corev1.Pod)
-	for i := range leaderPodList.Items {
-		pod := &leaderPodList.Items[i]
-		if pod.DeletionTimestamp != nil || !isControlledByUID(pod, leaderSts.UID) {
-			continue
-		}
-		ord, err := strconv.Atoi(pod.Labels[leaderworkerset.GroupIndexLabelKey])
-		if err != nil || int32(ord) < partition || int32(ord) >= highestUnready {
-			continue
-		}
-		if pod.Name != fmt.Sprintf("%s-%d", lws.Name, ord) || leaderPodAtTargetRevision(pod, leaderSts, revisionKey) {
-			continue
-		}
-		staleByOrd[int32(ord)] = pod
-	}
-
-	propagation := metav1.DeletePropagationForeground
 	for ord := highestUnready - 1; ord >= partition; ord-- {
-		pod := staleByOrd[ord]
-		if pod == nil {
+		if int(ord) >= len(leaders) {
 			continue
 		}
-		if int(ord) < len(states) && states[ord].ready {
+		pod := leaders[ord]
+		if pod == nil || pod.DeletionTimestamp != nil || r.pendingDeletes.isPending(client.ObjectKeyFromObject(pod), pod.UID) {
+			continue
+		}
+		if leaderPodAtTargetRevision(pod, leaderSts, revisionKey) {
+			continue
+		}
+		if states[ord].ready {
 			if survivingReady <= floor {
 				continue
 			}
 			survivingReady--
 		}
-		uid := pod.UID
-		if err := r.Delete(ctx, pod, &client.DeleteOptions{
-			PropagationPolicy: &propagation,
-			Preconditions:     &metav1.Preconditions{UID: &uid},
-		}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-			return err
+		conflict, err := r.pendingDeletes.deleteLeaderPod(ctx, r.Client, lws, pod)
+		if err != nil {
+			return false, err
+		}
+		if conflict {
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // serverSideApply applies the configuration with the lws field manager. If there
@@ -1138,8 +1162,9 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		if err != nil {
 			return false, false, err
 		}
+		podTerminating := pod.DeletionTimestamp != nil || r.pendingDeletes.isPending(client.ObjectKeyFromObject(&pod), pod.UID)
 		// Surge leaders count too: one that cannot be scheduled stalls the rollout.
-		if index < leaderReplicas && pod.DeletionTimestamp == nil && podutils.PodUnschedulable(pod) {
+		if index < leaderReplicas && !podTerminating && podutils.PodUnschedulable(pod) {
 			unschedulableGroupCount++
 		}
 		degraded := pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] == "true"
@@ -1174,7 +1199,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 		}
 
 		var ready, updated bool
-		if pod.DeletionTimestamp == nil && (noWorkerSts || (sts.DeletionTimestamp == nil && statefulsetutils.StatefulsetReady(sts))) && podutils.PodRunningAndReady(pod) {
+		if !podTerminating && (noWorkerSts || (sts.DeletionTimestamp == nil && statefulsetutils.StatefulsetReady(sts))) && podutils.PodRunningAndReady(pod) {
 			ready = true
 			readyCount++
 		}
@@ -1365,18 +1390,38 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 }
 
 func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderSts *appsv1.StatefulSet, stsReplicas int32, revisionKey string) ([]replicaState, error) {
-	states := make([]replicaState, stsReplicas)
-	if stsReplicas <= 0 {
-		return states, nil
+	states, _, _, err := r.getReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey)
+	return states, err
+}
+
+func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
+	ctx context.Context,
+	lws *leaderworkerset.LeaderWorkerSet,
+	leaderSts *appsv1.StatefulSet,
+	stsReplicas int32,
+	revisionKey string,
+) ([]replicaState, []*corev1.Pod, bool, error) {
+	parentKey := client.ObjectKeyFromObject(lws)
+	if stsReplicas <= 0 && !r.pendingDeletes.hasEntriesFor(parentKey) {
+		return nil, nil, false, nil
 	}
 
 	var podList corev1.PodList
 	if err := r.List(ctx, &podList, client.InNamespace(lws.Namespace), client.MatchingLabels{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}); err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 
+	pendingUIDs, hasUncertain, err := r.pendingDeletes.observeAndResolve(ctx, r.Client, lws, podList.Items)
+	if err != nil {
+		return nil, nil, hasUncertain, err
+	}
+	if stsReplicas <= 0 {
+		return make([]replicaState, 0), nil, hasUncertain, nil
+	}
+
+	states := make([]replicaState, stsReplicas)
 	var leaderStsUID types.UID
 	if leaderSts != nil {
 		leaderStsUID = leaderSts.UID
@@ -1404,7 +1449,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.C
 	if err := r.List(ctx, &stsList, client.InNamespace(lws.Namespace), client.MatchingLabels{
 		leaderworkerset.SetNameLabelKey: lws.Name,
 	}); err != nil {
-		return nil, err
+		return nil, nil, hasUncertain, err
 	}
 	workerStsByGroup := make([]*appsv1.StatefulSet, stsReplicas)
 	for i := range stsList.Items {
@@ -1421,7 +1466,10 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.C
 	defaultSize := *lws.Spec.LeaderWorkerTemplate.Size
 	for idx := int32(0); idx < stsReplicas; idx++ {
 		leaderPod := leaders[idx]
-		if leaderPod == nil {
+		if leaderPod == nil || leaderPod.DeletionTimestamp != nil {
+			continue
+		}
+		if _, pending := pendingUIDs[leaderPod.UID]; pending {
 			continue
 		}
 		leaderUpdated := leaderPodAtTargetRevision(leaderPod, leaderSts, revisionKey)
@@ -1429,8 +1477,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.C
 		if !leaderUpdated {
 			groupSize = podGroupSize(leaderPod, defaultSize)
 		}
-		leaderReady := leaderPod.DeletionTimestamp == nil &&
-			leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" &&
+		leaderReady := leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" &&
 			podutils.PodRunningAndReady(*leaderPod)
 
 		if groupSize == 1 {
@@ -1472,7 +1519,249 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.C
 		}
 	}
 
-	return states, nil
+	return states, leaders, hasUncertain, nil
+}
+
+// pendingLeaderDelete tracks a conditional leader-pod DELETE issued by
+// deleteStaleOrdinalLeaders until the Pod informer observes its outcome, so
+// subsequent reconciles (including rollbacks or superseding updates) never
+// credit a deleted or in-flight leader pod as Ready capacity.
+type pendingLeaderDelete struct {
+	owner           types.UID
+	parent          client.ObjectKey
+	uid             types.UID
+	resourceVersion string
+	// uncertain is true when Delete returned an ambiguous transport/timeout
+	// error whose outcome on the API server has not yet been observed.
+	uncertain    bool
+	replayNeeded bool
+}
+
+type pendingLeaderDeletes struct {
+	mu      sync.Mutex
+	deletes map[client.ObjectKey]pendingLeaderDelete
+}
+
+func (p *pendingLeaderDeletes) forgetParent(parent client.ObjectKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, entry := range p.deletes {
+		if entry.parent == parent {
+			delete(p.deletes, key)
+		}
+	}
+}
+
+func (p *pendingLeaderDeletes) hasEntriesFor(parent client.ObjectKey) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, entry := range p.deletes {
+		if entry.parent == parent {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *pendingLeaderDeletes) hasUncertain(parent client.ObjectKey) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, entry := range p.deletes {
+		if entry.parent == parent && entry.uncertain {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *pendingLeaderDeletes) isPending(podKey client.ObjectKey, uid types.UID) bool {
+	if uid == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.deletes[podKey]
+	return ok && entry.uid == uid
+}
+
+func (p *pendingLeaderDeletes) deleteLeaderPod(
+	ctx context.Context,
+	c client.Client,
+	lws *leaderworkerset.LeaderWorkerSet,
+	pod *corev1.Pod,
+) (conflict bool, err error) {
+	podKey := client.ObjectKeyFromObject(pod)
+	parentKey := client.ObjectKeyFromObject(lws)
+	uid := pod.UID
+	rv := pod.ResourceVersion
+
+	p.mu.Lock()
+	if p.deletes == nil {
+		p.deletes = make(map[client.ObjectKey]pendingLeaderDelete)
+	}
+	p.deletes[podKey] = pendingLeaderDelete{
+		owner:           lws.UID,
+		parent:          parentKey,
+		uid:             uid,
+		resourceVersion: rv,
+	}
+	p.mu.Unlock()
+
+	propagation := metav1.DeletePropagationForeground
+	preconditions := &metav1.Preconditions{UID: &uid}
+	if rv != "" {
+		preconditions.ResourceVersion = &rv
+	}
+	delErr := c.Delete(ctx, pod, &client.DeleteOptions{
+		PropagationPolicy: &propagation,
+		Preconditions:     preconditions,
+	})
+	if delErr == nil || apierrors.IsNotFound(delErr) {
+		return false, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current, exists := p.deletes[podKey]
+	if !exists || current.uid != uid || current.resourceVersion != rv {
+		if apierrors.IsConflict(delErr) {
+			return true, nil
+		}
+		return false, delErr
+	}
+	if apierrors.IsConflict(delErr) || apierrors.IsForbidden(delErr) || apierrors.IsInvalid(delErr) || apierrors.IsBadRequest(delErr) {
+		delete(p.deletes, podKey)
+		if apierrors.IsConflict(delErr) {
+			return true, nil
+		}
+		return false, delErr
+	}
+	current.uncertain = true
+	current.replayNeeded = true
+	p.deletes[podKey] = current
+	return false, delErr
+}
+
+func (p *pendingLeaderDeletes) observeAndResolve(
+	ctx context.Context,
+	c client.Client,
+	lws *leaderworkerset.LeaderWorkerSet,
+	pods []corev1.Pod,
+) (map[types.UID]struct{}, bool, error) {
+	parentKey := client.ObjectKeyFromObject(lws)
+
+	p.mu.Lock()
+	if len(p.deletes) == 0 {
+		p.mu.Unlock()
+		return nil, false, nil
+	}
+	var snapshot map[client.ObjectKey]pendingLeaderDelete
+	for key, entry := range p.deletes {
+		if entry.parent == parentKey {
+			if snapshot == nil {
+				snapshot = make(map[client.ObjectKey]pendingLeaderDelete)
+			}
+			snapshot[key] = entry
+		}
+	}
+	p.mu.Unlock()
+	if len(snapshot) == 0 {
+		return nil, false, nil
+	}
+
+	podByName := make(map[string]*corev1.Pod, len(pods))
+	for i := range pods {
+		if pods[i].Labels[leaderworkerset.WorkerIndexLabelKey] == "0" {
+			podByName[pods[i].Name] = &pods[i]
+		}
+	}
+
+	var pendingUIDs map[types.UID]struct{}
+	hasUncertain := false
+	for podKey, entry := range snapshot {
+		if lws.UID != "" && entry.owner != "" && entry.owner != lws.UID {
+			p.clearMatching(podKey, entry)
+			continue
+		}
+		pod := podByName[podKey.Name]
+		goneOrTerminating := pod == nil || pod.UID != entry.uid || pod.DeletionTimestamp != nil
+		supersededWithoutDelete := entry.uncertain && entry.resourceVersion != "" &&
+			pod != nil && pod.UID == entry.uid && pod.DeletionTimestamp == nil &&
+			pod.ResourceVersion != entry.resourceVersion
+		if goneOrTerminating || supersededWithoutDelete {
+			p.clearMatching(podKey, entry)
+			continue
+		}
+
+		if pendingUIDs == nil {
+			pendingUIDs = make(map[types.UID]struct{})
+		}
+		pendingUIDs[entry.uid] = struct{}{}
+
+		if !entry.uncertain {
+			continue
+		}
+		if !entry.replayNeeded {
+			hasUncertain = true
+			continue
+		}
+
+		propagation := metav1.DeletePropagationForeground
+		uid := entry.uid
+		preconditions := &metav1.Preconditions{UID: &uid}
+		if entry.resourceVersion != "" {
+			rv := entry.resourceVersion
+			preconditions.ResourceVersion = &rv
+		}
+		replayErr := c.Delete(ctx, pod, &client.DeleteOptions{
+			PropagationPolicy: &propagation,
+			Preconditions:     preconditions,
+		})
+		switch {
+		case replayErr == nil || apierrors.IsNotFound(replayErr):
+			p.markReplayConfirmed(podKey, entry)
+		case apierrors.IsConflict(replayErr):
+			// The API server already moved this pod past base ResourceVersion;
+			// wait for the informer cache to observe that newer state.
+			p.markReplayAwaitInformer(podKey, entry)
+			hasUncertain = true
+		case apierrors.IsForbidden(replayErr) || apierrors.IsInvalid(replayErr) || apierrors.IsBadRequest(replayErr):
+			p.clearMatching(podKey, entry)
+			delete(pendingUIDs, entry.uid)
+			return pendingUIDs, hasUncertain, replayErr
+		default:
+			hasUncertain = true
+			return pendingUIDs, true, replayErr
+		}
+	}
+	return pendingUIDs, hasUncertain, nil
+}
+
+func (p *pendingLeaderDeletes) clearMatching(podKey client.ObjectKey, expected pendingLeaderDelete) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cur, ok := p.deletes[podKey]; ok && cur.uid == expected.uid && cur.resourceVersion == expected.resourceVersion {
+		delete(p.deletes, podKey)
+	}
+}
+
+func (p *pendingLeaderDeletes) markReplayConfirmed(podKey client.ObjectKey, expected pendingLeaderDelete) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cur, ok := p.deletes[podKey]; ok && cur.uid == expected.uid && cur.resourceVersion == expected.resourceVersion {
+		cur.uncertain = false
+		cur.replayNeeded = false
+		p.deletes[podKey] = cur
+	}
+}
+
+func (p *pendingLeaderDeletes) markReplayAwaitInformer(podKey client.ObjectKey, expected pendingLeaderDelete) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cur, ok := p.deletes[podKey]; ok && cur.uid == expected.uid && cur.resourceVersion == expected.resourceVersion {
+		cur.replayNeeded = false
+		p.deletes[podKey] = cur
+	}
 }
 
 func filterOwnedWorkerPods(pods []corev1.Pod, workerSts *appsv1.StatefulSet) []corev1.Pod {
@@ -1642,6 +1931,36 @@ func calculateRollingUpdateReplicas(lwsReplicas int32, maxSurge int32, maxUnavai
 		return lwsReplicas + requiredSurgeReplicas
 	}
 	return burstReplicas
+}
+
+func countReadyStates(states []replicaState) int32 {
+	var ready int32
+	for i := range states {
+		if states[i].ready {
+			ready++
+		}
+	}
+	return ready
+}
+
+// preserveFloorDuringSurgeTrim avoids reclaiming higher Ready surge ordinals
+// within [rawTarget, min(stsReplicas, burstReplicas)) when lower ordinals are
+// still unready and trimming from the tail would drop total Ready groups below floor.
+func preserveFloorDuringSurgeTrim(states []replicaState, rawTarget, stsReplicas, burstReplicas, floor int32) int32 {
+	maxReplicas := min(stsReplicas, min(burstReplicas, int32(len(states))))
+	if rawTarget >= maxReplicas || floor <= 0 {
+		return rawTarget
+	}
+	readyInPrefix := countReadyStates(states[:rawTarget])
+	goalReady := min(floor, countReadyStates(states[:maxReplicas]))
+	target := rawTarget
+	for target < maxReplicas && readyInPrefix < goalReady {
+		if states[target].ready {
+			readyInPrefix++
+		}
+		target++
+	}
+	return target
 }
 
 func calculateContinuousReadyReplicas(states []replicaState) int32 {
