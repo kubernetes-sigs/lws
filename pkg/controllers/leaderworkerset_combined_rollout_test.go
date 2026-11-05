@@ -25,13 +25,17 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -42,8 +46,13 @@ import (
 
 func newCombinedTestClient(t *testing.T, objs ...client.Object) (client.Client, *LeaderWorkerSetReconciler) {
 	t.Helper()
+	return newCombinedTestClientWithInterceptor(t, interceptor.Funcs{}, objs...)
+}
+
+func newCombinedTestClientWithInterceptor(t *testing.T, funcs interceptor.Funcs, objs ...client.Object) (client.Client, *LeaderWorkerSetReconciler) {
+	t.Helper()
 	scheme := lwsStatusScheme(t)
-	k8sClient := fake.NewClientBuilder().
+	baseClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&leaderworkerset.LeaderWorkerSet{}, &appsv1.StatefulSet{}, &appsv1.Deployment{}, &corev1.Pod{}).
 		WithIndex(&appsv1.StatefulSet{}, lwsOwnerKey, func(rawObj client.Object) []string {
@@ -56,8 +65,9 @@ func newCombinedTestClient(t *testing.T, objs ...client.Object) (client.Client, 
 		}).
 		WithObjects(objs...).
 		Build()
-	reconciler := NewLeaderWorkerSetReconciler(k8sClient, scheme, events.NewFakeRecorder(64))
-	return k8sClient, reconciler
+	reconcilerClient := interceptor.NewClient(baseClient, funcs)
+	reconciler := NewLeaderWorkerSetReconciler(reconcilerClient, scheme, events.NewFakeRecorder(128))
+	return baseClient, reconciler
 }
 
 func makeOwnedGroupObjects(
@@ -952,14 +962,9 @@ func TestDeleteStaleOrdinalLeadersRespectsAvailabilityFloorOnCrash(t *testing.T)
 		makeLeader(3, "rev-1", true),
 		makeLeader(4, "rev-2", false), // Pending scale-up ordinal
 	)
-	states, err := r.getReplicaStatesForStatefulSet(ctx, lws, sts, 5, "rev-2")
-	if err != nil {
-		t.Fatalf("getReplicaStatesForStatefulSet() error = %v", err)
-	}
-
 	// Only 1 Ready stale leader (highest ordinal 3) may be deleted (3 -> 2 == floor);
 	// ordinal 2 MUST remain protected!
-	if err := r.deleteStaleOrdinalLeaders(ctx, lws, sts, "rev-2", 2, 5, 2, states); err != nil {
+	if _, err := r.deleteStaleOrdinalLeaders(ctx, lws, sts, "rev-2", 2, 5, 2); err != nil {
 		t.Fatalf("deleteStaleOrdinalLeaders() error = %v", err)
 	}
 	var pod3, pod2 corev1.Pod
@@ -972,11 +977,7 @@ func TestDeleteStaleOrdinalLeadersRespectsAvailabilityFloorOnCrash(t *testing.T)
 
 	// Re-running at survivingReady == floor (2) deletes nothing while Ready,
 	// whereas if test-sample-2 itself becomes unready it can be neutral-repaired.
-	statesAfter, err := r.getReplicaStatesForStatefulSet(ctx, lws, sts, 5, "rev-2")
-	if err != nil {
-		t.Fatalf("getReplicaStatesForStatefulSet() error = %v", err)
-	}
-	if err := r.deleteStaleOrdinalLeaders(ctx, lws, sts, "rev-2", 2, 5, 2, statesAfter); err != nil {
+	if _, err := r.deleteStaleOrdinalLeaders(ctx, lws, sts, "rev-2", 2, 5, 2); err != nil {
 		t.Fatalf("deleteStaleOrdinalLeaders(at floor) error = %v", err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-2", Namespace: "default"}, &pod2); err != nil {
@@ -1647,4 +1648,700 @@ func TestHashUnreadyGroupDoesNotLeaveBaselineForNextRollout(t *testing.T) {
 	updateLWS(2, "worker:v3")
 	reconcileAndGet("next update")
 	expect("next update", "2", 1)
+}
+
+// TestOrdinalRollbackBeforePodCacheObservesDeletePreservesFloor reproduces the
+// stale-cache rollback race: A0 (rev A) and B1 (rev B) are Ready, B2 (rev B) is
+// Pending, and floor is 1. After LWS deletes A0, the user rolls back to rev A
+// before the Pod informer observes A0's deletion. The controller must withhold
+// A0's readiness credit and keep B1 protected until A0's replacement is Ready.
+func TestOrdinalRollbackBeforePodCacheObservesDeletePreservesFloor(t *testing.T) {
+	ctx := context.Background()
+	initialWorkerSpec := wrappers.MakeWorkerPodSpec()
+	initialWorkerImage := initialWorkerSpec.Containers[0].Image
+
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(initialWorkerSpec).
+		Replica(1).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(1),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	lws.Generation = 1
+
+	swallowA0Delete := true
+	var deletedPods []string
+	c, r := newCombinedTestClientWithInterceptor(t, interceptor.Funcs{
+		Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			pod, ok := obj.(*corev1.Pod)
+			if ok {
+				deletedPods = append(deletedPods, pod.Name)
+				if pod.Name == "test-sample-0" && swallowA0Delete {
+					// Simulate API server accepting DELETE A0 while the local Pod
+					// informer cache has not yet received the watch update.
+					return nil
+				}
+			}
+			return cli.Delete(ctx, obj, opts...)
+		},
+	}, lws)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+
+	// Step 1: Create initial LWS at replicas=1 on rev A with Ready group A0.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	sts := ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	revA := revisionutils.GetRevisionKey(sts)
+	for _, obj := range makeOwnedGroupObjects(lws, sts, 0, 2, revA, "sts-"+revA, true, true, true) {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("creating A0 object: %v", err)
+		}
+	}
+
+	// Step 2: Combined scale-up (1 -> 3) + rollout to rev B (baseline=1, floor=1).
+	if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+		t.Fatalf("reading lws: %v", err)
+	}
+	lws.Generation = 2
+	lws.Spec.Replicas = ptr.To[int32](3)
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+	if err := c.Update(ctx, lws); err != nil {
+		t.Fatalf("updating lws to rev B: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("rev B publish Reconcile() error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	revB := revisionutils.GetRevisionKey(sts)
+
+	// B1 is whole-group Ready on rev B; B2 remains Pending on rev B.
+	for _, obj := range makeOwnedGroupObjects(lws, sts, 1, 2, revB, "sts-"+revB, true, true, true) {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("creating B1 object: %v", err)
+		}
+	}
+	for _, obj := range makeOwnedGroupObjects(lws, sts, 2, 2, revB, "sts-"+revB, false, false, false) {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("creating B2 object: %v", err)
+		}
+	}
+
+	// Step 3: B1 grants replacement credit for A0: partition steps 1 -> 0, then
+	// deleteStaleOrdinalLeaders sends DELETE A0 (cache still shows A0 Ready).
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("partition-drop Reconcile() error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 0 {
+		t.Fatalf("partition on rev B = %d, want 0", got)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("delete-A0 Reconcile() error = %v", err)
+	}
+	if len(deletedPods) != 1 || deletedPods[0] != "test-sample-0" {
+		t.Fatalf("deletedPods = %v, want [test-sample-0]", deletedPods)
+	}
+
+	// Step 4: Roll back LWS to rev A before the Pod cache observes A0's deletion.
+	if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+		t.Fatalf("reading lws for rollback: %v", err)
+	}
+	lws.Generation = 3
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = initialWorkerImage
+	if err := c.Update(ctx, lws); err != nil {
+		t.Fatalf("updating lws for rollback: %v", err)
+	}
+
+	// Publish rollback template (partition raised to 3), ack, then advance rollback.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("rollback publish Reconcile() error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("rollback partition Reconcile() error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 2 {
+		t.Fatalf("rollback partition with unobserved A0 delete = %d, want 2 (protecting B1)", got)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("rollback delete-check Reconcile() error = %v", err)
+	}
+
+	var b1Leader corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-1", Namespace: "default"}, &b1Leader); err != nil {
+		t.Fatalf("expected Ready B1 to remain protected at floor=1, got err=%v", err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+		t.Fatalf("reading lws status: %v", err)
+	}
+	if apimeta.IsStatusConditionTrue(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetAvailable)) {
+		t.Fatalf("expected Available=False while A0 delete is pending and B2 is Pending, got %+v", lws.Status.Conditions)
+	}
+
+	// Step 5: Informer observes A0 replaced by Pending A0' (new UID on rev A).
+	// B1 must remain protected while A0' is Pending, then become replaceable once A0' is Ready.
+	swallowA0Delete = false
+	for _, name := range []string{"test-sample-0", "test-sample-0-1"} {
+		if err := c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}); err != nil {
+			t.Fatalf("removing old %s: %v", name, err)
+		}
+	}
+	if err := c.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "test-sample-0", Namespace: "default"}}); err != nil {
+		t.Fatalf("removing old worker sts 0: %v", err)
+	}
+	replacementA0 := makeOwnedGroupObjects(lws, sts, 0, 2, revA, "sts-"+revA, false, false, false)
+	replacementA0[0].(*corev1.Pod).UID = "test-sample-0-uid-recreated"
+	replacementA0[1].(*appsv1.StatefulSet).OwnerReferences[0].UID = "test-sample-0-uid-recreated"
+	for _, obj := range replacementA0 {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("creating Pending replacement A0': %v", err)
+		}
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() with Pending A0' error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 2 {
+		t.Fatalf("partition while replacement A0' is Pending = %d, want 2", got)
+	}
+
+	// Mark A0' whole-group Ready -> partition drops to 0 and B1 can now be replaced.
+	a0Pod := replacementA0[0].(*corev1.Pod).DeepCopy()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(a0Pod), a0Pod); err != nil {
+		t.Fatalf("getting A0': %v", err)
+	}
+	a0Pod.Status = corev1.PodStatus{
+		Phase:      corev1.PodRunning,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+	}
+	if err := c.Status().Update(ctx, a0Pod); err != nil {
+		t.Fatalf("marking A0' leader Ready: %v", err)
+	}
+	var a0WorkerSts appsv1.StatefulSet
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-0", Namespace: "default"}, &a0WorkerSts); err != nil {
+		t.Fatalf("getting A0' worker sts: %v", err)
+	}
+	a0WorkerSts.Status.ReadyReplicas = 1
+	a0WorkerSts.Status.AvailableReplicas = 1
+	if err := c.Status().Update(ctx, &a0WorkerSts); err != nil {
+		t.Fatalf("marking A0' worker sts Ready: %v", err)
+	}
+	var a0WorkerPod corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-0-1", Namespace: "default"}, &a0WorkerPod); err != nil {
+		t.Fatalf("getting A0' worker pod: %v", err)
+	}
+	a0WorkerPod.Status = corev1.PodStatus{
+		Phase:      corev1.PodRunning,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+	}
+	if err := c.Status().Update(ctx, &a0WorkerPod); err != nil {
+		t.Fatalf("marking A0' worker pod Ready: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() after A0' Ready error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 1 {
+		t.Fatalf("partition after replacement A0' is Ready = %d, want 1 (exposing B1 at ord 1)", got)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() replacing B1 error = %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-1", Namespace: "default"}, &b1Leader); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected B1 to be deleted once A0' satisfies floor=1, got err=%v", err)
+	}
+}
+
+// TestOrdinalTimedOutDeleteAndRollbackResolvesWithoutFloorViolation verifies
+// that an ambiguous/timed-out DELETE on A0 is never forgotten across rollback:
+// it either replays to deterministic completion while holding B1 protected, or
+// clears cleanly if the informer observes A0 at a newer ResourceVersion without DeletionTimestamp.
+func TestOrdinalTimedOutDeleteAndRollbackResolvesWithoutFloorViolation(t *testing.T) {
+	t.Run("replay_confirms_delete_after_rollback", func(t *testing.T) {
+		ctx := context.Background()
+		initialWorkerSpec := wrappers.MakeWorkerPodSpec()
+		initialWorkerImage := initialWorkerSpec.Containers[0].Image
+
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+			WorkerTemplateSpec(initialWorkerSpec).
+			Replica(1).
+			Size(1).
+			RolloutStrategy(leaderworkerset.RolloutStrategy{
+				Type: leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					Partition:      ptr.To[int32](0),
+					MaxUnavailable: intstr.FromInt32(0),
+					MaxSurge:       intstr.FromInt32(1),
+				},
+			}).Obj()
+		lws.UID = "lws-uid"
+		lws.Generation = 1
+
+		deleteAttempts := 0
+		var recordedPreconditions []*metav1.Preconditions
+		c, r := newCombinedTestClientWithInterceptor(t, interceptor.Funcs{
+			Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				pod, ok := obj.(*corev1.Pod)
+				if ok && pod.Name == "test-sample-0" {
+					deleteAttempts++
+					delOpts := &client.DeleteOptions{}
+					delOpts.ApplyOptions(opts)
+					recordedPreconditions = append(recordedPreconditions, delOpts.Preconditions)
+					if deleteAttempts == 1 {
+						return context.DeadlineExceeded
+					}
+					// Replay succeeds on API server while local cache still lags.
+					return nil
+				}
+				return cli.Delete(ctx, obj, opts...)
+			},
+		}, lws)
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("initial Reconcile() error = %v", err)
+		}
+		sts := ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		revA := revisionutils.GetRevisionKey(sts)
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 0, 1, revA, "sts-"+revA, true, true, true) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating A0: %v", err)
+			}
+		}
+
+		// Scale 1 -> 3 + update to rev B; B1 Ready, B2 Pending; step partition to 0.
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation = 2
+		lws.Spec.Replicas = ptr.To[int32](3)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("rev B Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		revB := revisionutils.GetRevisionKey(sts)
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 1, 1, revB, "sts-"+revB, true, true, true) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating B1: %v", err)
+			}
+		}
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 2, 1, revB, "sts-"+revB, false, false, false) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating B2: %v", err)
+			}
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("partition-drop Reconcile() error = %v", err)
+		}
+		ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+		// Initial DELETE(A0) times out.
+		if _, err := r.Reconcile(ctx, req); err == nil {
+			t.Fatal("expected timeout error from initial DELETE(A0)")
+		}
+
+		// User immediately rolls back to rev A while DELETE(A0) outcome is uncertain.
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation = 3
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = initialWorkerImage
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("rolling back lws: %v", err)
+		}
+		res, err := r.Reconcile(ctx, req)
+		if err != nil {
+			t.Fatalf("rollback publish Reconcile() error = %v", err)
+		}
+		if res.RequeueAfter != pendingDeleteRequeueDelay {
+			t.Fatalf("Reconcile() RequeueAfter = %v, want %v while delete is uncertain", res.RequeueAfter, pendingDeleteRequeueDelay)
+		}
+		ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+		// Next reconcile replays conditional DELETE(A0), confirms it, and keeps B1 protected.
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("rollback replay Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		if deleteAttempts != 2 {
+			t.Fatalf("deleteAttempts = %d, want 2 (initial + replay)", deleteAttempts)
+		}
+		if len(recordedPreconditions) != 2 ||
+			recordedPreconditions[0] == nil || recordedPreconditions[1] == nil ||
+			recordedPreconditions[0].UID == nil || recordedPreconditions[1].UID == nil ||
+			*recordedPreconditions[0].UID != *recordedPreconditions[1].UID ||
+			recordedPreconditions[0].ResourceVersion == nil || recordedPreconditions[1].ResourceVersion == nil ||
+			*recordedPreconditions[0].ResourceVersion != *recordedPreconditions[1].ResourceVersion {
+			t.Fatalf("expected identical UID+ResourceVersion preconditions across replay, got %+v", recordedPreconditions)
+		}
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 2 {
+			t.Fatalf("partition after replay = %d, want 2 (protecting B1)", got)
+		}
+		var b1 corev1.Pod
+		if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-1", Namespace: "default"}, &b1); err != nil {
+			t.Fatalf("expected B1 to survive protected: %v", err)
+		}
+	})
+
+	t.Run("conflict_then_informer_advances_without_delete", func(t *testing.T) {
+		ctx := context.Background()
+		initialWorkerSpec := wrappers.MakeWorkerPodSpec()
+		initialWorkerImage := initialWorkerSpec.Containers[0].Image
+
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+			WorkerTemplateSpec(initialWorkerSpec).
+			Replica(1).
+			Size(1).
+			RolloutStrategy(leaderworkerset.RolloutStrategy{
+				Type: leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					Partition:      ptr.To[int32](0),
+					MaxUnavailable: intstr.FromInt32(0),
+					MaxSurge:       intstr.FromInt32(1),
+				},
+			}).Obj()
+		lws.UID = "lws-uid"
+		lws.Generation = 1
+
+		deleteAttempts := 0
+		c, r := newCombinedTestClientWithInterceptor(t, interceptor.Funcs{
+			Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				pod, ok := obj.(*corev1.Pod)
+				if ok && pod.Name == "test-sample-0" {
+					deleteAttempts++
+					if deleteAttempts == 1 {
+						return context.DeadlineExceeded
+					}
+					return apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, pod.Name, fmt.Errorf("rv mismatch"))
+				}
+				return cli.Delete(ctx, obj, opts...)
+			},
+		}, lws)
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("initial Reconcile() error = %v", err)
+		}
+		sts := ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		revA := revisionutils.GetRevisionKey(sts)
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 0, 1, revA, "sts-"+revA, true, true, true) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating A0: %v", err)
+			}
+		}
+
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation = 2
+		lws.Spec.Replicas = ptr.To[int32](3)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("rev B Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		revB := revisionutils.GetRevisionKey(sts)
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 1, 1, revB, "sts-"+revB, true, true, true) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating B1: %v", err)
+			}
+		}
+		for _, obj := range makeOwnedGroupObjects(lws, sts, 2, 1, revB, "sts-"+revB, false, false, false) {
+			if err := c.Create(ctx, obj); err != nil {
+				t.Fatalf("creating B2: %v", err)
+			}
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("partition-drop Reconcile() error = %v", err)
+		}
+		ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+		// Initial DELETE(A0) times out.
+		if _, err := r.Reconcile(ctx, req); err == nil {
+			t.Fatal("expected timeout error from initial DELETE(A0)")
+		}
+
+		// Roll back to rev A; replay hits 409 Conflict -> holds partition at 3 and requeues!
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation = 3
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = initialWorkerImage
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("rolling back lws: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("rollback publish Reconcile() error = %v", err)
+		}
+		ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+		res, err := r.Reconcile(ctx, req)
+		if err != nil {
+			t.Fatalf("conflict replay Reconcile() error = %v", err)
+		}
+		if res.RequeueAfter != pendingDeleteRequeueDelay {
+			t.Fatalf("RequeueAfter on conflict = %v, want %v", res.RequeueAfter, pendingDeleteRequeueDelay)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 4 {
+			t.Fatalf("partition while awaiting informer update = %d, want 4", got)
+		}
+
+		// Informer now observes A0 at a newer ResourceVersion without DeletionTimestamp,
+		// proving the dropped conditional DELETE can never execute -> A0 is credited again!
+		var a0 corev1.Pod
+		if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-0", Namespace: "default"}, &a0); err != nil {
+			t.Fatalf("getting A0: %v", err)
+		}
+		if a0.Annotations == nil {
+			a0.Annotations = make(map[string]string)
+		}
+		a0.Annotations["kubelet-heartbeat"] = "bumped"
+		if err := c.Update(ctx, &a0); err != nil {
+			t.Fatalf("bumping A0 ResourceVersion: %v", err)
+		}
+
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("post-RV-advance Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 1 {
+			t.Fatalf("partition once surviving A0 satisfies floor = %d, want 1 (exposing B1 at ord 1)", got)
+		}
+		if deleteAttempts != 2 {
+			t.Fatalf("expected no further DELETE replays after conflict + RV advance, got %d", deleteAttempts)
+		}
+	})
+}
+
+// TestDeleteStaleOrdinalLeadersSingleSnapshotDetectsConcurrentTermination
+// verifies that if a sibling group begins terminating while applyLeaderStatefulSet
+// is running, deleteStaleOrdinalLeaders refreshes states and pods together rather
+// than spending stale readiness credit from planRollingUpdate.
+func TestDeleteStaleOrdinalLeadersSingleSnapshotDetectsConcurrentTermination(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Replica(3).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	lws.Generation = 2
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 3,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "3",
+				rolloutBaselineAnnotationKey:          "2",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](3),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 3,
+			Replicas:           3,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+
+	makeLeader := func(ord int, rev string, ready bool) *corev1.Pod {
+		pod := makeOwnedGroupObjects(lws, sts, ord, 1, rev, "sts-"+rev, ready, ready, ready)[0].(*corev1.Pod)
+		if ord == 1 {
+			pod.Finalizers = []string{"test/hold-terminating"}
+		}
+		return pod
+	}
+
+	// Simulate ordinal 1 beginning termination in the informer cache right after
+	// planRollingUpdate ran (during Apply on the leader StatefulSet).
+	terminatedInApply := false
+	var c client.Client
+	c, r := newCombinedTestClientWithInterceptor(t, interceptor.Funcs{
+		Apply: func(ctx context.Context, cli client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			err := cli.Apply(ctx, obj, opts...)
+			if err == nil && !terminatedInApply {
+				terminatedInApply = true
+				if delErr := c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-sample-1", Namespace: "default"}}); delErr != nil {
+					t.Fatalf("marking test-sample-1 terminating: %v", delErr)
+				}
+			}
+			return err
+		},
+	}, lws, sts,
+		makeLeader(0, "rev-1", true),
+		makeLeader(1, "rev-1", true),
+		makeLeader(2, "rev-2", false),
+	)
+	rev2CR, err := revisionutils.NewRevision(ctx, c, lws, "rev-2")
+	if err != nil {
+		t.Fatalf("NewRevision() error = %v", err)
+	}
+	if _, err := revisionutils.CreateRevision(ctx, c, rev2CR); err != nil {
+		t.Fatalf("CreateRevision() error = %v", err)
+	}
+	// Restore sts ObservedGeneration == Generation after Apply in Reconcile? Note:
+	// Reconcile reads leaderSts before Apply and passes that pointer into deleteStaleOrdinalLeaders.
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	// Ordinal 1 is now terminating (DeletionTimestamp != nil), leaving only
+	// ordinal 0 Ready at floor=1, so ordinal 0 MUST NOT be deleted!
+	var pod0 corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-0", Namespace: "default"}, &pod0); err != nil {
+		t.Fatalf("expected test-sample-0 to stay alive at floor=1, got err=%v", err)
+	}
+	if pod0.DeletionTimestamp != nil {
+		t.Fatalf("expected test-sample-0 DeletionTimestamp == nil, got %v", pod0.DeletionTimestamp)
+	}
+}
+
+// TestPreserveFloorDuringSurgeTrim verifies that surge reclamation does not
+// scale down a Ready higher surge ordinal when lower desired/surge ordinals are
+// still unready and trimming from the tail would violate the availability floor.
+func TestPreserveFloorDuringSurgeTrim(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(2).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(2),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 2,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "2",
+				rolloutBaselineAnnotationKey:          "2",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](4),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 2,
+			Replicas:           4,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+	makeLeader := func(ord int, rev string, ready bool) *corev1.Pod {
+		return makeOwnedGroupObjects(lws, sts, ord, 1, rev, "sts-"+rev, ready, ready, ready)[0].(*corev1.Pod)
+	}
+
+	// Floor is 2 (baseline=2, maxUnavailable=0).
+	// Ord 0 is unready, ord 1 is Ready, ord 2 (surge) is Pending, ord 3 (surge) is Ready.
+	// Raw surge formula wants 2 + 1 = 3, which would kill Ready ord 3 and drop Ready groups to 1!
+	c, r := newCombinedTestClient(t,
+		lws, sts,
+		makeLeader(0, "rev-2", false),
+		makeLeader(1, "rev-2", true),
+		makeLeader(2, "rev-2", false),
+		makeLeader(3, "rev-2", true),
+	)
+	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate() error = %v", err)
+	}
+	if plan.replicas != 4 {
+		t.Fatalf("plan.replicas = %d, want 4 (preserving Ready surge ordinal 3 to satisfy floor=2)", plan.replicas)
+	}
+
+	// Also verify Case 2 (superseding update / rollback while surged) preserves ord 3 when needed:
+	lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(1) // floor = 1
+	var ord1 corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-1", Namespace: "default"}, &ord1); err != nil {
+		t.Fatalf("getting ord 1: %v", err)
+	}
+	ord1.Status = corev1.PodStatus{Phase: corev1.PodPending}
+	if err := c.Status().Update(ctx, &ord1); err != nil {
+		t.Fatalf("marking ord 1 Pending: %v", err)
+	}
+	// Now ord 3 is the ONLY Ready group (satisfying floor=1), while raw Case 2 wants 2 + (2-1) = 3.
+	planCase2, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", true)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(Case 2) error = %v", err)
+	}
+	if planCase2.replicas != 4 {
+		t.Fatalf("planCase2.replicas = %d, want 4 (preserving sole Ready surge ordinal 3)", planCase2.replicas)
+	}
+
+	// Once ord 0 becomes Ready, floor=1 is satisfied within [0..3), so surge trims cleanly to 3.
+	var ord0 corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-0", Namespace: "default"}, &ord0); err != nil {
+		t.Fatalf("getting ord 0: %v", err)
+	}
+	ord0.Status = corev1.PodStatus{
+		Phase:      corev1.PodRunning,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+	}
+	if err := c.Status().Update(ctx, &ord0); err != nil {
+		t.Fatalf("marking ord 0 Ready: %v", err)
+	}
+	planTrimmed, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(after ord 0 Ready) error = %v", err)
+	}
+	if planTrimmed.replicas != 2 {
+		t.Fatalf("planTrimmed.replicas = %d, want 2 once unready desired replicas (1) fit maxUnavailable=1", planTrimmed.replicas)
+	}
 }
