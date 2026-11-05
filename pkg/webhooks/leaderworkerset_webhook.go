@@ -126,6 +126,12 @@ func (r *LeaderWorkerSetWebhook) Default(ctx context.Context, lws *v1.LeaderWork
 		}
 	}
 
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type == nil {
+			lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type = ptr.To(v1.SubGroupPolicyTypeLeaderWorker)
+		}
+	}
+
 	return nil
 }
 

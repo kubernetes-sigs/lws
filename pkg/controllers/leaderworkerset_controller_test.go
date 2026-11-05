@@ -731,6 +731,151 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 			},
 		},
 		{
+			name:        "1 replica, size 2, with subgroupsize enabled and subGroupType omitted defaults to LeaderWorker without panic",
+			revisionKey: revisionKey1,
+			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample-nil-type", "default").
+				SubGroupSize(2).Replica(1).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+					},
+				}).
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				LeaderTemplateSpec(wrappers.MakeLeaderPodSpec()).
+				Size(2).
+				RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample-nil-type"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample-nil-type",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
+					},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/replicas": "1",
+					},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](1),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample-nil-type",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample-nil-type",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size":              "2",
+								leaderworkerset.SubGroupSizeAnnotationKey:       "2",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("leader"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample-nil-type"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
+				},
+			},
+		},
+		{
+			name:        "1 replica, size 2, with empty SubGroupPolicy defaults to LeaderWorker without panic and omits subgroup size annotation",
+			revisionKey: revisionKey1,
+			lws: func() *leaderworkerset.LeaderWorkerSet {
+				lws := wrappers.BuildBasicLeaderWorkerSet("test-sample-empty-policy", "default").
+					Replica(1).
+					RolloutStrategy(leaderworkerset.RolloutStrategy{
+						Type: leaderworkerset.RollingUpdateStrategyType,
+						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							MaxUnavailable: intstr.FromInt32(1),
+						},
+					}).
+					WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+					LeaderTemplateSpec(wrappers.MakeLeaderPodSpec()).
+					Size(2).
+					RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+				lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{}
+				return lws
+			}(),
+			wantApplyConfig: &appsapplyv1.StatefulSetApplyConfiguration{
+				TypeMetaApplyConfiguration: metaapplyv1.TypeMetaApplyConfiguration{
+					Kind:       ptr.To[string]("StatefulSet"),
+					APIVersion: ptr.To[string]("apps/v1"),
+				},
+				ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+					Name:      ptr.To[string]("test-sample-empty-policy"),
+					Namespace: ptr.To[string]("default"),
+					Labels: map[string]string{
+						"leaderworkerset.sigs.k8s.io/name":                   "test-sample-empty-policy",
+						"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+						"leaderworkerset.sigs.k8s.io/role":                   "leader",
+					},
+					Annotations: map[string]string{
+						"leaderworkerset.sigs.k8s.io/replicas": "1",
+					},
+				},
+				Spec: &appsapplyv1.StatefulSetSpecApplyConfiguration{
+					Replicas: ptr.To[int32](1),
+					Selector: &metaapplyv1.LabelSelectorApplyConfiguration{
+						MatchLabels: map[string]string{
+							"leaderworkerset.sigs.k8s.io/name":         "test-sample-empty-policy",
+							"leaderworkerset.sigs.k8s.io/worker-index": "0",
+						},
+					},
+					Template: &coreapplyv1.PodTemplateSpecApplyConfiguration{
+						ObjectMetaApplyConfiguration: &metaapplyv1.ObjectMetaApplyConfiguration{
+							Labels: map[string]string{
+								"leaderworkerset.sigs.k8s.io/name":                   "test-sample-empty-policy",
+								"leaderworkerset.sigs.k8s.io/worker-index":           "0",
+								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
+							},
+							Annotations: map[string]string{
+								"leaderworkerset.sigs.k8s.io/size":              "2",
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
+							},
+						},
+						Spec: &coreapplyv1.PodSpecApplyConfiguration{
+							Containers: []coreapplyv1.ContainerApplyConfiguration{
+								{
+									Name:      ptr.To[string]("leader"),
+									Image:     ptr.To[string]("docker.io/nginxinc/nginx-unprivileged:1.27"),
+									Resources: &coreapplyv1.ResourceRequirementsApplyConfiguration{},
+								},
+							},
+						},
+					},
+					ServiceName:         ptr.To[string]("test-sample-empty-policy"),
+					PodManagementPolicy: ptr.To[appsv1.PodManagementPolicyType](appsv1.ParallelPodManagement),
+					UpdateStrategy: appsapplyv1.StatefulSetUpdateStrategy().
+						WithType(appsv1.RollingUpdateStatefulSetStrategyType).
+						WithRollingUpdate(appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(0).WithMaxUnavailable(intstr.FromInt32(1))),
+				},
+			},
+		},
+		{
 			name:        "1 replica, size 1, with volumeClaimTemplates and PersistentVolumeClaimRetentionPolicy configured",
 			revisionKey: revisionKey2,
 			lws: wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
