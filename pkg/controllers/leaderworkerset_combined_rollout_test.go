@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -900,6 +901,144 @@ func TestRollingUpdatePartitionWithFloorMultipleUnreadyPrefix(t *testing.T) {
 	}
 }
 
+// guaranteedAvailable counts the Ready groups a partition keeps available:
+// every Ready group below partition, plus the updated Ready groups at or above
+// it. Old groups at or above partition may all be replaced at once.
+func guaranteedAvailable(states []replicaState, partition int32) int32 {
+	var available int32
+	for idx := range states {
+		if !states[idx].ready {
+			continue
+		}
+		if int32(idx) < partition || states[idx].updated {
+			available++
+		}
+	}
+	return available
+}
+
+// TestRollingUpdatePartitionWithFloorStateSpace enumerates every (ready,
+// updated) vector for up to 6 ordinals against every floor, current partition,
+// and user partition, and checks the floor and liveness properties the
+// combined rollout relies on.
+func TestRollingUpdatePartitionWithFloorStateSpace(t *testing.T) {
+	kinds := []replicaState{
+		{ready: false, updated: false},
+		{ready: true, updated: false},
+		{ready: false, updated: true},
+		{ready: true, updated: true},
+	}
+	checked := 0
+	for n := 1; n <= 6; n++ {
+		states := make([]replicaState, n)
+		total := 1
+		for range n {
+			total *= len(kinds)
+		}
+		for code := 0; code < total; code++ {
+			rest := code
+			for idx := range states {
+				states[idx] = kinds[rest%len(kinds)]
+				rest /= len(kinds)
+			}
+			for floor := int32(0); floor <= int32(n); floor++ {
+				for current := int32(0); current <= int32(n); current++ {
+					for user := int32(0); user <= current; user++ {
+						checked++
+						got := rollingUpdatePartitionWithFloor(states, floor, current, user)
+						desc := fmt.Sprintf("states=%v floor=%d current=%d user=%d -> %d", states, floor, current, user, got)
+
+						// Partition only moves down, and never below the user partition.
+						if got < user || got > current {
+							t.Fatalf("partition out of bounds: %s", desc)
+						}
+
+						// Lowering the partition never drops guaranteed availability below
+						// floor, unless the current partition already sits below it.
+						before := guaranteedAvailable(states, current)
+						after := guaranteedAvailable(states, got)
+						if after < min(floor, before) {
+							t.Fatalf("floor violated: available %d -> %d: %s", before, after, desc)
+						}
+
+						// Liveness: once every group at or above the user partition is
+						// updated and Ready, the rollout finishes.
+						if allUpdatedAndReadyFrom(states, user, int32(n)) && got != user {
+							t.Fatalf("rollout did not finish: %s", desc)
+						}
+
+						// Liveness: a partition held above the user partition is either
+						// still replacing an old group or is held by the floor. Updated
+						// Ready groups below the current partition only count as credit
+						// when everything above them is updated and Ready (see
+						// rollingUpdatePartitionWithFloor), so skip states that depend on
+						// that credit.
+						if got > user {
+							oldAbove := false
+							for idx := got; int(idx) < n; idx++ {
+								if !states[idx].updated {
+									oldAbove = true
+									break
+								}
+							}
+							updatedReadyBelowCurrent := false
+							for idx := user; idx < current; idx++ {
+								if states[idx].ready && states[idx].updated {
+									updatedReadyBelowCurrent = true
+									break
+								}
+							}
+							if !oldAbove && after > floor && !updatedReadyBelowCurrent {
+								t.Fatalf("partition held without reason: %s", desc)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no states checked")
+	}
+}
+
+// TestPreserveFloorDuringSurgeTrimStateSpace checks that surge trimming keeps
+// the smallest replica count at or above the raw target that preserves
+// min(floor, reachable Ready groups).
+func TestPreserveFloorDuringSurgeTrimStateSpace(t *testing.T) {
+	kinds := []replicaState{{ready: false}, {ready: true}}
+	for n := 1; n <= 7; n++ {
+		states := make([]replicaState, n)
+		for code := 0; code < 1<<n; code++ {
+			for idx := range states {
+				states[idx] = kinds[(code>>idx)&1]
+			}
+			for stsReplicas := int32(0); stsReplicas <= int32(n)+1; stsReplicas++ {
+				for burst := int32(0); burst <= int32(n)+1; burst++ {
+					maxReplicas := min(stsReplicas, min(burst, int32(n)))
+					for raw := int32(0); raw <= maxReplicas; raw++ {
+						for floor := int32(0); floor <= int32(n); floor++ {
+							got := preserveFloorDuringSurgeTrim(states, raw, stsReplicas, burst, floor)
+							desc := fmt.Sprintf("states=%v raw=%d sts=%d burst=%d floor=%d -> %d", states, raw, stsReplicas, burst, floor, got)
+							if got < raw || got > max(raw, maxReplicas) {
+								t.Fatalf("target out of bounds: %s", desc)
+							}
+							goal := min(floor, countReadyStates(states[:maxReplicas]))
+							if floor > 0 && countReadyStates(states[:got]) < goal {
+								t.Fatalf("floor violated: %s", desc)
+							}
+							// Minimal: one fewer replica would drop below the goal.
+							if got > raw && countReadyStates(states[:got-1]) >= goal {
+								t.Fatalf("kept more surge replicas than needed: %s", desc)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestDeleteStaleOrdinalLeadersRespectsAvailabilityFloorOnCrash(t *testing.T) {
 	ctx := context.Background()
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -973,6 +1112,16 @@ func TestDeleteStaleOrdinalLeadersRespectsAvailabilityFloorOnCrash(t *testing.T)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Name: "test-sample-2", Namespace: "default"}, &pod2); err != nil {
 		t.Fatalf("expected test-sample-2 to remain protected at floor=2, got err=%v", err)
+	}
+	// The deletion happens outside the StatefulSet controller, so it must leave
+	// an event on the LWS.
+	select {
+	case event := <-r.Record.(*events.FakeRecorder).Events:
+		if !strings.Contains(event, "Normal GroupsUpdating") || !strings.Contains(event, "test-sample-3") {
+			t.Fatalf("unexpected event for stale leader deletion: %s", event)
+		}
+	default:
+		t.Fatal("expected a GroupsUpdating event for the deleted stale leader test-sample-3")
 	}
 
 	// Re-running at survivingReady == floor (2) deletes nothing while Ready,
