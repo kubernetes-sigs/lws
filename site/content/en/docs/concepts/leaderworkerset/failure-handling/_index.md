@@ -52,6 +52,29 @@ The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
 
 {{< include file="examples/leaderworkerset/failure-handling/recreate-group-after-start.yaml" lang="yaml" >}}
 
+## Worker Deletion While the Controller Is Unavailable
+
+For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, LWS adds the
+`leaderworkerset.sigs.k8s.io/worker-deletion` finalizer to each worker Pod when
+the Pod is created. When a worker is deleted, the finalizer keeps its API object
+in `Terminating` until LWS has applied the restart policy to the deletion.
+This way, a worker deleted while the LWS controller is unavailable, for example
+during a controller rollout, is still handled once the controller is running
+again, and its group is recreated as the restart policy, `maxGroupRestarts`, and
+`restartBackoff` allow. While the controller runs, the finalizer is removed as soon as
+the deletion is handled, so it does not noticeably delay Pod deletion.
+
+Upgrading LWS does not restart running workers. LWS adds the finalizer to
+existing workers of these groups once the upgraded controller is running.
+
+{{% alert title="Uninstalling LWS" color="warning" %}}
+Without a running LWS controller, deleted worker Pods of these groups stay in
+`Terminating`. Delete your `LeaderWorkerSet`s and wait for their Pods to be
+removed before you uninstall LWS. If worker Pods are already stuck, remove the
+`leaderworkerset.sigs.k8s.io/worker-deletion` finalizer from each of them, for
+example with `kubectl edit pod <pod-name>`.
+{{% /alert %}}
+
 ## Limit Automatic Group Recreation
 
 For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, set

@@ -127,6 +127,75 @@ func mergeResult(r1, r2 ctrl.Result) ctrl.Result {
 }
 
 func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
+	result, err := r.reconcilePodRequest(ctx, req)
+	if err != nil || req.DeletedPod != nil {
+		return result, err
+	}
+	return result, r.syncWorkerDeletionFinalizer(ctx, req)
+}
+
+// recreatesGroupOnWorkerFailure reports whether a worker failure under the
+// given restart policy recreates the whole group.
+func recreatesGroupOnWorkerFailure(policy leaderworkerset.RestartPolicyType) bool {
+	return policy == leaderworkerset.RecreateGroupOnPodRestart || policy == leaderworkerset.RecreateGroupAfterStart
+}
+
+// syncWorkerDeletionFinalizer maintains WorkerDeletionFinalizer on worker Pods
+// of groups that are recreated on a worker failure. It runs after the Pod was
+// reconciled, so a terminating worker has had its restart policy handled and
+// its finalizer can be released. Pod admission adds the finalizer to new
+// workers; adding it here covers workers admitted without it, such as those
+// created before an upgrade, and costs one write per such worker.
+func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req podReconcileRequest) error {
+	var pod corev1.Pod
+	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if req.UID != "" && pod.UID != req.UID {
+		return nil
+	}
+	if podutils.LeaderPod(pod) {
+		return nil
+	}
+	hasFinalizer := controllerutil.ContainsFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
+	if pod.DeletionTimestamp != nil {
+		if !hasFinalizer {
+			return nil
+		}
+		patch := client.MergeFrom(pod.DeepCopy())
+		controllerutil.RemoveFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
+		return client.IgnoreNotFound(r.Patch(ctx, &pod, patch))
+	}
+	if hasFinalizer {
+		return nil
+	}
+	var lws leaderworkerset.LeaderWorkerSet
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Labels[leaderworkerset.SetNameLabelKey], Namespace: pod.Namespace}, &lws); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if lws.DeletionTimestamp != nil {
+		return nil
+	}
+	// The restart policy is part of the group's revision, as in reconcilePodRequest.
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &lws, revisionutils.GetRevisionKey(&pod))
+	if err != nil {
+		return err
+	}
+	groupLws := &lws
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&lws, revision); err != nil {
+			return err
+		}
+	}
+	if !recreatesGroupOnWorkerFailure(groupLws.Spec.LeaderWorkerTemplate.RestartPolicy) {
+		return nil
+	}
+	patch := client.MergeFrom(pod.DeepCopy())
+	controllerutil.AddFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
+	return client.IgnoreNotFound(r.Patch(ctx, &pod, patch))
+}
+
+func (r *PodReconciler) reconcilePodRequest(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
 	var pod corev1.Pod
 	if req.DeletedPod != nil {
 		// A leader delete event arrives after its finalizers have been released.
@@ -1704,6 +1773,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
+	if policy := currentLws.Spec.LeaderWorkerTemplate.RestartPolicy; recreatesGroupOnWorkerFailure(policy) {
+		podAnnotations[leaderworkerset.RestartPolicyAnnotationKey] = string(policy)
+	}
 	// Exclusive placement keys are copied from the leader pod so workers of an
 	// old-revision group keep the placement their leader was created with.
 	if topologyKey := leaderPod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {
