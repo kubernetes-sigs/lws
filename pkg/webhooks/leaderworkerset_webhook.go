@@ -741,43 +741,14 @@ func validateTPUSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpe
 }
 
 // ValidateTPUSubGroupOnWrite checks TPU subgroup partitions for a create
-// (oldSpec nil) or an update. A previously failing spec stays writable while
-// its partition key is unchanged, so annotation cleanup and finalizer removal
-// still succeed. Replicas are outside that key: the scale subresource bypasses
-// this webhook. A key change is rechecked, including a move between invalid layouts.
+// (oldSpec nil) or an update. A spec that already fails stays writable, so
+// annotation cleanup, replica changes, and finalizer removal still succeed.
+// A spec that passes cannot be updated into a failing one.
 func ValidateTPUSubGroupOnWrite(specPath *field.Path, oldSpec, newSpec *v1.LeaderWorkerSetSpec) field.ErrorList {
-	if oldSpec != nil && len(validateTPUSubGroupPolicy(specPath, oldSpec)) > 0 && tpuPartitionKey(oldSpec) == tpuPartitionKey(newSpec) {
+	if oldSpec != nil && len(validateTPUSubGroupPolicy(specPath, oldSpec)) > 0 {
 		return nil
 	}
 	return validateTPUSubGroupPolicy(specPath, newSpec)
-}
-
-// tpuSubGroupKey is the part of a spec that selects a TPU subgroup partition.
-// Whether a pod requests TPUs is not stored separately: injection runs only
-// when that bool is true and the pod has not supplied its own TPU env, and a
-// change to the bool alone cannot alter a failing partition without also
-// changing tpuInjectionSkipped.
-type tpuSubGroupKey struct {
-	size          int32
-	subGroupSize  int32
-	hasSubGroup   bool
-	policy        v1.SubGroupPolicyType
-	leaderSkipped bool
-	workerSkipped bool
-}
-
-func tpuPartitionKey(spec *v1.LeaderWorkerSetSpec) tpuSubGroupKey {
-	key := tpuSubGroupKey{
-		size:          ptr.Deref(spec.LeaderWorkerTemplate.Size, 1),
-		policy:        normalizedSubGroupPolicyType(spec),
-		leaderSkipped: tpuInjectionSkipped(leaderPodSpec(spec)),
-		workerSkipped: tpuInjectionSkipped(spec.LeaderWorkerTemplate.WorkerTemplate.Spec),
-	}
-	if policy := spec.LeaderWorkerTemplate.SubGroupPolicy; policy != nil && policy.SubGroupSize != nil {
-		key.subGroupSize = *policy.SubGroupSize
-		key.hasSubGroup = true
-	}
-	return key
 }
 
 func leaderPodSpec(spec *v1.LeaderWorkerSetSpec) corev1.PodSpec {
@@ -812,17 +783,6 @@ func firstContainerRequestingTPUs(containers []corev1.Container) *corev1.Contain
 		}
 	}
 	return nil
-}
-
-// normalizedSubGroupPolicyType treats an empty type as LeaderWorker. The CRD
-// defaults that field, so a stored nil and an explicit LeaderWorker are the
-// same partition.
-func normalizedSubGroupPolicyType(spec *v1.LeaderWorkerSetSpec) v1.SubGroupPolicyType {
-	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
-	if policy == nil || policy.Type == nil || *policy.Type == "" || *policy.Type == v1.SubGroupPolicyTypeLeaderWorker {
-		return v1.SubGroupPolicyTypeLeaderWorker
-	}
-	return *policy.Type
 }
 
 func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWorkerSet) (admission.Warnings, field.ErrorList) {

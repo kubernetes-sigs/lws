@@ -1064,10 +1064,9 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				new:  build(2, 4, 2, nil, false, true, false),
 			},
 			{
-				name:       "resizing to another divisible size rejects the divergent partition",
-				old:        build(1, 4, 2, nil, false, true, false),
-				new:        build(1, 6, 2, nil, false, true, false),
-				wantDetail: divergeDetail,
+				name: "resizing a legacy divergent partition stays allowed",
+				old:  build(1, 4, 2, nil, false, true, false),
+				new:  build(1, 6, 2, nil, false, true, false),
 			},
 			{
 				name: "resizing to a leader-extra size makes the partition valid",
@@ -1086,16 +1085,20 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				wantDetail: divergeDetail,
 			},
 			{
-				name:       "LeaderWorker both-tpu leader-extra cannot switch to LeaderExcluded",
-				old:        build(1, 5, 2, &leaderWorker, true, true, false),
-				new:        build(1, 5, 2, &leaderExcluded, true, true, false),
-				wantDetail: leaderExcludedDetail,
+				name: "a legacy both-tpu leader-extra group can switch to LeaderExcluded",
+				old:  build(1, 5, 2, &leaderWorker, true, true, false),
+				new:  build(1, 5, 2, &leaderExcluded, true, true, false),
 			},
 			{
-				name:       "LeaderExcluded with a tpu leader cannot switch to LeaderWorker",
-				old:        build(1, 5, 2, &leaderExcluded, true, true, false),
-				new:        build(1, 5, 2, &leaderWorker, true, true, false),
-				wantDetail: bothTPUDetail,
+				name: "a legacy LeaderExcluded tpu leader can switch to LeaderWorker",
+				old:  build(1, 5, 2, &leaderExcluded, true, true, false),
+				new:  build(1, 5, 2, &leaderWorker, true, true, false),
+			},
+			{
+				name:       "a valid both-tpu group cannot switch to LeaderExcluded",
+				old:        build(1, 4, 2, &leaderWorker, true, true, false),
+				new:        build(1, 5, 2, &leaderExcluded, true, true, false),
+				wantDetail: leaderExcludedDetail,
 			},
 			{
 				name: "adding worker tpu env makes a divergent partition valid",
@@ -1107,24 +1110,22 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 				}(),
 			},
 			{
-				name: "leader tpu env alone does not make LeaderExcluded workers valid",
+				name: "leader tpu env on a legacy LeaderExcluded group stays allowed",
 				old:  build(1, 5, 2, &leaderExcluded, true, true, false),
 				new: func() *v1.LeaderWorkerSet {
 					updated := build(1, 5, 2, &leaderExcluded, true, true, false)
 					setUserTPUEnv(updated.Spec.LeaderWorkerTemplate.LeaderTemplate)
 					return updated
 				}(),
-				wantDetail: leaderExcludedDetail,
 			},
 			{
-				name: "removing leader tpu env on an invalid both-tpu group stays rejected",
+				name: "removing leader tpu env on a legacy both-tpu group stays allowed",
 				old: func() *v1.LeaderWorkerSet {
 					existing := build(1, 5, 2, nil, true, true, false)
 					setUserTPUEnv(existing.Spec.LeaderWorkerTemplate.LeaderTemplate)
 					return existing
 				}(),
-				new:        build(1, 5, 2, nil, true, true, false),
-				wantDetail: bothTPUDetail,
+				new: build(1, 5, 2, nil, true, true, false),
 			},
 		}
 		for _, tc := range updateTests {
