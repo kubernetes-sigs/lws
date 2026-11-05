@@ -1710,9 +1710,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
-			podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type)
-		}
+		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(ptr.Deref(currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type, leaderworkerset.SubGroupPolicyTypeLeaderWorker))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if topologyKey := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; topologyKey != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
