@@ -115,14 +115,35 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
 
+	// The leader Deployment apply below renders the leader template only.
+	// Probe the worker template BEFORE it stamps the new revision onto the
+	// Deployment: once stamped, the Deployment starts recreating leader pods
+	// with the broken revision, and the next reconcile's gate (deploy == nil
+	// || updatedRevision != nil) reads false — the probe would be skipped and
+	// Progressing=True would overwrite InvalidTemplate. Only for new or
+	// updated revisions, so steady-state reconciles add no API calls.
+	if needsWorkerTemplateProbe(lws) && (deploy == nil || updatedRevision != nil) {
+		if err := r.dryRunWorkerTemplate(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to validate worker statefulset template for %s: %v", lws.Name, err))
+			if apierrors.IsInvalid(err) {
+				r.recordInvalidTemplate(ctx, lws, err)
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	if err := r.SSAWithDeployment(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
 		if deploy == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader deployment %s: %v", lws.Name, err))
 		} else {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, fmt.Sprintf("Failed to update leader deployment %s: %v", lws.Name, err))
 		}
+		if apierrors.IsInvalid(err) {
+			r.recordInvalidTemplate(ctx, lws, err)
+		}
 		return ctrl.Result{}, err
 	}
+
 	if deploy == nil {
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader deployment %s", lws.Name))
 	}
