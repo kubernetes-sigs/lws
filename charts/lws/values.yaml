@@ -18,6 +18,22 @@ serviceAccount:
   # name of the controller manager ServiceAccount. Defaults to
   # <fullname>-controller-manager when empty.
   name: ""
+# Protect controller-owned metadata using ValidatingAdmissionPolicy (Kubernetes 1.30+).
+# This is cluster-wide. An admission-only RBAC permission is granted to the manager.
+# Native-controller usernames are authenticated identities, not Pod service accounts
+# or server-side apply field-manager names.
+metadataProtection:
+  enabled: true
+  podControllerUsernames:
+    - system:serviceaccount:kube-system:statefulset-controller
+    - system:serviceaccount:kube-system:replicaset-controller
+    - system:kube-controller-manager
+  deploymentControllerUsernames:
+    - system:serviceaccount:kube-system:deployment-controller
+    - system:kube-controller-manager
+  statefulSetControllerUsernames:
+    - system:serviceaccount:kube-system:statefulset-controller
+    - system:kube-controller-manager
 # PodDisruptionBudget for the manager Deployment, rendered only when
 # replicaCount is greater than 1.
 # Ref: https://kubernetes.io/docs/tasks/run-application/configure-pdb/

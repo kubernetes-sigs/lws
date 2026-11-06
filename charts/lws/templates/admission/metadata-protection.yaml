@@ -1,0 +1,45 @@
+{{- $config := .Values.metadataProtection | default dict }}
+{{- if dig "enabled" true $config }}
+{{- if not (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+{{- fail "metadataProtection requires Kubernetes 1.30 or newer; explicitly set metadataProtection.enabled=false to disable it" }}
+{{- end }}
+{{- $policy := .Files.Get "files/metadata-protection-policy.yaml" | fromYaml }}
+{{- $name := printf "%s-metadata-protection-%s" (include "lws.fullname" .) .Release.Namespace }}
+{{- $_ := set $policy.metadata "name" $name }}
+{{- range $variable := $policy.spec.variables }}
+  {{- if and (has $variable.name (list "podControllerUsernames" "deploymentControllerUsernames" "statefulSetControllerUsernames")) (hasKey $config $variable.name) }}
+    {{- $_ := set $variable "expression" (get $config $variable.name | mustToJson) }}
+  {{- end }}
+{{- end }}
+{{ toYaml $policy }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+rules:
+- apiGroups: [leaderworkerset.x-k8s.io]
+  resources: [leaderworkersets]
+  verbs: [manage-metadata]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "lws.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

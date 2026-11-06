@@ -208,8 +208,9 @@ kind-image-build: IMAGE_BUILD_EXTRA_OPTS=--load
 kind-image-build: kind image-build
 
 .PHONY: test-integration
-test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
+test-integration: manifests fmt vet envtest ginkgo helm ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	HELM="$(HELM)" KUBECTL="$(KUBECTL)" \
 	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 .PHONY: test-e2e
@@ -487,8 +488,8 @@ helm-unittest: update-helm helm ## Run Helm chart unit tests (helm-unittest plug
 
 .PHONY: helm-verify
 helm-verify: update-helm helm helm-unittest ## Verify the Helm chart and generated RBAC templates.
-	$(HELM) lint charts/lws
-	$(HELM) template charts/lws >/dev/null
+	$(HELM) lint charts/lws --kube-version $(ENVTEST_K8S_VERSION)
+	$(HELM) template charts/lws --kube-version $(ENVTEST_K8S_VERSION) >/dev/null
 
 YQ = $(PROJECT_DIR)/bin/yq
 .PHONY: yq

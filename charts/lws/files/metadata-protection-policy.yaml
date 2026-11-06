@@ -1,0 +1,114 @@
+# Shared directly by Helm and Kustomize.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: metadata-protection
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    # Do not select by mutable management labels. Check protected keys on all
+    # matching objects, including metadata updates through subresources.
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [pods, pods/*, services, services/*]
+    - apiGroups: ["apps"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [statefulsets, statefulsets/*, deployments, deployments/*, replicasets, replicasets/*, controllerrevisions, controllerrevisions/*]
+    - apiGroups: ["leaderworkerset.x-k8s.io"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [leaderworkersets, leaderworkersets/*]
+    - apiGroups: ["disaggregatedset.x-k8s.io"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [disaggregatedsets, disaggregatedsets/*, disaggregatedsetrolescalers, disaggregatedsetrolescalers/*]
+    - apiGroups: ["scheduling.k8s.io"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [podgroups, podgroups/*, workloads, workloads/*]
+    - apiGroups: ["scheduling.volcano.sh"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [podgroups, podgroups/*]
+    - apiGroups: ["resource.nvidia.com"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE]
+      resources: [computedomains, computedomains/*]
+  validations:
+  # Compare both directions to catch additions and removals, including empty
+  # values. ControllerRevision data can contain unrelated non-map payload fields.
+  - expression: |-
+      variables.isManager || variables.nativeCreate || (
+      variables.newEntries.all(a, !has(a.meta.labels) || type(a.meta.labels) != map || a.meta.labels.all(k, !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.oldEntries.exists(b, b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map && k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k]))) &&
+      variables.oldEntries.all(a, !has(a.meta.labels) || type(a.meta.labels) != map || a.meta.labels.all(k, !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.newEntries.exists(b, b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map && k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k])))
+      )
+    message: LWS/DisaggregatedSet controller-owned labels may only be written by their
+      approved controllers, including in templates.
+    reason: Forbidden
+  - expression: |-
+      variables.isManager || variables.nativeCreate || (
+      variables.newEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.oldEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k]))) &&
+      variables.oldEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.newEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k])))
+      )
+    message: LWS/DisaggregatedSet controller-owned annotations may only be written
+      by their approved controllers, including in templates.
+    reason: Forbidden
+  variables:
+  # Reserve future keys automatically. Only explicit user annotation inputs
+  # are exempt; new public inputs must be added to that exception list.
+  - name: protectedPrefixes
+    expression: '["leaderworkerset.sigs.k8s.io/", "disaggregatedset.x-k8s.io/"]'
+  # Public configuration inputs must stay editable despite their reserved prefix.
+  # Any caller with object-write permission (including other controllers) may
+  # change these exact annotations. These exceptions do not apply to labels.
+  - name: userAnnotationKeys
+    expression: >-
+      ["leaderworkerset.sigs.k8s.io/exclusive-topology",
+       "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology",
+       "leaderworkerset.sigs.k8s.io/experimental-recreate-group-after-start",
+       "leaderworkerset.sigs.k8s.io/recover",
+       "leaderworkerset.sigs.k8s.io/auto-compute-domain",
+       "leaderworkerset.sigs.k8s.io/compute-domain-containers",
+       "disaggregatedset.x-k8s.io/auto-compute-domain"]
+  # Authentication identities of native controllers, not Pod service accounts.
+  - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:serviceaccount:kube-system:replicaset-controller",
+      "system:kube-controller-manager"]'
+    name: podControllerUsernames
+  - expression: '["system:serviceaccount:kube-system:deployment-controller", "system:kube-controller-manager"]'
+    name: deploymentControllerUsernames
+  - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:kube-controller-manager"]'
+    name: statefulSetControllerUsernames
+  # Empty namespace requires a cluster-wide grant of this admission-only verb.
+  - expression: authorizer.group('leaderworkerset.x-k8s.io').resource('leaderworkersets').namespace('').check('manage-metadata').allowed()
+    name: isManager
+  - expression: request.resource.group == 'apps' && request.resource.resource == 'replicasets'
+      && request.?subResource.orValue('') == '' && request.userInfo.username in variables.deploymentControllerUsernames
+    name: isReplicaSetWriter
+  - expression: request.operation == 'CREATE' && request.?subResource.orValue('')
+      == '' && ((request.resource.group == '' && request.resource.resource == 'pods'
+      && request.userInfo.username in variables.podControllerUsernames) || variables.isReplicaSetWriter
+      || (request.resource.group == 'apps' && request.resource.resource == 'controllerrevisions'
+      && request.userInfo.username in variables.statefulSetControllerUsernames))
+    name: nativeCreate
+  # Project the same metadata locations from both versions. Stable role names
+  # allow reordering without allowing protected values to move between roles.
+  - name: entries
+    expression: |-
+      [object, oldObject].map(o,
+        o == null ? [] : [{'id':dyn("object"),'meta':o.metadata}] +
+        (request.?subResource.orValue('') == '' && request.resource.group == 'apps' && request.resource.resource in ['deployments','statefulsets','replicasets'] ? [{'id':dyn("podTemplate"),'meta':o.?spec.?template.?metadata.orValue({})}] : []) +
+        (request.?subResource.orValue('') == '' && request.resource.group == 'leaderworkerset.x-k8s.io' && request.resource.resource == 'leaderworkersets' ? [{'id':dyn("leaderTemplate"),'meta':o.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}, {'id':dyn("workerTemplate"),'meta':o.?spec.?leaderWorkerTemplate.?workerTemplate.?metadata.orValue({})}] : []) +
+        (request.?subResource.orValue('') == '' && request.resource.group == 'apps' && request.resource.resource == 'controllerrevisions' ? [{'id':dyn("revisionMetadata"),'meta':o.?data.?metadata.orValue({})}, {'id':dyn("revisionPodTemplate"),'meta':o.?data.?spec.?template.?metadata.orValue({})}, {'id':dyn("revisionleaderTemplate"),'meta':o.?data.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}, {'id':dyn("revisionworkerTemplate"),'meta':o.?data.?spec.?leaderWorkerTemplate.?workerTemplate.?metadata.orValue({})}] : []) +
+        (request.?subResource.orValue('') == '' && request.resource.group == 'disaggregatedset.x-k8s.io' && request.resource.resource == 'disaggregatedsets' ? (
+        o.?spec.?roles.orValue([]).map(r, {'id':dyn('role/' + r.name + '/metadata'), 'meta':r.?metadata.orValue({})}) +
+        o.?spec.?roles.orValue([]).map(r, {'id':dyn('role/' + r.name + '/leaderTemplate'), 'meta':r.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}) +
+        o.?spec.?roles.orValue([]).map(r, {'id':dyn('role/' + r.name + '/workerTemplate'), 'meta':r.?spec.?leaderWorkerTemplate.?workerTemplate.?metadata.orValue({})})
+        ) : [])
+      )
+  - name: newEntries
+    expression: variables.entries[0]
+  - name: oldEntries
+    expression: variables.entries[1]
