@@ -10,14 +10,9 @@ A **Role** in DisaggregatedSet represents a distinct operational phase in a disa
 
 ## Relationship to Child LeaderWorkerSets
 
-Each role defined in a `DisaggregatedSet` specification maps directly to an independent child `LeaderWorkerSet` managed by the DisaggregatedSet controller:
+Within each slice and revision, each role maps to its own child `LeaderWorkerSet`, managed by the DisaggregatedSet controller:
 
-```
-DisaggregatedSet "my-inference"
-├── roles[0]: prefill  →  LeaderWorkerSet "my-inference-0-<rev>-prefill"
-├── roles[1]: decode   →  LeaderWorkerSet "my-inference-0-<rev>-decode"
-└── roles[2]: encode   →  LeaderWorkerSet "my-inference-0-<rev>-encode"
-```
+{{< ds-explorer kind="roles" >}}
 
 Child LeaderWorkerSets follow the naming convention:
 `<DisaggregatedSet-name>-<slice>-<revision-hash>-<role-name>`

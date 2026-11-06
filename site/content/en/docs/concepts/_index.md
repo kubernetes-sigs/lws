@@ -15,27 +15,7 @@ LeaderWorkerSet and DisaggregatedSet work together in a layered architecture:
 - **LeaderWorkerSet (LWS)** (`leaderworkerset.x-k8s.io/v1`): A foundational API for deploying a group of pods as a single **unit of replication**. LWS addresses multi-node model-parallel inference where pods within a replica share fate, require tight co-location, and communicate via high-speed interconnects.
 - **DisaggregatedSet (DS)** (`disaggregatedset.x-k8s.io/v1`): A higher-level orchestration API designed for **disaggregated inference** architectures (e.g., separating prefill and decode phases). DisaggregatedSet manages and coordinates multiple underlying LeaderWorkerSets as distinct roles within a unified logical workload. DisaggregatedSet uses LeaderWorkerSet as a core primitive, it composes multiple LeaderWorkerSets into a complete serving topology, handling cross-role coordination that individual pod groups cannot manage alone.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    DisaggregatedSet                         │
-│  (Multi-role orchestration, ratio-preserving rollouts,      │
-│   service discovery, slice management, coordinated drain)   │
-└──────────────┬───────────────────────────────┬──────────────┘
-               │                               │
-               ▼                               ▼
-  ┌─────────────────────────┐     ┌─────────────────────────┐
-  │ LeaderWorkerSet (Role 1)│     │ LeaderWorkerSet (Role 2)│
-  │     e.g., Prefill       │     │      e.g., Decode       │
-  ├─────────────────────────┤     ├─────────────────────────┤
-  │ • Pod group lifecycle   │     │ • Pod group lifecycle   │
-  │ • Leader/worker template│     │ • Leader/worker template│
-  │ • Exclusive topology    │     │ • Exclusive topology    │
-  │ • Subgroup scheduling   │     │ • Subgroup scheduling   │
-  │ • Failure restart policy│     │ • Failure restart policy│
-  └─────────────────────────┘     └─────────────────────────┘
-```
-
-
+{{< ds-architecture >}}
 
 ## Comparison Matrix
 

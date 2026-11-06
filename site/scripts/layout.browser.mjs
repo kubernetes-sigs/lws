@@ -29,7 +29,7 @@ async function assertLogoNavigation() {
   // image is unavailable. Routing also disables the browser's HTTP image cache.
   await page.route(asset, route => route.abort());
   try {
-    for (const path of ['/main/docs/concepts/disaggregatedset/scaling-during-rollout/', '/stable/docs/overview/']) {
+    for (const path of ['/main/docs/concepts/disaggregatedset/role-scaler/', '/stable/docs/overview/']) {
       const response = await page.goto(new URL(path, origin).href);
       assert.equal(response?.status(), 200);
       await page.evaluate(() => document.fonts.ready);

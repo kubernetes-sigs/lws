@@ -1,0 +1,42 @@
+{{- $id := printf "ds-architecture-%d" .Ordinal -}}
+<figure id="api-architecture" class="ds-architecture">
+  <svg class="da-diagram" viewBox="0 0 760 640" role="img" aria-labelledby="{{ $id }}-title {{ $id }}-description">
+    <title id="{{ $id }}-title">DisaggregatedSet coordinates roles; LeaderWorkerSet manages pod groups</title>
+    <desc id="{{ $id }}-description">A DisaggregatedSet creates and coordinates child LeaderWorkerSets for prefill and decode. In this example, prefill processes the prompt and builds the initial KV cache; decode generates output tokens and extends that cache. DisaggregatedSet manages ratio-preserving rollouts, coordinated drain, service discovery, and slices. Both LeaderWorkerSets manage pod group lifecycle, restart policies, leader and worker templates, topology, and subgroups. One slice and one revision are shown.</desc>
+    <defs>
+      <marker id="{{ $id }}-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="da-connector" d="M2 1 8 5 2 9"/>
+      </marker>
+    </defs>
+
+    <rect class="da-panel da-parent" x="20" y="16" width="720" height="178" rx="18"/>
+    <image href="{{ "images/ds-logo.svg" | relURL }}" x="48" y="40" width="68" height="68"/>
+    <text class="da-title" x="136" y="66">DisaggregatedSet</text>
+    <text class="da-accent" x="136" y="94">Coordinates roles across the workload</text>
+    <path class="da-divider" d="M44 124H716"/>
+    <text class="da-centered" x="380" y="151">Ratio-preserving rollouts · Coordinated drain</text>
+    <text class="da-centered" x="380" y="177">Service discovery · Slice management</text>
+
+    {{ range slice 190 570 }}
+    <path class="da-connector" d="M{{ . }} 195V267" marker-end="url(#{{ $id }}-arrow)"/>
+    {{ end }}
+    <text class="da-centered da-muted" x="380" y="237">Creates and coordinates</text>
+
+    {{ range slice (dict "x" 20 "role" "Prefill" "action" "Processes the prompt" "detail" "Builds the initial KV cache") (dict "x" 400 "role" "Decode" "action" "Generates output tokens" "detail" "Reads and extends the KV cache") }}
+    <g transform="translate({{ .x }} 278)">
+      <rect class="da-panel" width="340" height="198" rx="18"/>
+      <image href="{{ "images/logo.svg" | relURL }}" x="22" y="24" width="64" height="64"/>
+      <text class="da-child-title" x="104" y="51">LeaderWorkerSet</text>
+      <text class="da-accent" x="104" y="79">{{ .role }} role</text>
+      <path class="da-divider" d="M24 111H316"/>
+      <text x="24" y="148">{{ .action }}</text>
+      <text x="24" y="177">{{ .detail }}</text>
+    </g>
+    {{ end }}
+    <text class="da-centered da-muted" x="380" y="518">Both LeaderWorkerSets manage their own pod groups</text>
+    <text class="da-centered" x="380" y="551">Pod group lifecycle · Restart policies</text>
+    <text class="da-centered" x="380" y="578">Leader and worker templates</text>
+    <text class="da-centered" x="380" y="605">Exclusive topology · Subgroup scheduling</text>
+  </svg>
+  <figcaption>One slice and one revision shown. Each role can have children across multiple slices and revisions.</figcaption>
+</figure>
