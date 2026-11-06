@@ -362,6 +362,7 @@ featureGates:
   - create
   - get
   - list
+  - patch
   - watch
 EOF
         fi
