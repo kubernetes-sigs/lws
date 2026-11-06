@@ -79,6 +79,33 @@ Old `enableDisaggregatedSet` values are now ignored, even with
 validation for new or updated DisaggregatedSets. You can remove the obsolete
 option from your values files.
 
+##### Metadata protection
+
+Metadata protection is enabled by default and requires Kubernetes 1.30 or newer.
+For offline rendering, pass `--kube-version 1.30.0` (or your target version) to `helm template`.
+The chart installs a ValidatingAdmissionPolicy and enforcing binding, plus an
+admission-only RBAC permission for the manager ServiceAccount. Other clients
+cannot add, change or remove labels or annotations under the
+`leaderworkerset.sigs.k8s.io/` and `disaggregatedset.x-k8s.io/` prefixes, including
+future keys and metadata inside workload templates. Public configuration annotations remain editable:
+`exclusive-topology`, `subgroup-exclusive-topology`,
+`experimental-recreate-group-after-start`, `recover`, `auto-compute-domain`, and
+`compute-domain-containers` under the LWS prefix, and `auto-compute-domain` under
+the DisaggregatedSet prefix. Ordinary scaling remains editable.
+
+Native-controller identities can be adjusted with the `metadataProtection`
+values below. Disable enforcement with `--set metadataProtection.enabled=false`.
+`bindingAnnotationUsernames` trusts the default Kubernetes and Volcano schedulers
+to write protected annotations through Pod bindings, since Volcano copies Pod
+annotations into its binding requests. Binding admission has no previous Pod to
+compare; these identities can overwrite protected annotations during binding,
+but cannot modify protected labels or perform ordinary protected Pod updates.
+The manager's ClusterRoleBinding grants the admission-only `manage-metadata`
+verb. Normal object-write permissions do not grant it; cluster administrators
+retain access. Installers need permission to manage admission policies and bindings.
+For Kustomize, remove `../components/metadata-protection` from `config/default`
+to disable enforcement. Existing clusters gain protection when upgraded.
+
 ### Upgrading the chart
 
 The chart ships its CRDs under the special `crds/` directory. Helm installs the
@@ -145,6 +172,10 @@ The following table lists the configurable parameters of the LWS chart and their
 | `enableCertManager`                        | enable CertManager                             | `false`                                             |
 | `replicaCount`                             | Number of manager replicas (leader election keeps one active) | `1`                                  |
 | `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
+| `metadataProtection.enabled`              | Enforce controller-owned metadata protection (Kubernetes 1.30+) | `true` |
+| `metadataProtection.podControllerUsernames` | Authenticated identities allowed to create Pods with protected metadata | StatefulSet/ReplicaSet controller ServiceAccounts and `system:kube-controller-manager` |
+| `metadataProtection.deploymentControllerUsernames` | Identities allowed to create ReplicaSets and propagate their object annotations | Deployment controller ServiceAccount and `system:kube-controller-manager` |
+| `metadataProtection.statefulSetControllerUsernames` | Identities allowed to create ControllerRevisions | StatefulSet controller ServiceAccount and `system:kube-controller-manager` |
 | `pdb.enabled`                              | Create a PodDisruptionBudget for the manager (only when `replicaCount` > 1) | `true`                 |
 | `pdb.minAvailable`                         | Minimum manager pods available after eviction  | `1`                                                 |
 | `pdb.maxUnavailable`                       | Maximum manager pods unavailable; takes precedence over `minAvailable` | `null`                      |
