@@ -104,15 +104,24 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 
 	var rolloutBaseline *int32
 	if deploy != nil {
-		if updatedRevision != nil {
-			rolloutBaseline = ptr.To(resolveDeploymentRolloutBaseline(deploy, *lws.Spec.Replicas))
-		} else if deploy.Annotations[rolloutBaselineAnnotationKey] != "" {
-			converged, err := r.isHashRolloutConverged(ctx, lws, deploy, targetRevisionKey)
+		lwsReplicas := *lws.Spec.Replicas
+		if deploy.Annotations[rolloutBaselineAnnotationKey] == "" {
+			if updatedRevision != nil {
+				rolloutBaseline = ptr.To(currentDeploymentRolloutBaseline(deploy, lwsReplicas))
+			}
+		} else {
+			// A recorded baseline belongs to the rollout of the Deployment's
+			// current revision. A new revision inherits it only while that
+			// rollout is still in progress.
+			converged, err := r.isHashRolloutConverged(ctx, lws, deploy, revisionKey)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-			if !converged {
-				rolloutBaseline = ptr.To(resolveDeploymentRolloutBaseline(deploy, *lws.Spec.Replicas))
+			switch {
+			case !converged:
+				rolloutBaseline = ptr.To(resolveDeploymentRolloutBaseline(deploy, lwsReplicas))
+			case updatedRevision != nil:
+				rolloutBaseline = ptr.To(currentDeploymentRolloutBaseline(deploy, lwsReplicas))
 			}
 		}
 	}
@@ -302,6 +311,12 @@ func resolveDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int
 			return min(baseline, lwsReplicas)
 		}
 	}
+	return currentDeploymentRolloutBaseline(deploy, lwsReplicas)
+}
+
+// currentDeploymentRolloutBaseline returns the baseline for a rollout that
+// starts from the Deployment's current size, ignoring any recorded baseline.
+func currentDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
 	deployReplicas := ptr.Deref(deploy.Spec.Replicas, 0)
 	if rawOriginal := deploy.Annotations[leaderworkerset.ReplicasAnnotationKey]; rawOriginal != "" {
 		if originalLwsReplicas, err := parseNonNegativeInt32(rawOriginal); err == nil {
@@ -311,16 +326,18 @@ func resolveDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int
 	return min(deployReplicas, lwsReplicas)
 }
 
-// isHashRolloutConverged reports whether every leader runs the target revision.
-// Readiness is not required: an unready or budget-exhausted group must not leave
-// a baseline behind that relaxes the floor of the next rollout.
+// isHashRolloutConverged reports whether the Deployment's rollout of revisionKey
+// reached the Deployment's own desired count, with every leader on that
+// revision. It uses the Deployment's count, not the LWS's, so a scale request
+// or a new template that arrives after completion does not hide it. Readiness
+// is not required: an unready or budget-exhausted group must not leave a
+// baseline behind that relaxes the floor of the next rollout.
 func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, deploy *appsv1.Deployment, revisionKey string) (bool, error) {
-	lwsReplicas := *lws.Spec.Replicas
+	desiredReplicas := ptr.Deref(deploy.Spec.Replicas, 0)
 	if deploy.Status.ObservedGeneration < deploy.Generation ||
 		revisionutils.GetRevisionKey(deploy) != revisionKey ||
-		ptr.Deref(deploy.Spec.Replicas, 0) != lwsReplicas ||
-		deploy.Status.Replicas != lwsReplicas ||
-		deploy.Status.UpdatedReplicas != lwsReplicas {
+		deploy.Status.Replicas != desiredReplicas ||
+		deploy.Status.UpdatedReplicas != desiredReplicas {
 		return false, nil
 	}
 	var leaderPodList corev1.PodList
@@ -339,7 +356,7 @@ func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, 
 			return false, nil
 		}
 	}
-	return len(leaderPodList.Items) == 0 || currentRevisionPods >= int(lwsReplicas), nil
+	return len(leaderPodList.Items) == 0 || currentRevisionPods >= int(desiredReplicas), nil
 }
 
 func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
