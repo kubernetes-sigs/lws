@@ -184,6 +184,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 // podGroupPriorityClassName returns the PodGroup priority class, or "" when the
 // leader and worker templates disagree and no single class describes the group.
 func podGroupPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) string {
+	// A size 1 group has only the leader, so the unused worker template does not matter.
+	if *lws.Spec.LeaderWorkerTemplate.Size == 1 && lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		return lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName
+	}
 	priorityClassName, consistent := workloadPriorityClassName(lws)
 	if !consistent {
 		return ""
