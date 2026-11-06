@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/lws/pkg/controllers"
 	disaggregatedsetcontroller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
 	"sigs.k8s.io/lws/pkg/utils/useragent"
@@ -207,6 +208,9 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// The LWS metrics are served next to the controller-runtime ones.
+	metrics.Register()
 
 	// Register controllers before starting the manager so an elected leader does
 	// not hold the lease without running reconcilers while waiting for its local

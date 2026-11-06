@@ -56,6 +56,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
@@ -510,6 +511,7 @@ func (r *PodReconciler) recreateGroupSplitByUpgrade(ctx context.Context, lws *le
 	r.Record.Eventf(lws, leader, corev1.EventTypeNormal, "RecreateGroup", Delete,
 		"Worker statefulset %s was created by a previous LWS version and its workers do not join the PodGroups of leader pod %s, deleted the leader pod to recreate group %s",
 		workerSts.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey])
+	metrics.GroupRecreated(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit)
 	return true, nil
 }
 
@@ -705,6 +707,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 						r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, GroupRestartBackoff, Update,
 							fmt.Sprintf("Backing off recreation of group %s for %v (restart count %d)",
 								leader.Labels[leaderworkerset.GroupIndexLabelKey], requeueAfter, count))
+						metrics.GroupRestartBackedOff(leaderWorkerSet.Namespace, leaderWorkerSet.Name)
 					}
 					return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
 				}
@@ -727,6 +730,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 		return true, ctrl.Result{}, nil
 	}
 	r.Record.Eventf(&leaderWorkerSet, &leader, corev1.EventTypeNormal, "RecreateGroup", Delete, fmt.Sprintf("Worker pod %s failed, deleted leader pod %s to recreate group %s", pod.Name, leader.Name, leader.Labels[leaderworkerset.GroupIndexLabelKey]))
+	metrics.GroupRecreated(leaderWorkerSet.Namespace, leaderWorkerSet.Name, metrics.GroupRecreateReasonPodRestart)
 	return true, ctrl.Result{}, nil
 }
 
@@ -867,6 +871,7 @@ func (r *PodReconciler) terminateExhaustedGroup(ctx context.Context, lws *leader
 	}
 	r.Record.Eventf(lws, leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded", Delete,
 		fmt.Sprintf("Restart budget exhausted; terminated group %s and stopped automatic recovery", leader.Labels[leaderworkerset.GroupIndexLabelKey]))
+	metrics.GroupRestartBudgetExhausted(lws.Namespace, lws.Name)
 	return true, nil
 }
 
