@@ -1014,23 +1014,21 @@ func TestPreserveFloorDuringSurgeTrimStateSpace(t *testing.T) {
 				states[idx] = kinds[(code>>idx)&1]
 			}
 			for stsReplicas := int32(0); stsReplicas <= int32(n)+1; stsReplicas++ {
-				for burst := int32(0); burst <= int32(n)+1; burst++ {
-					maxReplicas := min(stsReplicas, min(burst, int32(n)))
-					for raw := int32(0); raw <= maxReplicas; raw++ {
-						for floor := int32(0); floor <= int32(n); floor++ {
-							got := preserveFloorDuringSurgeTrim(states, raw, stsReplicas, burst, floor)
-							desc := fmt.Sprintf("states=%v raw=%d sts=%d burst=%d floor=%d -> %d", states, raw, stsReplicas, burst, floor, got)
-							if got < raw || got > max(raw, maxReplicas) {
-								t.Fatalf("target out of bounds: %s", desc)
-							}
-							goal := min(floor, countReadyStates(states[:maxReplicas]))
-							if floor > 0 && countReadyStates(states[:got]) < goal {
-								t.Fatalf("floor violated: %s", desc)
-							}
-							// Minimal: one fewer replica would drop below the goal.
-							if got > raw && countReadyStates(states[:got-1]) >= goal {
-								t.Fatalf("kept more surge replicas than needed: %s", desc)
-							}
+				maxReplicas := min(stsReplicas, int32(n))
+				for raw := int32(0); raw <= maxReplicas; raw++ {
+					for floor := int32(0); floor <= int32(n); floor++ {
+						got := preserveFloorDuringSurgeTrim(states, raw, stsReplicas, floor)
+						desc := fmt.Sprintf("states=%v raw=%d sts=%d floor=%d -> %d", states, raw, stsReplicas, floor, got)
+						if got < raw || got > max(raw, maxReplicas) {
+							t.Fatalf("target out of bounds: %s", desc)
+						}
+						goal := min(floor, countReadyStates(states[:maxReplicas]))
+						if floor > 0 && countReadyStates(states[:got]) < goal {
+							t.Fatalf("floor violated: %s", desc)
+						}
+						// Minimal: one fewer replica would drop below the goal.
+						if got > raw && countReadyStates(states[:got-1]) >= goal {
+							t.Fatalf("kept more surge replicas than needed: %s", desc)
 						}
 					}
 				}
@@ -2492,5 +2490,403 @@ func TestPreserveFloorDuringSurgeTrim(t *testing.T) {
 	}
 	if planTrimmed.replicas != 2 {
 		t.Fatalf("planTrimmed.replicas = %d, want 2 once unready desired replicas (1) fit maxUnavailable=1", planTrimmed.replicas)
+	}
+}
+
+// surgeReductionFixture returns an Ordinal rollout with replicas=4,
+// maxUnavailable=1 (floor 3), and maxSurge lowered from 2 to 0 while six groups
+// exist. Only ordinals 0, 1, and 5 are Ready.
+func surgeReductionFixture(t *testing.T) (*leaderworkerset.LeaderWorkerSet, *appsv1.StatefulSet, *LeaderWorkerSetReconciler) {
+	t.Helper()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(4).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 3,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "4",
+				rolloutBaselineAnnotationKey:          "4",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](6),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](2)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 3,
+			Replicas:           6,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+	objs := []client.Object{lws, sts}
+	for ord, group := range []struct {
+		rev   string
+		ready bool
+	}{{"rev-1", true}, {"rev-1", true}, {"rev-2", false}, {"rev-2", false}, {"rev-2", false}, {"rev-2", true}} {
+		objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, 1, group.rev, "sts-"+group.rev, group.ready, group.ready, group.ready)...)
+	}
+	_, r := newCombinedTestClient(t, objs...)
+	return lws, sts, r
+}
+
+// TestSurgeReductionKeepsReadyTailOrdinalForFloor verifies that lowering
+// maxSurge does not trim a Ready ordinal above the new burst limit when the
+// floor still needs it, with or without a simultaneous template update.
+func TestSurgeReductionKeepsReadyTailOrdinalForFloor(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name          string
+		revisionKey   string
+		templateEdit  bool
+		wantReplicas  int32
+		wantPartition int32
+	}{
+		// Case 5: removing Ready ordinal 5 would leave 2 Ready < floor 3.
+		{name: "surge lowered", revisionKey: "rev-2", wantReplicas: 6, wantPartition: 2},
+		// Case 2: the same reduction published with a new template.
+		{name: "surge lowered with template update", revisionKey: "rev-3", templateEdit: true, wantReplicas: 6, wantPartition: 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws, sts, r := surgeReductionFixture(t)
+			plan, err := r.planRollingUpdate(ctx, lws, sts, tc.revisionKey, tc.templateEdit)
+			if err != nil {
+				t.Fatalf("planRollingUpdate() error = %v", err)
+			}
+			if plan.replicas != tc.wantReplicas || plan.partition != tc.wantPartition {
+				t.Fatalf("plan (replicas, partition) = (%d, %d), want (%d, %d)",
+					plan.replicas, plan.partition, tc.wantReplicas, tc.wantPartition)
+			}
+		})
+	}
+}
+
+// TestHashCompletedRolloutBaselineIsNotInherited verifies that a new Hash
+// revision does not inherit the baseline of a previous rollout that already
+// reached its desired count, even when the baseline-clearing pass has not run.
+func TestHashCompletedRolloutBaselineIsNotInherited(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// scaleBeforeEdit scales the completed rollout before the next
+		// template update arrives.
+		scaleBeforeEdit    bool
+		wantBaseline       string
+		wantMaxUnavailable int32
+	}{
+		{name: "template update right after completion", wantBaseline: "4", wantMaxUnavailable: 1},
+		{name: "scale-up then template update", scaleBeforeEdit: true, wantBaseline: "6", wantMaxUnavailable: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").
+				WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+				Replica(1).
+				Size(2).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).Obj()
+			lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+			lws.UID = "lws-hash-uid"
+			lws.Generation = 1
+
+			c, r := newCombinedTestClient(t, lws)
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+			var deploy appsv1.Deployment
+			reconcileAndGet := func(step string) {
+				t.Helper()
+				if _, err := r.Reconcile(ctx, req); err != nil {
+					t.Fatalf("%s: Reconcile() error = %v", step, err)
+				}
+				if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+					t.Fatalf("%s: reading deploy: %v", step, err)
+				}
+			}
+			updateLWS := func(replicas int32, image string) {
+				t.Helper()
+				if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+					t.Fatalf("reading lws: %v", err)
+				}
+				lws.Generation++
+				lws.Spec.Replicas = ptr.To(replicas)
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = image
+				if err := c.Update(ctx, lws); err != nil {
+					t.Fatalf("updating lws: %v", err)
+				}
+			}
+
+			reconcileAndGet("create")
+			// Combined scale-up (1 -> 4) and template update: baseline 1.
+			updateLWS(4, "worker:v2")
+			reconcileAndGet("combined update")
+			if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != "1" {
+				t.Fatalf("combined update baseline = %q, want %q", got, "1")
+			}
+
+			// The rollout completes: all four leaders run rev2 and are Ready.
+			rev2 := revisionutils.GetRevisionKey(&deploy)
+			deploy.Generation = 2
+			if err := c.Update(ctx, &deploy); err != nil {
+				t.Fatalf("updating deploy generation: %v", err)
+			}
+			deploy.Status = appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 4, ReadyReplicas: 4, AvailableReplicas: 4}
+			if err := c.Status().Update(ctx, &deploy); err != nil {
+				t.Fatalf("updating deploy status: %v", err)
+			}
+			for i := range 4 {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fmt.Sprintf("hash-leader-%d", i),
+						Namespace: lws.Namespace,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     lws.Name,
+							leaderworkerset.WorkerIndexLabelKey: "0",
+							leaderworkerset.GroupIndexLabelKey:  fmt.Sprintf("hash-%d", i),
+							leaderworkerset.RevisionKey:         rev2,
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase:      corev1.PodRunning,
+						Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+					},
+				}
+				if err := c.Create(ctx, pod); err != nil {
+					t.Fatalf("creating hash leader %d: %v", i, err)
+				}
+			}
+
+			replicas := int32(4)
+			if tc.scaleBeforeEdit {
+				replicas = 6
+				updateLWS(replicas, "worker:v2")
+				reconcileAndGet("scale-up")
+			}
+			// The next template update arrives before any other pass.
+			updateLWS(replicas, "worker:v3")
+			reconcileAndGet("next update")
+			if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != tc.wantBaseline {
+				t.Fatalf("next update baseline = %q, want %q", got, tc.wantBaseline)
+			}
+			if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != tc.wantMaxUnavailable {
+				t.Fatalf("next update deploy maxUnavailable = %d, want %d", got, tc.wantMaxUnavailable)
+			}
+		})
+	}
+}
+
+// TestRejectedReplayKeepsTimedOutDeletePending verifies that a retry rejected
+// by admission does not resolve the original timed-out DELETE, which can still
+// succeed with the same UID and ResourceVersion preconditions.
+func TestRejectedReplayKeepsTimedOutDeletePending(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").Replica(1).Size(1).Obj()
+	lws.UID = "lws-uid"
+	pod := lwsStatusLeaderPod(lws, 0, "rev-a", true)
+	pod.UID = "a0-uid"
+
+	deleteAttempts := 0
+	scheme := lwsStatusScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deleteAttempts++
+			if deleteAttempts == 1 {
+				return context.DeadlineExceeded
+			}
+			return apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, obj.GetName(), fmt.Errorf("denied by admission policy"))
+		},
+	}).Build()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+		t.Fatalf("getting A0: %v", err)
+	}
+
+	var p pendingLeaderDeletes
+	if _, err := p.deleteLeaderPod(ctx, c, lws, pod); err == nil {
+		t.Fatal("expected the initial DELETE to time out")
+	}
+	podKey := client.ObjectKeyFromObject(pod)
+	for attempt := range 2 {
+		pendingUIDs, hasUncertain, err := p.observeAndResolve(ctx, c, lws, []corev1.Pod{*pod}, true)
+		if !apierrors.IsForbidden(err) {
+			t.Fatalf("replay %d error = %v, want Forbidden", attempt, err)
+		}
+		if _, pending := pendingUIDs[pod.UID]; !pending || !hasUncertain || !p.isPending(podKey, pod.UID) {
+			t.Fatalf("replay %d: A0 pending=%v uncertain=%v tracked=%v, want all true", attempt, pending, hasUncertain, p.isPending(podKey, pod.UID))
+		}
+	}
+	if deleteAttempts != 3 {
+		t.Fatalf("deleteAttempts = %d, want 3 (initial + two replays)", deleteAttempts)
+	}
+}
+
+// TestTakeoverBarrierWithholdsCreditFromLeadersDeletedBeforeTakeover reproduces
+// a takeover with a Pod cache that started before leader election: the cache
+// still shows A0 Ready although the previous leader already deleted it. After a
+// rollback to rev A, trimming surge ordinal B1 would leave no Ready group.
+func TestTakeoverBarrierWithholdsCreditFromLeadersDeletedBeforeTakeover(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(1),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 4,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-a",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "1",
+				rolloutBaselineAnnotationKey:          "1",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](2),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](1)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 4,
+			Replicas:           2,
+			CurrentRevision:    "sts-rev-b",
+			UpdateRevision:     "sts-rev-a",
+		},
+	}
+	a0 := makeOwnedGroupObjects(lws, sts, 0, 1, "rev-a", "sts-rev-a", true, true, true)[0]
+	b1 := makeOwnedGroupObjects(lws, sts, 1, 1, "rev-b", "sts-rev-b", true, true, true)[0]
+	cache, r := newCombinedTestClient(t, lws, sts, a0, b1)
+	r.apiReader = fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).WithObjects(b1.DeepCopyObject().(client.Object)).Build()
+
+	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-a", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate() error = %v", err)
+	}
+	if plan.replicas != 2 {
+		t.Fatalf("plan.replicas = %d, want 2 (keep Ready B1 while A0 is already deleted)", plan.replicas)
+	}
+
+	// Once the informer observes A0's deletion, the barrier entry resolves.
+	if err := cache.Delete(ctx, a0); err != nil {
+		t.Fatalf("deleting A0 from the cache: %v", err)
+	}
+	if _, err := r.planRollingUpdate(ctx, lws, sts, "rev-a", false); err != nil {
+		t.Fatalf("planRollingUpdate() after cache sync error = %v", err)
+	}
+	if r.pendingDeletes.hasEntriesFor(client.ObjectKeyFromObject(lws)) {
+		t.Fatal("expected the takeover entry for A0 to resolve once the cache observes its deletion")
+	}
+}
+
+// TestOrdinalCompletedRolloutBaselineIsNotInherited is the Ordinal analog of
+// TestHashCompletedRolloutBaselineIsNotInherited: a template update that arrives
+// after a 1 -> 4 rollout finished, but before the baseline-clearing pass, must
+// start from baseline 4 (floor 3), not the stale baseline 1 (floor 0).
+func TestOrdinalCompletedRolloutBaselineIsNotInherited(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(4).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 3,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "4",
+				rolloutBaselineAnnotationKey:          "1",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](4),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 3,
+			Replicas:           4,
+			CurrentRevision:    "sts-rev-2",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+	objs := []client.Object{lws, sts}
+	for ord := range 4 {
+		objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, 1, "rev-2", "sts-rev-2", true, true, true)...)
+	}
+	_, r := newCombinedTestClient(t, objs...)
+
+	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", true)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(publish) error = %v", err)
+	}
+	if plan.baseline == nil || *plan.baseline != 4 || plan.floor != 3 {
+		t.Fatalf("publish (baseline, floor) = (%d, %d), want (4, 3)", ptr.Deref(plan.baseline, -1), plan.floor)
+	}
+
+	// The StatefulSet observes rev-3; the next pass may replace only one group.
+	sts.Labels[leaderworkerset.RevisionKey] = "rev-3"
+	sts.Annotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*plan.baseline))
+	sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(plan.partition)
+	sts.Status.UpdateRevision = "sts-rev-3"
+	next, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(advance) error = %v", err)
+	}
+	if next.partition != 3 {
+		t.Fatalf("advance partition = %d, want 3 (one group below floor 3 at a time)", next.partition)
 	}
 }
