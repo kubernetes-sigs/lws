@@ -144,7 +144,7 @@ spec:
 			// Default image depends on whether the caller wants slow-pod
 			// scripting (needs a shell) or just an empty runnable pod.
 			if slow {
-				image = "busybox:1.36"
+				image = "registry.k8s.io/e2e-test-images/busybox:1.38.0-1"
 			} else {
 				image = "registry.k8s.io/pause:3.9"
 			}
