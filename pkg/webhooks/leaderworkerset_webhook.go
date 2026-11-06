@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	"sigs.k8s.io/lws/pkg/utils"
+	accelerator "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
 type LeaderWorkerSetWebhook struct {
@@ -136,6 +137,7 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), nil, &lws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
@@ -146,6 +148,7 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), &oldLws.Spec, &newLws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
@@ -688,6 +691,98 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize, "size-1 must be divisible by subGroupSize when using LeaderExcluded"))
 	}
 	return allErrs
+}
+
+// validateTPUSubGroupPolicy rejects subgroup layouts whose pod labels and TPU
+// env injection describe different partitions, or that cannot admit a TPU
+// leader. See https://github.com/kubernetes-sigs/lws/issues/1284.
+//
+// A pod is injected only when its TPU container does not already set
+// TPU_WORKER_HOSTNAMES or TPU_WORKER_ID. LeaderExcluded with a TPU leader is
+// rejected when any pod is still injected: the leader has no subgroup-index
+// label, and workers are labeled without the leader while injection still
+// writes the leader into their hostname list. Otherwise subGroupSize 1 is
+// always one pod per subgroup. With a larger subgroup, leader-extra size
+// ((size-1) divisible, which implies size is not) breaks injection when both
+// pods request TPUs, and divisible size breaks it when only workers do.
+func validateTPUSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
+	if policy == nil || policy.SubGroupSize == nil || *policy.SubGroupSize < 1 {
+		return nil
+	}
+	subGroupSize := *policy.SubGroupSize
+	size := ptr.Deref(spec.LeaderWorkerTemplate.Size, 1)
+	leaderSpec := leaderPodSpec(spec)
+	workerSpec := spec.LeaderWorkerTemplate.WorkerTemplate.Spec
+	leaderTPU := accelerator.PodRequestsTPUs(leaderSpec)
+	workerTPU := accelerator.PodRequestsTPUs(workerSpec)
+	leaderInjected := !tpuInjectionSkipped(leaderSpec)
+	workerInjected := !tpuInjectionSkipped(workerSpec)
+	leaderExcluded := policy.Type != nil && *policy.Type == v1.SubGroupPolicyTypeLeaderExcluded
+	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
+	// subGroupSize > 1 precedes the remainder, so subGroupSize 0 cannot reach it.
+	// For that range, (size-1) divisible already implies size is not.
+	partitionSized := subGroupSize > 1 && size >= subGroupSize
+
+	var allErrs field.ErrorList
+	switch {
+	case leaderTPU && leaderExcluded && (leaderInjected || workerInjected):
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupPolicyType"), *policy.Type,
+			"LeaderExcluded cannot be used when the leader requests google.com/tpu"))
+	case leaderTPU && workerTPU && partitionSized && (size-1)%subGroupSize == 0 && (leaderInjected || workerInjected):
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
+			"size must be divisible by subGroupSize when both leader and workers request google.com/tpu"))
+	case !leaderTPU && workerInjected && !leaderExcluded && partitionSized && size%subGroupSize == 0:
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
+			"the TPU env and subgroup label partitions diverge when size is divisible by subGroupSize and the leader requests no google.com/tpu while the workers do; use size = k*subGroupSize + 1 (optionally with subGroupPolicy.subGroupPolicyType: LeaderExcluded)"))
+	}
+	return allErrs
+}
+
+// ValidateTPUSubGroupOnWrite checks TPU subgroup partitions for a create
+// (oldSpec nil) or an update. A spec that already fails stays writable, so
+// annotation cleanup, replica changes, and finalizer removal still succeed.
+// A spec that passes cannot be updated into a failing one.
+func ValidateTPUSubGroupOnWrite(specPath *field.Path, oldSpec, newSpec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	if oldSpec != nil && len(validateTPUSubGroupPolicy(specPath, oldSpec)) > 0 {
+		return nil
+	}
+	return validateTPUSubGroupPolicy(specPath, newSpec)
+}
+
+func leaderPodSpec(spec *v1.LeaderWorkerSetSpec) corev1.PodSpec {
+	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		return spec.LeaderWorkerTemplate.LeaderTemplate.Spec
+	}
+	return spec.LeaderWorkerTemplate.WorkerTemplate.Spec
+}
+
+// tpuInjectionSkipped reports whether addTPUVariablesSubGroup returns before
+// reading subgroup labels. A pod with no TPU container takes that path too.
+func tpuInjectionSkipped(spec corev1.PodSpec) bool {
+	container := firstContainerRequestingTPUs(spec.Containers)
+	if container == nil {
+		container = firstContainerRequestingTPUs(spec.InitContainers)
+	}
+	if container == nil {
+		return true
+	}
+	for _, env := range container.Env {
+		if env.Name == accelerator.TpuWorkerHostNames || env.Name == accelerator.TpuWorkerId {
+			return true
+		}
+	}
+	return false
+}
+
+func firstContainerRequestingTPUs(containers []corev1.Container) *corev1.Container {
+	for i := range containers {
+		if accelerator.ContainersRequestTPUs(containers[i]) {
+			return &containers[i]
+		}
+	}
+	return nil
 }
 
 func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWorkerSet) (admission.Warnings, field.ErrorList) {

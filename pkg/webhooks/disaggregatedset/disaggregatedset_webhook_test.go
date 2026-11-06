@@ -24,12 +24,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	accelerator "sigs.k8s.io/lws/pkg/utils/accelerators"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -1816,4 +1818,76 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 			require.Contains(t, err.Error(), tt.errorMsg)
 		})
 	}
+}
+
+func TestDisaggregatedSetTPUSubGroup(t *testing.T) {
+	webhook := &DisaggregatedSetWebhook{}
+	ctx := context.Background()
+	divergeDetail := "the TPU env and subgroup label partitions diverge"
+
+	podTemplate := func(name string, withTPU bool) corev1.PodTemplateSpec {
+		var limits corev1.ResourceList
+		if withTPU {
+			limits = corev1.ResourceList{accelerator.TpuResourceName: resource.MustParse("2")}
+		}
+		return corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:      name,
+					Image:     "busybox",
+					Resources: corev1.ResourceRequirements{Limits: limits},
+				}},
+			},
+		}
+	}
+	build := func(size, subGroupSize int32, leaderTPU, workerTPU bool) *disaggv1.DisaggregatedSet {
+		leader := podTemplate("leader", leaderTPU)
+		return &disaggv1.DisaggregatedSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "default"},
+			Spec: disaggv1.DisaggregatedSetSpec{
+				Roles: []disaggv1.DisaggregatedRoleSpec{{
+					Name: "prefill",
+					LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+						Spec: leaderworkerset.LeaderWorkerSetSpec{
+							Replicas: ptr.To[int32](1),
+							LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+								Size: ptr.To(size),
+								SubGroupPolicy: &leaderworkerset.SubGroupPolicy{
+									SubGroupSize: ptr.To(subGroupSize),
+								},
+								LeaderTemplate: &leader,
+								WorkerTemplate: podTemplate("worker", workerTPU),
+							},
+						},
+					},
+				}},
+			},
+		}
+	}
+
+	t.Run("create rejects a cpu leader with tpu workers when size is divisible", func(t *testing.T) {
+		_, err := webhook.ValidateCreate(ctx, build(4, 2, false, true))
+		require.ErrorContains(t, err, divergeDetail)
+		require.ErrorContains(t, err, "spec.roles[0].spec.leaderWorkerTemplate.subGroupPolicy.subGroupSize")
+	})
+
+	t.Run("create accepts a cpu leader with tpu workers when size is leader-extra", func(t *testing.T) {
+		_, err := webhook.ValidateCreate(ctx, build(5, 2, false, true))
+		require.NoError(t, err)
+	})
+
+	t.Run("image change keeps a legacy divergent role", func(t *testing.T) {
+		oldObj := build(4, 2, false, true)
+		updated := build(4, 2, false, true)
+		updated.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "other-image"
+		_, err := webhook.ValidateUpdate(ctx, oldObj, updated)
+		require.NoError(t, err)
+	})
+
+	t.Run("a valid role cannot be updated into a divergent partition", func(t *testing.T) {
+		oldObj := build(5, 2, false, true)
+		updated := build(4, 2, false, true)
+		_, err := webhook.ValidateUpdate(ctx, oldObj, updated)
+		require.ErrorContains(t, err, divergeDetail)
+	})
 }
