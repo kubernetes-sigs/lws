@@ -10,17 +10,7 @@ A **Slice** in DisaggregatedSet (introduced in [KEP-846](https://github.com/kube
 
 Configured via the top-level `spec.slices` field, slices allow you to scale and duplicate an entire disaggregated inference architecture as a single declarative unit.
 
-```
-DisaggregatedSet "my-inference" (spec.slices = 2)
-│
-├── Slice 0 (e.g., Rack A / Domain 0)
-│   ├── Role "prefill" → LeaderWorkerSet "my-inference-0-<rev>-prefill"
-│   └── Role "decode"  → LeaderWorkerSet "my-inference-0-<rev>-decode"
-│
-└── Slice 1 (e.g., Rack B / Domain 1)
-    ├── Role "prefill" → LeaderWorkerSet "my-inference-1-<rev>-prefill"
-    └── Role "decode"  → LeaderWorkerSet "my-inference-1-<rev>-decode"
-```
+{{< ds-explorer kind="slices" >}}
 
 ---
 

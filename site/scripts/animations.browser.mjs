@@ -31,7 +31,8 @@ async function assertSpeedMenuFits(figure, label) {
 }
 let examples = 0;
 try {
-  for (const slug of ['rollout-strategy', 'llm-d-integration', 'scaling-during-rollout']) {
+  const scalingPage = prefix === '/main' || prefix === '' ? 'role-scaler' : 'scaling-during-rollout';
+  for (const slug of ['rollout-strategy', 'llm-d-integration', scalingPage]) {
     downloads.length = 0;
     const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/`);
     assert.equal(response.status(), 200);

@@ -34,7 +34,7 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
 - **All-or-nothing restart for failure handling:** Opt-in support for all pods in the group to be recreated if one pod in the group failed or one container in the pods is restarted.
 
 <p align="center">
-  <img src="/images/lws-concept.svg" width="550" alt="LWS Concept">
+  <img src="/images/lws-concept.svg?theme-aware" width="550" alt="LWS Concept">
 </p>
 
 ### Advanced Features: DisaggregatedSet
@@ -44,7 +44,7 @@ Read the [documentation](/docs/) or watch the [related talks & presentations](..
 - **Coordinated Lifecycle Operations:** Coordinated rollout and drain across all roles in the disaggregated set.
 
 <p align="center">
-  <img src="/images/ds-concept.svg" width="700" alt="DisaggregatedSet Concept">
+  <img src="/images/ds-concept.svg?theme-aware" width="700" alt="DisaggregatedSet Concept">
 </p>
 
 ## Installation
