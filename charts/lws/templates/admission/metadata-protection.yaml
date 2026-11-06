@@ -7,7 +7,7 @@
 {{- $name := printf "%s-metadata-protection-%s" (include "lws.fullname" .) .Release.Namespace }}
 {{- $_ := set $policy.metadata "name" $name }}
 {{- range $variable := $policy.spec.variables }}
-  {{- if and (has $variable.name (list "podControllerUsernames" "deploymentControllerUsernames" "statefulSetControllerUsernames")) (hasKey $config $variable.name) }}
+  {{- if and (has $variable.name (list "podControllerUsernames" "deploymentControllerUsernames" "statefulSetControllerUsernames" "bindingAnnotationUsernames")) (hasKey $config $variable.name) }}
     {{- $_ := set $variable "expression" (get $config $variable.name | mustToJson) }}
   {{- end }}
 {{- end }}

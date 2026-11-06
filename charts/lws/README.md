@@ -95,6 +95,11 @@ the DisaggregatedSet prefix. Ordinary scaling remains editable.
 
 Native-controller identities can be adjusted with the `metadataProtection`
 values below. Disable enforcement with `--set metadataProtection.enabled=false`.
+`bindingAnnotationUsernames` trusts the default Kubernetes and Volcano schedulers
+to write protected annotations through Pod bindings, since Volcano copies Pod
+annotations into its binding requests. Binding admission has no previous Pod to
+compare; these identities can overwrite protected annotations during binding,
+but cannot modify protected labels or perform ordinary protected Pod updates.
 The manager's ClusterRoleBinding grants the admission-only `manage-metadata`
 verb. Normal object-write permissions do not grant it; cluster administrators
 retain access. Installers need permission to manage admission policies and bindings.

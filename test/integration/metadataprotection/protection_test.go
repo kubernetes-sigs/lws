@@ -43,6 +43,7 @@ import (
 
 const manager = "system:serviceaccount:lws-system:lws-controller-manager"
 const other = "system:serviceaccount:other-system:other-controller"
+const scheduler = "system:serviceaccount:volcano-system:volcano-scheduler"
 const ns = "metadata-protection-test"
 
 func must(t *testing.T, err error) {
@@ -99,7 +100,7 @@ func decode(t *testing.T, data []byte) []*unstructured.Unstructured {
 func installPolicy(t *testing.T, ctx context.Context, c client.Client, root string) {
 	t.Helper()
 	var installed int
-	for _, obj := range decode(t, render(t, "kubectl", "kustomize", filepath.Join(root, "config/default"))) {
+	for _, obj := range decode(t, render(t, "kustomize", "build", filepath.Join(root, "config/default"))) {
 		if obj.GetKind() == "ValidatingAdmissionPolicy" || obj.GetKind() == "ValidatingAdmissionPolicyBinding" || obj.GetName() == "lws-metadata-writer" {
 			must(t, c.Create(ctx, obj))
 			installed++
@@ -154,6 +155,7 @@ func TestMetadataProtection(t *testing.T) {
 		return c
 	}
 	allowed, denied := actor(manager), actor(other)
+	must(t, admin.Create(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "scheduler", Namespace: ns}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "writers"}, Subjects: []rbacv1.Subject{{Kind: "User", APIGroup: "rbac.authorization.k8s.io", Name: scheduler}}}))
 	installPolicy(t, ctx, admin, root)
 
 	const labelKey = "leaderworkerset.sigs.k8s.io/name"
@@ -226,6 +228,35 @@ func TestMetadataProtection(t *testing.T) {
 		status := fmt.Sprintf(`{"metadata":{"labels":{%q:"changed"}}}`, key)
 		assertDenied(t, denied.Status().Patch(ctx, p, client.RawPatch(types.MergePatchType, []byte(status))))
 		must(t, denied.Status().Patch(ctx, p, client.RawPatch(types.MergePatchType, []byte(`{"status":{"phase":"Pending"}}`))))
+	})
+	t.Run("scheduler_binding_annotations", func(t *testing.T) {
+		for _, legacy := range []bool{false, true} {
+			p := newPod(fmt.Sprintf("binding-%t", legacy))
+			key := "leaderworkerset.sigs.k8s.io/size"
+			p.Annotations = map[string]string{key: "2"}
+			must(t, allowed.Create(ctx, p))
+			binding := &corev1.Binding{ObjectMeta: metav1.ObjectMeta{Name: p.Name, Namespace: ns}, Target: corev1.ObjectReference{Kind: "Node", Name: "test-node"}}
+			bind := func(c client.Client) error {
+				if legacy {
+					return c.Create(ctx, binding)
+				}
+				return c.SubResource("binding").Create(ctx, p, binding)
+			}
+			// Binding can write Pod metadata, including through the legacy endpoint.
+			binding.Labels = map[string]string{labelKey: "injected"}
+			assertDenied(t, bind(denied))
+			assertDenied(t, bind(actor(scheduler)))
+			binding.Labels = nil
+			// Volcano copies the existing Pod annotations into its binding request.
+			binding.Annotations = p.Annotations
+			assertDenied(t, bind(denied))
+			assertDenied(t, patch(actor(scheduler), p, fmt.Sprintf(`{"metadata":{"annotations":{%q:"3"}}}`, key)))
+			must(t, bind(actor(scheduler)))
+			must(t, admin.Get(ctx, client.ObjectKeyFromObject(p), p))
+			if p.Spec.NodeName != "test-node" || p.Annotations[key] != "2" {
+				t.Fatalf("binding did not preserve Pod annotations: %#v", p)
+			}
+		}
 	})
 	t.Run("native_controller_create_requests_still_allowed", func(t *testing.T) {
 		for i, name := range []string{"system:serviceaccount:kube-system:statefulset-controller", "system:serviceaccount:kube-system:replicaset-controller"} {

@@ -34,6 +34,10 @@ metadataProtection:
   statefulSetControllerUsernames:
     - system:serviceaccount:kube-system:statefulset-controller
     - system:kube-controller-manager
+  # Trusted to write reserved annotations through Binding only, not Pod updates.
+  bindingAnnotationUsernames:
+    - system:kube-scheduler
+    - system:serviceaccount:volcano-system:volcano-scheduler
 # PodDisruptionBudget for the manager Deployment, rendered only when
 # replicaCount is greater than 1.
 # Ref: https://kubernetes.io/docs/tasks/run-application/configure-pdb/

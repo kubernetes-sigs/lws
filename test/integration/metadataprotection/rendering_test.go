@@ -29,7 +29,7 @@ func TestPolicyPackaging(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	chart := filepath.Join(root, "charts/lws")
 	t.Run("helm_custom_service_account_and_namespace", func(t *testing.T) {
-		objects := decode(t, render(t, "helm", "template", "custom", chart, "--kube-version", "1.30.0", "--namespace", "custom-system", "--set", "serviceAccount.name=custom-manager", "--show-only", "templates/admission/metadata-protection.yaml"))
+		objects := decode(t, render(t, "helm", "template", "custom", chart, "--kube-version", "1.30.0", "--namespace", "custom-system", "--set", "serviceAccount.name=custom-manager", "--set", "metadataProtection.bindingAnnotationUsernames[0]=custom-scheduler", "--show-only", "templates/admission/metadata-protection.yaml"))
 		if len(objects) != 4 {
 			t.Fatalf("expected policy, binding, role and role binding; got %d", len(objects))
 		}
@@ -38,6 +38,18 @@ func TestPolicyPackaging(t *testing.T) {
 			switch obj.GetKind() {
 			case "ValidatingAdmissionPolicy":
 				policyName = obj.GetName()
+				variables, _, err := unstructured.NestedSlice(obj.Object, "spec", "variables")
+				must(t, err)
+				found := false
+				for _, v := range variables {
+					variable := v.(map[string]any)
+					if variable["name"] == "bindingAnnotationUsernames" {
+						found = variable["expression"] == `["custom-scheduler"]`
+					}
+				}
+				if !found {
+					t.Fatal("custom binding identity was not rendered")
+				}
 			case "ValidatingAdmissionPolicyBinding":
 				name, _, err := unstructured.NestedString(obj.Object, "spec", "policyName")
 				must(t, err)
@@ -80,7 +92,7 @@ func TestPolicyPackaging(t *testing.T) {
 		must(t, err)
 		t.Cleanup(func() { os.RemoveAll(dir) })
 		must(t, os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- ../default\nnamespace: outer-system\nnamePrefix: outer-\n"), 0600))
-		objects := decode(t, render(t, "kubectl", "kustomize", dir))
+		objects := decode(t, render(t, "kustomize", "build", dir))
 		for _, obj := range objects {
 			if obj.GetKind() == "ClusterRoleBinding" && obj.GetName() == "outer-lws-metadata-writer" {
 				subjects, _, err := unstructured.NestedSlice(obj.Object, "subjects")

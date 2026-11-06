@@ -18,8 +18,9 @@ jobs:
     - name: Check manifest renderers
       run: |
         helm version --short
-        kubectl version --client
+        make kustomize
     - name: Exercise installed policy against a temporary API server
       env:
         LWS_METADATA_TEST_K8S_VERSION: ${{ matrix.kubernetes }}
+        KUSTOMIZE: ${{ github.workspace }}/bin/kustomize
       run: go test -v -count=1 -timeout=10m ./test/integration/metadataprotection

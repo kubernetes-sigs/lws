@@ -208,9 +208,9 @@ kind-image-build: IMAGE_BUILD_EXTRA_OPTS=--load
 kind-image-build: kind image-build
 
 .PHONY: test-integration
-test-integration: manifests fmt vet envtest ginkgo helm ## Run integration tests.
+test-integration: manifests fmt vet envtest ginkgo helm kustomize ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	HELM="$(HELM)" KUBECTL="$(KUBECTL)" \
+	HELM="$(HELM)" KUSTOMIZE="$(KUSTOMIZE)" \
 	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 .PHONY: test-e2e

@@ -12,7 +12,7 @@ spec:
     - apiGroups: [""]
       apiVersions: ["*"]
       operations: [CREATE, UPDATE]
-      resources: [pods, pods/*, services, services/*]
+      resources: [pods, pods/*, bindings, services, services/*]
     - apiGroups: ["apps"]
       apiVersions: ["*"]
       operations: [CREATE, UPDATE]
@@ -49,7 +49,7 @@ spec:
       approved controllers, including in templates.
     reason: Forbidden
   - expression: |-
-      variables.isManager || variables.nativeCreate || (
+      variables.isManager || variables.nativeCreate || variables.isBindingAnnotationWriter || (
       variables.newEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.oldEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k]))) &&
       variables.oldEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.newEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k])))
       )
@@ -81,6 +81,16 @@ spec:
     name: deploymentControllerUsernames
   - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:kube-controller-manager"]'
     name: statefulSetControllerUsernames
+  - expression: '["system:kube-scheduler", "system:serviceaccount:volcano-system:volcano-scheduler"]'
+    name: bindingAnnotationUsernames
+  # Volcano copies Pod annotations into Binding. CREATE has no oldObject to
+  # compare, so only trusted schedulers may write reserved annotations here.
+  # This does not authorize ordinary Pod updates or reserved label writes.
+  - expression: request.operation == 'CREATE' && request.resource.group == ''
+      && ((request.resource.resource == 'pods' && request.?subResource.orValue('') == 'binding')
+      || (request.resource.resource == 'bindings' && request.?subResource.orValue('') == ''))
+      && request.userInfo.username in variables.bindingAnnotationUsernames
+    name: isBindingAnnotationWriter
   # Empty namespace requires a cluster-wide grant of this admission-only verb.
   - expression: authorizer.group('leaderworkerset.x-k8s.io').resource('leaderworkersets').namespace('').check('manage-metadata').allowed()
     name: isManager
