@@ -79,6 +79,7 @@ USE_EXISTING_CLUSTER ?= false
 # without tags. Override to pin a specific version.
 LWS_UPGRADE_FROM_VERSION ?= $(shell git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1 | grep . || echo v0.9.0)
 UPGRADE_KIND_CLUSTER_NAME ?= lws-upgrade
+PERFORMANCE_KIND_CLUSTER_NAME ?= lws-performance
 
 # For local testing, we should allow user to use different kind cluster name
 # Default will delete default kind cluster
@@ -187,7 +188,7 @@ vet: ## Run go vet against code.
 .PHONY: test
 test: manifests fmt vet envtest gotestsum ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... ./test/disaggregatedset_harness/... -coverprofile  $(ARTIFACTS)/cover.out
+	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.xml -- $(GO_TEST_FLAGS) ./api/... ./pkg/... ./cmd/... ./test/examples/... ./test/disaggregatedset_harness/... ./test/performance/... -coverprofile  $(ARTIFACTS)/cover.out
 
 .PHONY: disaggset-test-harness-small
 disaggset-test-harness-small: ## Run the small DisaggregatedSet harness in an isolated kind cluster.
@@ -220,6 +221,10 @@ test-e2e: kustomize manifests fmt vet envtest ginkgo kind-image-build
 test-e2e-fake-gpu: KIND_CLUSTER_NAME = lws-fake-gpu
 test-e2e-fake-gpu: helm ## Run E2E tests with fake GPUs on CPU-only Kind nodes.
 	$(MAKE) test-e2e USE_FAKE_GPU_OPERATOR=true KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME)
+
+.PHONY: test-performance
+test-performance: kustomize manifests kind-image-build ## Run the scalability test on a kind cluster with simulated KWOK nodes.
+	PERFORMANCE_TEST=true E2E_KIND_VERSION=$(E2E_KIND_VERSION) KIND_CLUSTER_NAME=$(PERFORMANCE_KIND_CLUSTER_NAME) KIND=$(KIND) KUBECTL=$(KUBECTL) KUSTOMIZE=$(KUSTOMIZE) GO_CMD=$(GO_CMD) USE_EXISTING_CLUSTER=$(USE_EXISTING_CLUSTER) IMAGE_TAG=$(IMG) ARTIFACTS=$(ARTIFACTS)/performance ./hack/e2e-test.sh
 
 .PHONY: test-e2e-upgrade
 test-e2e-upgrade: test-e2e-upgrade-manifests

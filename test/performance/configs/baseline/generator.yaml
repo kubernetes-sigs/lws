@@ -1,0 +1,18 @@
+# Baseline workload: many small LeaderWorkerSets and a few large ones, in both
+# group identity modes. 1280 pods after creation, 1920 after scale-up and 640
+# after scale-down.
+namespace: lws-performance
+timeout: 15m
+nodeSelector: {type: kwok}
+tolerations:
+- {key: kwok.x-k8s.io/node, operator: Exists, effect: NoSchedule}
+classes:
+- {name: small-ordinal, count: 80, replicas: 2, size: 2}
+- {name: small-hash, count: 80, replicas: 2, size: 2, groupIdentity: Hash}
+- {name: large-ordinal, count: 4, replicas: 10, size: 8}
+- {name: large-hash, count: 4, replicas: 10, size: 8, groupIdentity: Hash}
+scale:
+- name: scale-up
+  replicas: {small-ordinal: 4, small-hash: 4}
+- name: scale-down
+  replicas: {small-ordinal: 1, small-hash: 1, large-ordinal: 5, large-hash: 5}
