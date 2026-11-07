@@ -512,6 +512,25 @@ func TestRestartBackoffDefaulting(t *testing.T) {
 	}
 }
 
+func TestSubGroupPolicyDefaulting(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		SubGroupSize(2).
+		Obj()
+
+	if err := r.Default(context.Background(), lws); err != nil {
+		t.Fatalf("unexpected defaulting error: %v", err)
+	}
+
+	policy := lws.Spec.LeaderWorkerTemplate.SubGroupPolicy
+	if policy == nil {
+		t.Fatal("expected SubGroupPolicy to be preserved by defaulting, got nil")
+	}
+	if got := ptr.Deref(policy.Type, ""); got != v1.SubGroupPolicyTypeLeaderWorker {
+		t.Errorf("expected default SubGroupPolicy.Type %q, got %q", v1.SubGroupPolicyTypeLeaderWorker, got)
+	}
+}
+
 func TestLeaderWorkerSetValidation(t *testing.T) {
 	webhook := &LeaderWorkerSetWebhook{}
 	ctx := context.Background()

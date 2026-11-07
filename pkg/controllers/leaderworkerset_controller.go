@@ -1346,8 +1346,14 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
-		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = (string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type))
-		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		subGroupPolicyType := leaderworkerset.SubGroupPolicyTypeLeaderWorker
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type != nil {
+			subGroupPolicyType = *lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type
+		}
+		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(subGroupPolicyType)
+		if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize != nil {
+			podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
+		}
 		if topologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
 		}
