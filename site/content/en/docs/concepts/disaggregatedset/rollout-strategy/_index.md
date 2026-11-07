@@ -34,6 +34,40 @@ rolloutStrategy:
 
 The minimum Ready count is `desired - maxUnavailable`; the maximum requested count is `desired + maxSurge`. Both count across old and new revisions of the role. Terminating Pods can take time to disappear.
 
+## One percentage for all roles
+
+This feature is provided by [the percentage-canary implementation in #1307](https://github.com/kubernetes-sigs/lws/pull/1307) and requires its controller and matching CRDs.
+
+Use one set-wide percentage to hold a rollout for canary analysis:
+
+```yaml
+spec:
+  rolloutStrategy:
+    canaryPercent: 25
+```
+
+This requests 25% of each role's replica groups on the new revision, independently in every slice. It works with both Ordinal and Hash groups, including virtual roles: each sub-role gets its own share. It does **not** set a traffic percentage or account for different GPU sizes.
+
+- Set `0` with the template change to start with all surviving groups old. Raise it to advance; `100` completes the rollout. Without an old revision, initial creation still starts the full desired workload. Omitting the field leaves the existing rollout behavior unchanged.
+- Counts round up, keeping at least one old and one new group during a partial canary. At 25%, 4 groups become 3 old + 1 new; 8 groups become 6 old + 2 new. With just 2 groups, any partial percentage leaves 1 old + 1 new.
+- Another template update replaces the canary while retaining its baseline. At 50%, an A/B hold becomes A/C: B rolls to C within the canary half, while A's groups remain unchanged at fixed demand and percentage. See the [animated example](../argo-cd/#replace-the-canary-while-keeping-its-baseline).
+- Changing demand recalculates both shares. At 25%, scaling 3 old + 1 new up to 8 gives 6 old + 2 new; scaling back to 4 returns to 3 old + 1 new. **During an active canary hold, the `Deferred` / `Immediate` settings in `spec.scalingPolicy.scaleUpDuringRollout` and `spec.scalingPolicy.scaleDownDuringRollout` are ignored:** both revisions resize to preserve the percentage. Readiness, `maxSurge`, and `maxUnavailable` still apply. The configured scaling policies resume at `canaryPercent: 100` or when the field is removed.
+- Lowering the percentage restores the baseline share and reduces the canary share. At `0`, all desired groups use the baseline and the target LWS objects remain at `spec.replicas: 0`. LWS records the oldest revision with surviving groups as the baseline and keeps that choice across controller restarts. Restored groups keep its historical templates, budgets, and membership. This is not a judgment that the baseline is healthy at the application level.
+- Restoring the surviving baseline's templates makes it the desired target and converges fully to it, even if the percentage remains set. Percentage changes alone cannot recreate a fully drained revision.
+- The embedded LWS `partition` field remains unsupported. This control belongs to DisaggregatedSet, not the child LWS rollout.
+
+{{% alert title="A zero-percent hold does not restore the templates" color="danger" %}}
+The new templates remain desired at `canaryPercent: 0`. A later promotion or removal of the field can deploy them again. For a durable rollback, **restore the stable templates in Git**. LWS converges fully to a surviving baseline whose templates are restored. Also resetting the percentage to `100` is recommended, but is not required to reuse that baseline.
+{{% /alert %}}
+
+A settled, fully Ready hold reports `Progressing=True` with reason `CanaryHeld`, and its message includes the percentage and observed new/desired counts. For Git-driven promotion, health configuration, and optional manual actions with stock Argo CD, see [Canary Rollouts with Argo CD](../argo-cd/). This is not native Argo Rollouts workload support.
+
+Some requests cannot form a valid canary:
+
+- A positive partial canary (`1`–`99`) cannot split a one-group logical role. It reports `CanaryBlocked` until that role has at least two groups or the percentage reaches 100. Zero percent can hold a singleton entirely on the baseline. Scaling an existing partial canary down to one can leave it above desired until that action is taken.
+- The recorded baseline must have the same active roles and sub-roles. A younger compatible revision does not replace an incompatible baseline. Finish renames, sub-role additions/removals, or positive↔zero leaf changes at 100. In particular, scaling one required role or sub-role to zero while peers remain positive is blocked; scaling the whole workload to zero is allowed.
+- If the stored history cannot identify one baseline unambiguously, LWS reports `CanaryBlocked`. Finish at 100 before starting the next canary.
+
 ## What is the fractional window?
 
 The window limits how far one role can get ahead of the others. Its width is **`1 / smallest non-zero role count`**, calculated automatically.

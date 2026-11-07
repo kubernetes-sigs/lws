@@ -49,15 +49,21 @@ test('Light/Dark persists; Auto follows the system; blocked storage is harmless'
   }
 });
 
-test('documentation pages embed all four prepared animations', async () => {
+test('documentation animations appear in their pages and the visualizer', async () => {
   const scenes = {
     'rollout-strategy': ['fractional'],
     'role-scaler': ['scaling-up', 'scaling-down'],
     'llm-d-integration': ['gating'],
+    'argo-cd': ['canary-promotion', 'canary-replacement', 'canary-reversal', 'canary-scaling'],
   };
+  const catalog = JSON.parse(await read('../data/trace_player.json')).find(suite => suite.id === 'docs');
   for (const [page, assets] of Object.entries(scenes)) {
     const source = await read(`../content/en/docs/concepts/disaggregatedset/${page}/_index.md`);
-    for (const scene of assets) assert.ok(source.includes(`data="/animations/${scene}.json"`), `${page}: ${scene}`);
+    for (const scene of assets) {
+      const path = `/animations/${scene}.json`;
+      assert.ok(source.includes(`data="${path}"`), `${page}: ${scene}`);
+      assert.ok(catalog.scenarios.some(item => item.source === path), `Documentation suite: ${scene}`);
+    }
     assert.doesNotMatch(source, /<video|\.mp4|\.gif/);
   }
 });
