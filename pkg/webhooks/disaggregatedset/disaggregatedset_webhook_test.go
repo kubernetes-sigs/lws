@@ -49,6 +49,36 @@ func TestValidateHashSubRoles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateCanaryPercent(t *testing.T) {
+	for _, percent := range []int32{-1, 0, 25, 100, 101} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To(percent)},
+		}}
+		webhook := &DisaggregatedSetWebhook{}
+		_, createErr := webhook.ValidateCreate(t.Context(), ds)
+		old := ds.DeepCopy()
+		old.Spec.RolloutStrategy = nil
+		_, updateErr := webhook.ValidateUpdate(t.Context(), old, ds)
+		for _, err := range []error{createErr, updateErr} {
+			if percent < 0 || percent > 100 {
+				require.ErrorContains(t, err, "between 0 and 100")
+			} else {
+				require.NoError(t, err)
+			}
+		}
+	}
+	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25)},
+		}}
+		ds.Spec.Roles[0].Spec.GroupIdentity = identity
+		_, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), ds)
+		require.NoError(t, err)
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

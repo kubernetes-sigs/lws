@@ -285,6 +285,11 @@ type DisaggregatedSetSpec struct {
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
+	// RolloutStrategy controls progressive delivery across all roles and sub-roles.
+	// Changing it does not create a new revision.
+	// +optional
+	RolloutStrategy *DisaggregatedSetRolloutStrategy `json:"rolloutStrategy,omitempty"`
+
 	// PlacementPolicy controls how a slice's roles are co-located and how the
 	// DisaggregatedSet's slices are spread across topology domains. When set, the
 	// controller injects pod affinity and anti-affinity into the managed
@@ -292,6 +297,36 @@ type DisaggregatedSetSpec struct {
 	// created, so changing it takes effect on the next rollout.
 	// +optional
 	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// DisaggregatedSetRolloutStrategy configures a set-wide canary hold.
+type DisaggregatedSetRolloutStrategy struct {
+	// CanaryPercent is the canary share of each role or sub-role's desired replica
+	// groups, applied independently in every slice. Omitted or 100 applies no hold.
+	// The oldest revision with surviving groups is recorded as the baseline;
+	// that choice survives controller restarts. A later template update replaces
+	// the canary within its share while retaining the recorded baseline's share.
+	// Lowering the percentage restores baseline capacity within rollout budgets;
+	// 0 drains canary groups but keeps the target LWS objects at zero replicas.
+	// For a durable rollback, restore the stable templates in Git. If they match
+	// the surviving baseline, the rollout converges fully to it without a hold.
+	// Also resetting CanaryPercent to 100 is recommended for future rollouts.
+	// It does not limit initial creation when there is no old revision.
+	// For 1..99, the canary count rounds up and keeps at least one group on each
+	// side. A positive one-group role cannot be split and blocks until replicas
+	// increase or CanaryPercent reaches 100. This is not a traffic percentage.
+	// While held, scaling changes baseline and canary shares under either
+	// scaling policy, including Deferred. Readiness and availability budgets may
+	// delay convergence. Percentage changes alone never recreate retired history.
+	// The active role/sub-role layout must match the recorded baseline; an
+	// incompatible baseline blocks even if a younger revision is compatible.
+	// An ambiguous initial choice or conflicting recorded baselines also blocks.
+	// Scaling a required role/sub-role to zero while peers remain positive blocks.
+	// Finish such layout changes at 100; scaling the whole set to zero is allowed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	CanaryPercent *int32 `json:"canaryPercent,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.

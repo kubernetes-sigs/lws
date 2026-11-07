@@ -88,6 +88,11 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
+	if strategy := obj.Spec.RolloutStrategy; strategy != nil && strategy.CanaryPercent != nil {
+		if percent := *strategy.CanaryPercent; percent < 0 || percent > 100 {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "rolloutStrategy", "canaryPercent"), percent, "must be between 0 and 100"))
+		}
+	}
 
 	// Roles are a map-style list; reordering must preserve legacy templates.
 	oldRoles := make(map[string]*disaggv1.DisaggregatedRoleSpec)
