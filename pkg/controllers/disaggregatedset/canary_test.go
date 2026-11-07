@@ -18,6 +18,7 @@ package disaggregatedset
 
 import (
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -195,45 +196,35 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 					t.Fatal("canary did not settle")
 					return
 				}
-				a, b := settledCounts(map[string]int{"prefill": 4, "decode": 8})
-				require.Equal(t, []int{3, 6}, a)
-				require.Equal(t, []int{1, 2}, b)
-				for _, percent := range []int32{50, 25, 0, 25} {
-					setCanaryPercent(ds, percent)
-					a, b = settledCounts(map[string]int{"prefill": 4, "decode": 8})
-					for i, desired := range []int{4, 8} {
-						wantOld := canaryOldReplicas(desired, int(percent))
-						require.Equal(t, wantOld, a[i], "percent=%d", percent)
-						require.Equal(t, desired-wantOld, b[i], "percent=%d", percent)
+				for _, phase := range []struct {
+					percent           int32
+					desired, old, new [2]int
+					checkRetained     bool
+				}{
+					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
+					{50, [2]int{4, 8}, [2]int{2, 4}, [2]int{2, 4}, true},
+					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, true},
+					{0, [2]int{4, 8}, [2]int{4, 8}, [2]int{0, 0}, true},
+					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, true},
+					{25, [2]int{8, 16}, [2]int{6, 12}, [2]int{2, 4}, false},
+					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
+					{25, [2]int{20, 8}, [2]int{15, 6}, [2]int{5, 2}, false},
+					{50, [2]int{20, 8}, [2]int{10, 4}, [2]int{10, 4}, false},
+					{50, [2]int{16, 8}, [2]int{8, 4}, [2]int{8, 4}, false},
+					{100, [2]int{16, 8}, [2]int{0, 0}, [2]int{16, 8}, false},
+					// Once history is fully drained, lowering the percentage cannot revive it.
+					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
+				} {
+					setCanaryPercent(ds, phase.percent)
+					a, b := settledCounts(map[string]int{"prefill": phase.desired[0], "decode": phase.desired[1]})
+					require.Equal(t, phase.old[:], a, "old groups: percent=%d desired=%v", phase.percent, phase.desired)
+					require.Equal(t, phase.new[:], b, "new groups: percent=%d desired=%v", phase.percent, phase.desired)
+					if phase.checkRetained {
+						list := &leaderv1.LeaderWorkerSetList{}
+						require.NoError(t, c.List(t.Context(), list))
+						require.Len(t, list.Items, 4, "zero holds retain both target LWS objects")
 					}
-					list := &leaderv1.LeaderWorkerSetList{}
-					require.NoError(t, c.List(t.Context(), list))
-					require.Len(t, list.Items, 4, "zero holds retain both target LWS objects")
 				}
-				a, b = settledCounts(map[string]int{"prefill": 8, "decode": 16})
-				require.Equal(t, []int{6, 12}, a)
-				require.Equal(t, []int{2, 4}, b)
-				a, b = settledCounts(map[string]int{"prefill": 4, "decode": 8})
-				require.Equal(t, []int{3, 6}, a)
-				require.Equal(t, []int{1, 2}, b, "canaries keep the exact split under either scaling policy")
-				a, b = settledCounts(map[string]int{"prefill": 20, "decode": 8})
-				require.Equal(t, []int{15, 6}, a)
-				require.Equal(t, []int{5, 2}, b)
-				setCanaryPercent(ds, 50)
-				a, b = settledCounts(map[string]int{"prefill": 20, "decode": 8})
-				require.Equal(t, []int{10, 4}, a)
-				require.Equal(t, []int{10, 4}, b)
-				a, b = settledCounts(map[string]int{"prefill": 16, "decode": 8})
-				require.Equal(t, []int{8, 4}, a)
-				require.Equal(t, []int{8, 4}, b)
-				setCanaryPercent(ds, 100)
-				a, b = settledCounts(map[string]int{"prefill": 16, "decode": 8})
-				require.Equal(t, []int{0, 0}, a)
-				require.Equal(t, []int{16, 8}, b)
-				setCanaryPercent(ds, 25)
-				a, b = settledCounts(map[string]int{"prefill": 24, "decode": 16})
-				require.Equal(t, []int{0, 0}, a, "fully drained history is not revived")
-				require.Equal(t, []int{24, 16}, b, "without surviving old groups, either policy scales the target fully")
 			})
 		}
 	}
@@ -310,26 +301,25 @@ func TestCanarySubRolesScaleSurvivingOldGroups(t *testing.T) {
 			} {
 				setCanaryPercent(f.ds, phase.percent)
 				desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
+				settled := false
+				last := [2]string{}
 				for range 80 {
 					_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
 					require.NoError(t, err)
 					require.Empty(t, executor.canaryBlocked)
-					settled := true
+					settled = true
 					for index, fixture := range []*subRoleFixture{old, f} {
 						fixture.native()
 						fixture.sync()
 						observed := fixture.observe()
 						counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
 						require.NoError(t, err)
-						actual := [2]int{}
-						for _, group := range activeSubRoleGroups(observed) {
+						actual := map[string]int{"a": 0, "b": 0}
+						groups := activeSubRoleGroups(observed)
+						for _, group := range groups {
 							child, coherent := groupSubRole(group)
 							settled = settled && coherent
-							if child == "a" {
-								actual[0]++
-							} else if child == "b" {
-								actual[1]++
-							}
+							actual[child]++
 							for _, pod := range group.Pods {
 								if podutils.PodRunningAndReady(*pod) {
 									continue
@@ -340,28 +330,14 @@ func TestCanarySubRolesScaleSurvivingOldGroups(t *testing.T) {
 							}
 						}
 						want := [2][2]int{phase.old, phase.new}[index]
-						settled = settled && actual == want && counts["a"] == want[0] && counts["b"] == want[1] && len(activeSubRoleGroups(observed)) == want[0]+want[1]
+						last[index] = fmt.Sprintf("%s: issued=%v assigned=%v", fixture.lws.Name, counts, actual)
+						settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual) && len(groups) == want[0]+want[1]
 					}
 					if settled {
 						break
 					}
 				}
-				for _, tc := range []struct {
-					fixture *subRoleFixture
-					count   [2]int
-				}{{old, phase.old}, {f, phase.new}} {
-					observed := tc.fixture.observe()
-					counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
-					require.NoError(t, err)
-					require.Equal(t, map[string]int{"a": tc.count[0], "b": tc.count[1]}, counts, "percent=%d", phase.percent)
-					actual := map[string]int{"a": 0, "b": 0}
-					for _, group := range activeSubRoleGroups(observed) {
-						child, coherent := groupSubRole(group)
-						require.True(t, coherent)
-						actual[child]++
-					}
-					require.Equal(t, counts, actual, "percent=%d desired=%v revision=%s", phase.percent, phase.desired, tc.fixture.lws.Name)
-				}
+				require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
 			}
 			require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
 		})
