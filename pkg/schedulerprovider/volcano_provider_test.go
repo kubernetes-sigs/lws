@@ -106,6 +106,43 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 			},
 		},
 		{
+			name: "create podgroup when size is omitted defaults to 1",
+			lws: &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					StartupPolicy: leaderworkerset.LeaderCreatedStartupPolicy,
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{
+									Name: "worker", Image: "nginx",
+									Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+								}},
+							},
+						},
+					},
+				},
+			},
+			leaderPod:   testLeaderPod1,
+			expectError: false,
+			expectedPG: &volcanov1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-lws-0-abc123",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkerset.GroupIndexLabelKey: "0",
+						leaderworkerset.SetNameLabelKey:    "test-lws",
+						leaderworkerset.RevisionKey:        "abc123",
+					},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(testLeaderPod1, corev1.SchemeGroupVersion.WithKind("Pod"))},
+				},
+				Spec: volcanov1beta1.PodGroupSpec{
+					MinMember:    1,
+					MinResources: &corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				},
+			},
+		},
+		{
 			name: "create podgroup for LeaderReady policy",
 			lws: &leaderworkerset.LeaderWorkerSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},

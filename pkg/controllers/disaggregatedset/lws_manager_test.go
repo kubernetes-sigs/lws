@@ -270,6 +270,17 @@ func TestSubRoleScaleWindowLifecycle(t *testing.T) {
 	require.Equal(t, clock.Now().Add(2*time.Second), manager.scaleWindows[replacement.UID].deadline)
 }
 
+func TestSubRoleScaleWindowUnowned(t *testing.T) {
+	clock := clocktesting.NewFakeClock(time.Now())
+	manager := &LeaderWorkerSetManager{clock: clock}
+	parent := testManagerDS("ds")
+	unowned := buildOwnedManagerTestLWS("pool", 2, parent)
+	unowned.OwnerReferences = nil
+	unowned.UID = "unowned"
+	require.Equal(t, 2*time.Second, manager.delaySubRoleScale(unowned, 3, 2*time.Second))
+	require.Equal(t, client.ObjectKey{Namespace: unowned.Namespace}, manager.scaleWindows[unowned.UID].parent)
+}
+
 func TestCurrentRevisionRolloutBudgetUpdates(t *testing.T) {
 	for _, identity := range []leaderworkersetv1.GroupIdentityType{leaderworkersetv1.GroupIdentityOrdinal, leaderworkersetv1.GroupIdentityHash} {
 		for _, tc := range []struct {
