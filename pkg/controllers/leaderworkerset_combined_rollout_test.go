@@ -2818,18 +2818,113 @@ func TestTakeoverBarrierWithholdsCreditFromLeadersDeletedBeforeTakeover(t *testi
 // TestOrdinalCompletedRolloutBaselineIsNotInherited is the Ordinal analog of
 // TestHashCompletedRolloutBaselineIsNotInherited: a template update that arrives
 // after a 1 -> 4 rollout finished, but before the baseline-clearing pass, must
-// start from baseline 4 (floor 3), not the stale baseline 1 (floor 0).
+// start from baseline 4 (floor 3), not the stale baseline 1 (floor 0). This
+// holds when the update also changes the group size: the completed groups are
+// checked with the size of the previous revision.
 func TestOrdinalCompletedRolloutBaselineIsNotInherited(t *testing.T) {
 	ctx := context.Background()
+	for _, tc := range []struct {
+		name             string
+		oldSize, newSize int32
+	}{
+		{name: "unchanged size", oldSize: 1, newSize: 1},
+		{name: "size 1 -> 2", oldSize: 1, newSize: 2},
+		{name: "size 2 -> 4", oldSize: 2, newSize: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+				Replica(4).
+				Size(int(tc.newSize)).
+				RolloutStrategy(leaderworkerset.RolloutStrategy{
+					Type: leaderworkerset.RollingUpdateStrategyType,
+					RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+						Partition:      ptr.To[int32](0),
+						MaxUnavailable: intstr.FromInt32(1),
+						MaxSurge:       intstr.FromInt32(0),
+					},
+				}).Obj()
+			lws.UID = "lws-uid"
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       lws.Name,
+					Namespace:  lws.Namespace,
+					UID:        "leader-sts-uid",
+					Generation: 3,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey: lws.Name,
+						leaderworkerset.RevisionKey:     "rev-2",
+						leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+					},
+					Annotations: map[string]string{
+						leaderworkerset.ReplicasAnnotationKey: "4",
+						rolloutBaselineAnnotationKey:          "1",
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](4),
+					// The template of rev-2 carries the size of rev-2.
+					Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{leaderworkerset.SizeAnnotationKey: strconv.Itoa(int(tc.oldSize))},
+					}},
+					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+						Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+					},
+				},
+				Status: appsv1.StatefulSetStatus{
+					ObservedGeneration: 3,
+					Replicas:           4,
+					CurrentRevision:    "sts-rev-2",
+					UpdateRevision:     "sts-rev-2",
+				},
+			}
+			objs := []client.Object{lws, sts}
+			for ord := range 4 {
+				objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, int(tc.oldSize), "rev-2", "sts-rev-2", true, true, true)...)
+			}
+			_, r := newCombinedTestClient(t, objs...)
+
+			plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", true)
+			if err != nil {
+				t.Fatalf("planRollingUpdate(publish) error = %v", err)
+			}
+			if plan.baseline == nil || *plan.baseline != 4 || plan.floor != 3 {
+				t.Fatalf("publish (baseline, floor) = (%d, %d), want (4, 3)", ptr.Deref(plan.baseline, -1), plan.floor)
+			}
+
+			// The StatefulSet observes rev-3; the next pass may replace only one group.
+			sts.Labels[leaderworkerset.RevisionKey] = "rev-3"
+			sts.Annotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*plan.baseline))
+			sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(tc.newSize))
+			sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(plan.partition)
+			sts.Status.UpdateRevision = "sts-rev-3"
+			next, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", false)
+			if err != nil {
+				t.Fatalf("planRollingUpdate(advance) error = %v", err)
+			}
+			if next.partition != 3 {
+				t.Fatalf("advance partition = %d, want 3 (one group below floor 3 at a time)", next.partition)
+			}
+		})
+	}
+}
+
+// TestScaleDownKeepsRetainedReadyTailAbovePartition verifies that a replica
+// reduction during a rollout does not lower partition into Ready ordinals that
+// the floor guard keeps above the new burst limit. Replicas 4 -> 2 with
+// maxSurge 2 and maxUnavailable 0 (floor 2), after a superseding template
+// (rev-3) left six groups behind partition 6. Only groups 4 and 5 are Ready.
+func TestScaleDownKeepsRetainedReadyTailAbovePartition(t *testing.T) {
+	ctx := context.Background()
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
-		Replica(4).
-		Size(1).
+		Replica(2).
+		Size(2).
 		RolloutStrategy(leaderworkerset.RolloutStrategy{
 			Type: leaderworkerset.RollingUpdateStrategyType,
 			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
 				Partition:      ptr.To[int32](0),
-				MaxUnavailable: intstr.FromInt32(1),
-				MaxSurge:       intstr.FromInt32(0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(2),
 			},
 		}).Obj()
 	lws.UID = "lws-uid"
@@ -2838,55 +2933,155 @@ func TestOrdinalCompletedRolloutBaselineIsNotInherited(t *testing.T) {
 			Name:       lws.Name,
 			Namespace:  lws.Namespace,
 			UID:        "leader-sts-uid",
-			Generation: 3,
+			Generation: 5,
 			Labels: map[string]string{
 				leaderworkerset.SetNameLabelKey: lws.Name,
-				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RevisionKey:     "rev-3",
 				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
 			},
 			Annotations: map[string]string{
 				leaderworkerset.ReplicasAnnotationKey: "4",
+				rolloutBaselineAnnotationKey:          "2",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](6),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](6)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 5,
+			Replicas:           6,
+			CurrentRevision:    "sts-rev-2",
+			UpdateRevision:     "sts-rev-3",
+		},
+	}
+	objs := []client.Object{lws, sts}
+	for ord := range 6 {
+		// Leaders 0-3 are Ready, but their workers are Pending.
+		groupReady := ord >= 4
+		objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, 2, "rev-2", "sts-rev-2", true, groupReady, groupReady)...)
+	}
+	_, r := newCombinedTestClient(t, objs...)
+
+	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate() error = %v", err)
+	}
+	if plan.replicas != 6 || plan.partition != 6 {
+		t.Fatalf("plan (replicas, partition) = (%d, %d), want (6, 6): Ready groups 4 and 5 must stay on their revision",
+			plan.replicas, plan.partition)
+	}
+}
+
+// TestTakeoverBarrierWithholdsCreditFromLeadersDeliveredAfterList verifies that
+// the takeover barrier also covers leader pods that the Pod informer delivers
+// after the live LIST. A0 was created, became Ready, and was deleted before the
+// LIST, so neither the cache nor the LIST shows it at takeover. Its delayed
+// events must not let the planner trim B1, the only live Ready group. A leader
+// newer than the LIST gets credit from the cache alone.
+func TestTakeoverBarrierWithholdsCreditFromLeadersDeliveredAfterList(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(0),
+				MaxSurge:       intstr.FromInt32(1),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 4,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-a",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "1",
 				rolloutBaselineAnnotationKey:          "1",
 			},
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: ptr.To[int32](4),
+			Replicas: ptr.To[int32](2),
 			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
-				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](1)},
 			},
 		},
 		Status: appsv1.StatefulSetStatus{
-			ObservedGeneration: 3,
-			Replicas:           4,
-			CurrentRevision:    "sts-rev-2",
-			UpdateRevision:     "sts-rev-2",
+			ObservedGeneration: 4,
+			Replicas:           2,
+			CurrentRevision:    "sts-rev-b",
+			UpdateRevision:     "sts-rev-a",
 		},
 	}
-	objs := []client.Object{lws, sts}
-	for ord := range 4 {
-		objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, 1, "rev-2", "sts-rev-2", true, true, true)...)
-	}
-	_, r := newCombinedTestClient(t, objs...)
+	b1 := makeOwnedGroupObjects(lws, sts, 1, 1, "rev-b", "sts-rev-b", true, true, true)[0]
+	b1.SetResourceVersion("10")
+	a0 := makeOwnedGroupObjects(lws, sts, 0, 1, "rev-a", "sts-rev-a", true, true, true)[0]
+	a0.SetResourceVersion("20")
 
-	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", true)
-	if err != nil {
-		t.Fatalf("planRollingUpdate(publish) error = %v", err)
+	_, r := newCombinedTestClient(t, lws, sts, b1)
+	listCalls := 0
+	r.apiReader = fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).
+		WithObjects(b1.DeepCopyObject().(client.Object)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				listCalls++
+				if err := c.List(ctx, list, opts...); err != nil {
+					return err
+				}
+				list.SetResourceVersion("30")
+				return nil
+			},
+		}).Build()
+	plan := func(step string) rollingUpdatePlan {
+		t.Helper()
+		p, err := r.planRollingUpdate(ctx, lws, sts, "rev-a", false)
+		if err != nil {
+			t.Fatalf("%s: planRollingUpdate() error = %v", step, err)
+		}
+		return p
 	}
-	if plan.baseline == nil || *plan.baseline != 4 || plan.floor != 3 {
-		t.Fatalf("publish (baseline, floor) = (%d, %d), want (4, 3)", ptr.Deref(plan.baseline, -1), plan.floor)
+	// Each step swaps in a client whose cache holds the given pods.
+	observe := func(pods ...client.Object) {
+		t.Helper()
+		_, view := newCombinedTestClient(t, append([]client.Object{lws, sts}, pods...)...)
+		r.Client = view.Client
 	}
 
-	// The StatefulSet observes rev-3; the next pass may replace only one group.
-	sts.Labels[leaderworkerset.RevisionKey] = "rev-3"
-	sts.Annotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*plan.baseline))
-	sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(plan.partition)
-	sts.Status.UpdateRevision = "sts-rev-3"
-	next, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", false)
-	if err != nil {
-		t.Fatalf("planRollingUpdate(advance) error = %v", err)
+	if got := plan("takeover").replicas; got != 2 {
+		t.Fatalf("takeover replicas = %d, want 2 (B1 is the only Ready group)", got)
 	}
-	if next.partition != 3 {
-		t.Fatalf("advance partition = %d, want 3 (one group below floor 3 at a time)", next.partition)
+	observe(a0.DeepCopyObject().(client.Object), b1)
+	if got := plan("A0 delivered").replicas; got != 2 {
+		t.Fatalf("replicas after the delayed A0 events = %d, want 2 (A0 was deleted before the LIST)", got)
+	}
+	observe(b1)
+	plan("A0 deletion delivered")
+	if r.pendingDeletes.hasEntriesFor(client.ObjectKeyFromObject(lws)) {
+		t.Fatal("expected the entry for A0 to resolve once the cache observes its deletion")
+	}
+
+	// The StatefulSet controller recreates ordinal 0 after the LIST.
+	newA0 := makeOwnedGroupObjects(lws, sts, 0, 1, "rev-a", "sts-rev-a", true, true, true)[0]
+	newA0.SetUID("a0-recreated-uid")
+	newA0.SetResourceVersion("40")
+	observe(newA0, b1)
+	if got := plan("recreated A0 Ready").replicas; got != 1 {
+		t.Fatalf("replicas with a Ready A0 newer than the LIST = %d, want 1", got)
+	}
+	if listCalls != 1 {
+		t.Fatalf("live LIST calls = %d, want 1", listCalls)
 	}
 }
