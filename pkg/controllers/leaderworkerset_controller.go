@@ -36,6 +36,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/resourceversion"
+	"k8s.io/apimachinery/pkg/util/sets"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -747,7 +749,13 @@ func (r *LeaderWorkerSetReconciler) supersedingRolloutBaseline(ctx context.Conte
 	if err != nil {
 		return resolveRolloutBaseline(sts, lwsReplicas)
 	}
-	states, _, _, err := r.readReplicaStatesAndLeaders(ctx, lws, sts, ptr.Deref(sts.Spec.Replicas, 0), revisionutils.GetRevisionKey(sts), false)
+	// Check the previous revision with its own group size. The StatefulSet
+	// template still carries it, and it can differ from the spec.
+	previousSize := *lws.Spec.LeaderWorkerTemplate.Size
+	if size, err := parseNonNegativeInt32(sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil && size > 0 {
+		previousSize = size
+	}
+	states, _, _, err := r.readReplicaStatesAndLeaders(ctx, lws, sts, ptr.Deref(sts.Spec.Replicas, 0), revisionutils.GetRevisionKey(sts), previousSize, false)
 	if err != nil {
 		return 0, err
 	}
@@ -934,7 +942,10 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 			nextBaseline = ptr.To(baseline)
 		}
 		return rollingUpdatePlan{
-			partition: min(partition, burstReplicas),
+			// Do not lower partition below the planned replicas. The floor
+			// guard can keep Ready ordinals above the burst limit, and they
+			// must stay on their revision.
+			partition: min(partition, max(burstReplicas, targetReplicas)),
 			replicas:  targetReplicas,
 			baseline:  nextBaseline,
 			floor:     floor,
@@ -1463,10 +1474,12 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
 	stsReplicas int32,
 	revisionKey string,
 ) ([]replicaState, []*corev1.Pod, bool, error) {
-	return r.readReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey, true)
+	return r.readReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey, *lws.Spec.LeaderWorkerTemplate.Size, true)
 }
 
 // readReplicaStatesAndLeaders computes replica states from the informer cache.
+// revisionSize is the group size of revisionKey. Groups at revisionKey are
+// checked with it, and older groups with the size stamped on their leader pod.
 // When replay is false, uncertain pending deletes are reported but not
 // replayed, so the read issues no DELETE requests.
 func (r *LeaderWorkerSetReconciler) readReplicaStatesAndLeaders(
@@ -1475,6 +1488,7 @@ func (r *LeaderWorkerSetReconciler) readReplicaStatesAndLeaders(
 	leaderSts *appsv1.StatefulSet,
 	stsReplicas int32,
 	revisionKey string,
+	revisionSize int32,
 	replay bool,
 ) ([]replicaState, []*corev1.Pod, bool, error) {
 	parentKey := client.ObjectKeyFromObject(lws)
@@ -1548,7 +1562,6 @@ func (r *LeaderWorkerSetReconciler) readReplicaStatesAndLeaders(
 		}
 	}
 
-	defaultSize := *lws.Spec.LeaderWorkerTemplate.Size
 	for idx := int32(0); idx < stsReplicas; idx++ {
 		leaderPod := leaders[idx]
 		if leaderPod == nil || leaderPod.DeletionTimestamp != nil {
@@ -1558,9 +1571,9 @@ func (r *LeaderWorkerSetReconciler) readReplicaStatesAndLeaders(
 			continue
 		}
 		leaderUpdated := leaderPodAtTargetRevision(leaderPod, leaderSts, revisionKey)
-		groupSize := int(defaultSize)
+		groupSize := int(revisionSize)
 		if !leaderUpdated {
-			groupSize = podGroupSize(leaderPod, defaultSize)
+			groupSize = podGroupSize(leaderPod, revisionSize)
 		}
 		leaderReady := leaderPod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] != "true" &&
 			podutils.PodRunningAndReady(*leaderPod)
@@ -1625,9 +1638,43 @@ type pendingLeaderDelete struct {
 type pendingLeaderDeletes struct {
 	mu      sync.Mutex
 	deletes map[client.ObjectKey]pendingLeaderDelete
-	// observed records, per LeaderWorkerSet key, the UID whose leader pods
-	// passed the takeover observation barrier in this process.
-	observed map[client.ObjectKey]types.UID
+	// observed records, per LeaderWorkerSet key, the live LIST of leader pods
+	// that the takeover observation barrier read in this process.
+	observed map[client.ObjectKey]*takeoverSnapshot
+}
+
+// takeoverSnapshot is the live LIST of leader pods that the takeover barrier
+// read for one LeaderWorkerSet.
+type takeoverSnapshot struct {
+	owner types.UID
+	// resourceVersion is the ResourceVersion of the LIST.
+	resourceVersion string
+	// live holds the UIDs of the leader pods that were live and not terminating.
+	live sets.Set[types.UID]
+}
+
+func newTakeoverSnapshot(owner types.UID, livePods *corev1.PodList) *takeoverSnapshot {
+	live := sets.New[types.UID]()
+	for i := range livePods.Items {
+		if livePods.Items[i].DeletionTimestamp == nil {
+			live.Insert(livePods.Items[i].UID)
+		}
+	}
+	return &takeoverSnapshot{owner: owner, resourceVersion: livePods.ResourceVersion, live: live}
+}
+
+// supersedes reports whether the LIST shows that a cached leader pod is gone,
+// replaced, or terminating. Every pod that the cache held when the barrier ran
+// is older than the LIST. A pod that the cache shows later is judged only if
+// its ResourceVersion is not newer than the LIST: the informer can still
+// deliver a leader pod that was created and deleted before the LIST.
+func (s *takeoverSnapshot) supersedes(pod *corev1.Pod, cachedBeforeList bool) bool {
+	if !cachedBeforeList {
+		if cmp, err := resourceversion.CompareResourceVersion(pod.ResourceVersion, s.resourceVersion); err != nil || cmp > 0 {
+			return false
+		}
+	}
+	return !s.live.Has(pod.UID)
 }
 
 func (p *pendingLeaderDeletes) forgetParent(parent client.ObjectKey) {
@@ -1673,18 +1720,22 @@ func (p *pendingLeaderDeletes) isPending(podKey client.ObjectKey, uid types.UID)
 	return ok && entry.uid == uid
 }
 
-func (p *pendingLeaderDeletes) takeoverObserved(parent client.ObjectKey, uid types.UID) bool {
+// takeoverSnapshotFor returns the barrier LIST for the LeaderWorkerSet with
+// key parent and UID uid, or nil if the barrier has not run for it.
+func (p *pendingLeaderDeletes) takeoverSnapshotFor(parent client.ObjectKey, uid types.UID) *takeoverSnapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	observedUID, ok := p.observed[parent]
-	return ok && observedUID == uid
+	if snapshot := p.observed[parent]; snapshot != nil && snapshot.owner == uid {
+		return snapshot
+	}
+	return nil
 }
 
 // markTakeoverObserved tracks cached leader pods that the API server no longer
-// serves as live pods, and records that lws passed the takeover barrier. The
-// entries are not uncertain: they stay pending only until the informer observes
-// that the pods are gone or terminating.
-func (p *pendingLeaderDeletes) markTakeoverObserved(lws *leaderworkerset.LeaderWorkerSet, stale []*corev1.Pod) {
+// serves as live pods, and records the barrier LIST for lws. The entries are
+// not uncertain: they stay pending only until the informer observes that the
+// pods are gone or terminating.
+func (p *pendingLeaderDeletes) markTakeoverObserved(lws *leaderworkerset.LeaderWorkerSet, snapshot *takeoverSnapshot, stale []*corev1.Pod) {
 	parentKey := client.ObjectKeyFromObject(lws)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1692,7 +1743,7 @@ func (p *pendingLeaderDeletes) markTakeoverObserved(lws *leaderworkerset.LeaderW
 		p.deletes = make(map[client.ObjectKey]pendingLeaderDelete)
 	}
 	if p.observed == nil {
-		p.observed = make(map[client.ObjectKey]types.UID)
+		p.observed = make(map[client.ObjectKey]*takeoverSnapshot)
 	}
 	for _, pod := range stale {
 		podKey := client.ObjectKeyFromObject(pod)
@@ -1706,30 +1757,33 @@ func (p *pendingLeaderDeletes) markTakeoverObserved(lws *leaderworkerset.LeaderW
 			resourceVersion: pod.ResourceVersion,
 		}
 	}
-	p.observed[parentKey] = lws.UID
+	p.observed[parentKey] = snapshot
 }
 
-// observeLeadersSinceTakeover runs once per LeaderWorkerSet in this process,
-// before its first rollout decision. The Pod informer can start before leader
-// election (for example, when Pod field indexes are registered before the
-// manager starts). A new leader can then act on a stale cache that still shows
-// leader pods its predecessor deleted, while pendingDeletes starts empty. A live
-// LIST finds those pods, and pendingDeletes withholds their Ready credit until
-// the informer catches up.
+// observeLeadersSinceTakeover withholds Ready credit from cached leader pods
+// that the API server no longer serves as live pods. The Pod informer can start
+// before leader election (for example, when Pod field indexes are registered
+// before the manager starts). A new leader can then act on a stale cache that
+// still shows leader pods its predecessor deleted, while pendingDeletes starts
+// empty. Before the first rollout decision for each LeaderWorkerSet, a live
+// LIST finds those pods. The LIST is kept, so that a leader pod that the
+// informer delivers later, but that the LIST already showed as gone, is also
+// withheld. pendingDeletes withholds the credit until the informer catches up.
 func (r *LeaderWorkerSetReconciler) observeLeadersSinceTakeover(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, cachedPods []corev1.Pod) error {
-	if r.apiReader == nil || r.pendingDeletes.takeoverObserved(client.ObjectKeyFromObject(lws), lws.UID) {
+	if r.apiReader == nil {
 		return nil
 	}
-	var livePods corev1.PodList
-	if err := r.apiReader.List(ctx, &livePods, client.InNamespace(lws.Namespace), client.MatchingLabels{
-		leaderworkerset.SetNameLabelKey:     lws.Name,
-		leaderworkerset.WorkerIndexLabelKey: "0",
-	}); err != nil {
-		return err
-	}
-	liveByName := make(map[string]*corev1.Pod, len(livePods.Items))
-	for i := range livePods.Items {
-		liveByName[livePods.Items[i].Name] = &livePods.Items[i]
+	snapshot := r.pendingDeletes.takeoverSnapshotFor(client.ObjectKeyFromObject(lws), lws.UID)
+	cachedBeforeList := snapshot == nil
+	if cachedBeforeList {
+		var livePods corev1.PodList
+		if err := r.apiReader.List(ctx, &livePods, client.InNamespace(lws.Namespace), client.MatchingLabels{
+			leaderworkerset.SetNameLabelKey:     lws.Name,
+			leaderworkerset.WorkerIndexLabelKey: "0",
+		}); err != nil {
+			return err
+		}
+		snapshot = newTakeoverSnapshot(lws.UID, &livePods)
 	}
 	var stale []*corev1.Pod
 	for i := range cachedPods {
@@ -1737,12 +1791,13 @@ func (r *LeaderWorkerSetReconciler) observeLeadersSinceTakeover(ctx context.Cont
 		if pod.Labels[leaderworkerset.WorkerIndexLabelKey] != "0" || pod.DeletionTimestamp != nil {
 			continue
 		}
-		live := liveByName[pod.Name]
-		if live == nil || live.UID != pod.UID || live.DeletionTimestamp != nil {
+		if snapshot.supersedes(pod, cachedBeforeList) {
 			stale = append(stale, pod)
 		}
 	}
-	r.pendingDeletes.markTakeoverObserved(lws, stale)
+	if cachedBeforeList || len(stale) > 0 {
+		r.pendingDeletes.markTakeoverObserved(lws, snapshot, stale)
+	}
 	return nil
 }
 
