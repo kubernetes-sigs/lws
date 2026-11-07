@@ -193,6 +193,9 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 }
 
 func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
 	lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]
 	groupIndex := pod.Labels[leaderworkerset.GroupIndexLabelKey]
 	pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey] = GetPodGroupName(lwsName, groupIndex, pod.Labels[leaderworkerset.RevisionKey])

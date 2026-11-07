@@ -792,7 +792,7 @@ func (r *LeaderWorkerSetReconciler) supersedingRolloutBaseline(ctx context.Conte
 	}
 	// Check the previous revision with its own group size. The StatefulSet
 	// template still carries it, and it can differ from the spec.
-	previousSize := *lws.Spec.LeaderWorkerTemplate.Size
+	previousSize := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
 	if size, err := parseNonNegativeInt32(sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]); err == nil && size > 0 {
 		previousSize = size
 	}
@@ -1323,7 +1323,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	readyNonDegradedCount, degradedGroupCount, desiredDegradedGroupCount := 0, 0, 0
 	unschedulableGroupCount := 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
-	defaultSize := *lws.Spec.LeaderWorkerTemplate.Size
+	defaultSize := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 
 	// Iterate through all leaderPods.
@@ -1562,7 +1562,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
 	stsReplicas int32,
 	revisionKey string,
 ) ([]replicaState, []*corev1.Pod, bool, error) {
-	return r.readReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey, *lws.Spec.LeaderWorkerTemplate.Size, true)
+	return r.readReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey, ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1), true)
 }
 
 // readReplicaStatesAndLeaders computes replica states from the informer cache.
@@ -2405,7 +2405,7 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		leaderworkerset.RevisionKey:         revisionKey,
 	})
 	podAnnotations := make(map[string]string)
-	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)))
 	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}

@@ -376,9 +376,9 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 
 	// Once size = 1, no need to create worker statefulSets. Honor the leader's
 	// stamped size when its ControllerRevision has not been observed yet.
-	groupSize := int(*groupLws.Spec.LeaderWorkerTemplate.Size)
+	groupSize := int(ptr.Deref(groupLws.Spec.LeaderWorkerTemplate.Size, 1))
 	if revision == nil {
-		groupSize = podGroupSize(&pod, *groupLws.Spec.LeaderWorkerTemplate.Size)
+		groupSize = podGroupSize(&pod, ptr.Deref(groupLws.Spec.LeaderWorkerTemplate.Size, 1))
 	}
 	if groupSize == 1 {
 		return backoffResult, nil
@@ -685,7 +685,7 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	recreateAfterStart := policy == leaderworkerset.RecreateGroupAfterStart || hasRecreateGroupAfterStartAnnotation
 	if recreateAfterStart && !isRecreatePending && !alreadyCharged {
 		// Old groups keep their original size during a rollout that changes it.
-		groupSize := podGroupSize(&pod, int32(podGroupSize(&leader, *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)))
+		groupSize := podGroupSize(&pod, int32(podGroupSize(&leader, ptr.Deref(leaderWorkerSet.Spec.LeaderWorkerTemplate.Size, 1))))
 		startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
 		if err != nil {
 			return false, ctrl.Result{}, err
@@ -1747,7 +1747,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// Spec-derived values must come from the revision-applied spec (currentLws), not the
 	// live one: when an old-revision group is rebuilt mid rolling update, mixing the old
 	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
-	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(ptr.Deref(currentLws.Spec.LeaderWorkerTemplate.Size, 1)))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	// Exclusive placement keys are copied from the leader pod so workers of an
 	// old-revision group keep the placement their leader was created with.
@@ -1785,7 +1785,7 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	statefulSetConfig := appsapplyv1.StatefulSet(workerStatefulSetName(&leaderPod), leaderPod.Namespace).
 		WithSpec(appsapplyv1.StatefulSetSpec().
 			WithServiceName(serviceName).
-			WithReplicas(*currentLws.Spec.LeaderWorkerTemplate.Size - 1).
+			WithReplicas(ptr.Deref(currentLws.Spec.LeaderWorkerTemplate.Size, 1) - 1).
 			WithPodManagementPolicy(appsv1.ParallelPodManagement).
 			WithTemplate(&podTemplateApplyConfiguration).
 			WithOrdinals(appsapplyv1.StatefulSetOrdinals().WithStart(1)).

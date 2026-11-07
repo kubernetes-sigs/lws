@@ -394,9 +394,13 @@ func (m *LeaderWorkerSetManager) delaySubRoleScale(lws *leaderv1.LeaderWorkerSet
 	}
 	window, found := m.scaleWindows[lws.UID]
 	if !found || window.replicas != replicas {
+		parentKey := client.ObjectKey{Namespace: lws.Namespace}
+		if controller := metav1.GetControllerOf(lws); controller != nil {
+			parentKey.Name = controller.Name
+		}
 		window = subRoleScaleWindow{
 			deadline: m.clock.Now().Add(delay), replicas: replicas,
-			parent: client.ObjectKey{Namespace: lws.Namespace, Name: metav1.GetControllerOf(lws).Name},
+			parent: parentKey,
 		}
 		if m.scaleWindows == nil {
 			m.scaleWindows = make(map[types.UID]subRoleScaleWindow)
