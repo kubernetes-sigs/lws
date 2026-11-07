@@ -3085,3 +3085,302 @@ func TestTakeoverBarrierWithholdsCreditFromLeadersDeliveredAfterList(t *testing.
 		t.Fatalf("live LIST calls = %d, want 1", listCalls)
 	}
 }
+
+// combinedRolloutLWS returns an Ordinal LWS with size 1 and the given rollout
+// configuration, for plan-level tests.
+func combinedRolloutLWS(replicas int32, maxUnavailable intstr.IntOrString, maxSurge int32) *leaderworkerset.LeaderWorkerSet {
+	return wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(int(replicas)).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: maxUnavailable,
+				MaxSurge:       intstr.FromInt32(maxSurge),
+			},
+		}).Obj()
+}
+
+// combinedRolloutSts returns a leader StatefulSet with the given replicas,
+// partition, and annotations.
+func combinedRolloutSts(lws *leaderworkerset.LeaderWorkerSet, replicas, partition int32, annotations map[string]string) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        lws.Name,
+			Namespace:   lws.Namespace,
+			Annotations: annotations,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(replicas),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(partition)},
+			},
+		},
+	}
+}
+
+// TestSupersedingRevisionAfterReadyAdditionsRaisesBaseline verifies that a
+// superseding revision inherits a baseline raised to the groups that are Ready
+// when it arrives. Without this, a rollout that scaled 2 -> 10 and brought
+// eight additions to Ready would hand rev-3 a baseline of 2 and a floor of 1,
+// and the partition would expose all eight Ready additions at once.
+func TestSupersedingRevisionAfterReadyAdditionsRaisesBaseline(t *testing.T) {
+	ctx := context.Background()
+	lws := combinedRolloutLWS(10, intstr.FromInt32(1), 0)
+	// rev-1 -> rev-2 rollout, scaled 2 -> 10 while active. Ordinals 2..9 are
+	// rev-2 and Ready. Ordinal 0 is the in-flight rev-2 replacement (Pending),
+	// ordinal 1 still runs rev-1.
+	sts := combinedRolloutSts(lws, 10, 0, map[string]string{
+		leaderworkerset.ReplicasAnnotationKey: "10",
+		rolloutBaselineAnnotationKey:          "2",
+	})
+	objs := []client.Object{
+		lwsStatusLeaderPod(lws, 0, "rev-2", false),
+		lwsStatusLeaderPod(lws, 1, "rev-1", true),
+	}
+	for i := 2; i < 10; i++ {
+		objs = append(objs, lwsStatusLeaderPod(lws, i, "rev-2", true))
+	}
+	r, _ := lwsStatusNewReconciler(t, objs...)
+
+	// Pass 1 publishes rev-3. Nine groups are Ready, so the baseline is 9.
+	plan1, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", true)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(pass 1) error = %v", err)
+	}
+	if plan1.baseline == nil || *plan1.baseline != 9 {
+		t.Fatalf("pass 1 baseline = %d, want 9", ptr.Deref(plan1.baseline, -1))
+	}
+	if plan1.floor != 8 {
+		t.Fatalf("pass 1 floor = %d, want 8", plan1.floor)
+	}
+	if plan1.partition != 10 || plan1.replicas != 10 {
+		t.Fatalf("pass 1 (partition, replicas) = (%d, %d), want (10, 10)", plan1.partition, plan1.replicas)
+	}
+
+	// Pass 2 steps the partition down against the floor: only ordinal 9 is
+	// exposed, so 8 Ready groups remain.
+	sts.Annotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*plan1.baseline))
+	sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(plan1.partition)
+	plan2, err := r.planRollingUpdate(ctx, lws, sts, "rev-3", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate(pass 2) error = %v", err)
+	}
+	if plan2.partition != 9 {
+		t.Fatalf("pass 2 partition = %d, want 9 (one group at a time with maxUnavailable=1)", plan2.partition)
+	}
+	if plan2.baseline == nil || *plan2.baseline != 9 {
+		t.Fatalf("pass 2 baseline = %d, want 9", ptr.Deref(plan2.baseline, -1))
+	}
+}
+
+// TestHashSupersedingRevisionAfterReadyAdditionsRaisesBaseline is the Hash
+// analog: a superseding template update during an active rollout inherits a
+// baseline raised to the Deployment's available leaders, so the widened
+// maxUnavailable keeps the Ready additions.
+func TestHashSupersedingRevisionAfterReadyAdditionsRaisesBaseline(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-hash", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Replica(1).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+	lws.UID = "lws-hash-uid"
+	lws.Generation = 1
+
+	c, r := newCombinedTestClient(t, lws)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+	var deploy appsv1.Deployment
+	reconcileAndGet := func(step string) {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("%s: Reconcile() error = %v", step, err)
+		}
+		if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+			t.Fatalf("%s: reading deploy: %v", step, err)
+		}
+	}
+	updateLWS := func(replicas int32, image string) {
+		t.Helper()
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation++
+		lws.Spec.Replicas = ptr.To(replicas)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = image
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+	}
+
+	reconcileAndGet("create")
+	// Combined scale-up (1 -> 4) and template update: baseline 1, floor 0.
+	updateLWS(4, "worker:v2")
+	reconcileAndGet("combined update")
+	if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != "1" {
+		t.Fatalf("combined update baseline = %q, want %q", got, "1")
+	}
+	if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 4 {
+		t.Fatalf("combined update deploy maxUnavailable = %d, want 4", got)
+	}
+
+	// Three rev2 leaders are available. The old rev1 leader is still being
+	// replaced, so the rollout has not converged.
+	deploy.Generation = 2
+	if err := c.Update(ctx, &deploy); err != nil {
+		t.Fatalf("updating deploy generation: %v", err)
+	}
+	deploy.Status = appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 4, UpdatedReplicas: 3, ReadyReplicas: 3, AvailableReplicas: 3}
+	if err := c.Status().Update(ctx, &deploy); err != nil {
+		t.Fatalf("updating deploy status: %v", err)
+	}
+
+	// A superseding template update inherits baseline 3, not 1: the Deployment
+	// may take down at most 4 - (3 - 1) = 2 leaders instead of all 4.
+	updateLWS(4, "worker:v3")
+	reconcileAndGet("superseding update")
+	if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != "3" {
+		t.Fatalf("superseding update baseline = %q, want %q", got, "3")
+	}
+	if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 2 {
+		t.Fatalf("superseding update deploy maxUnavailable = %d, want 2", got)
+	}
+}
+
+// TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor verifies that a
+// percentage maxUnavailable resolves against the baseline when it computes the
+// floor. Resolved against the desired count, 25% of 10 is 2 and the floor of a
+// 2-group baseline is 0: both existing groups would be replaced at once while
+// the eight additions are still Pending.
+func TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name           string
+		maxUnavailable intstr.IntOrString
+		wantFloor      int32
+		wantPartition  int32
+	}{
+		{name: "25% of baseline 2 rounds down to 0", maxUnavailable: intstr.FromString("25%"), wantFloor: 2, wantPartition: 2},
+		{name: "50% of baseline 2 is 1", maxUnavailable: intstr.FromString("50%"), wantFloor: 1, wantPartition: 1},
+		{name: "absolute value is unchanged", maxUnavailable: intstr.FromInt32(1), wantFloor: 1, wantPartition: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := combinedRolloutLWS(10, tc.maxUnavailable, 0)
+			// Scaled 2 -> 10 during the rollout. Ordinals 0 and 1 are the
+			// Ready rev-1 groups. Ordinals 2..9 are rev-2 additions, Pending.
+			sts := combinedRolloutSts(lws, 10, 2, map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "10",
+				rolloutBaselineAnnotationKey:          "2",
+			})
+			objs := []client.Object{
+				lwsStatusLeaderPod(lws, 0, "rev-1", true),
+				lwsStatusLeaderPod(lws, 1, "rev-1", true),
+			}
+			for i := 2; i < 10; i++ {
+				objs = append(objs, lwsStatusLeaderPod(lws, i, "rev-2", false))
+			}
+			r, _ := lwsStatusNewReconciler(t, objs...)
+			plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
+			if err != nil {
+				t.Fatalf("planRollingUpdate() error = %v", err)
+			}
+			if plan.floor != tc.wantFloor {
+				t.Fatalf("floor = %d, want %d", plan.floor, tc.wantFloor)
+			}
+			if plan.partition != tc.wantPartition {
+				t.Fatalf("partition = %d, want %d", plan.partition, tc.wantPartition)
+			}
+		})
+	}
+
+	t.Run("hash deployment maxUnavailable", func(t *testing.T) {
+		lws := combinedRolloutLWS(10, intstr.FromString("25%"), 0)
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		cfg, err := constructLeaderDeploymentApplyConfiguration(lws, ptr.To[int32](2), "rev-2")
+		if err != nil {
+			t.Fatalf("constructLeaderDeploymentApplyConfiguration() error = %v", err)
+		}
+		// floor = 2 - (25% of 2 = 0) = 2, so maxUnavailable = 10 - 2 = 8, not 10.
+		if got := cfg.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 8 {
+			t.Fatalf("deploy maxUnavailable = %d, want 8", got)
+		}
+	})
+}
+
+// TestPlainScaleDownWithDegradedGroupsConverges verifies that a scale-down with
+// no active rollout retires the excess ordinals even when the remaining groups
+// include unready ones. The floor guard is a rollout guarantee; applied here it
+// would hold replicas above spec.replicas until a Degraded group recovers,
+// which may be never.
+func TestPlainScaleDownWithDegradedGroupsConverges(t *testing.T) {
+	ctx := context.Background()
+	newObjs := func(lws *leaderworkerset.LeaderWorkerSet, count int) []client.Object {
+		var objs []client.Object
+		for i := range count {
+			pod := lwsStatusLeaderPod(lws, i, "rev-1", i >= 2)
+			if i < 2 {
+				if pod.Annotations == nil {
+					pod.Annotations = map[string]string{}
+				}
+				pod.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+			}
+			objs = append(objs, pod)
+		}
+		return objs
+	}
+
+	t.Run("scale-down pass", func(t *testing.T) {
+		lws := combinedRolloutLWS(4, intstr.FromInt32(1), 0)
+		// Ordinals 0 and 1 are Degraded, 2..5 Ready. Scale 6 -> 4.
+		sts := combinedRolloutSts(lws, 6, 0, map[string]string{leaderworkerset.ReplicasAnnotationKey: "6"})
+		r, _ := lwsStatusNewReconciler(t, newObjs(lws, 6)...)
+		plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-1", false)
+		if err != nil {
+			t.Fatalf("planRollingUpdate() error = %v", err)
+		}
+		if plan.replicas != 4 || plan.baseline != nil {
+			t.Fatalf("(replicas, baseline) = (%d, %d), want (4, nil)", plan.replicas, ptr.Deref(plan.baseline, -1))
+		}
+	})
+
+	t.Run("surplus ordinal after scale-down", func(t *testing.T) {
+		lws := combinedRolloutLWS(4, intstr.FromInt32(1), 0)
+		// The StatefulSet still has five ordinals and no active rollout.
+		sts := combinedRolloutSts(lws, 5, 0, map[string]string{leaderworkerset.ReplicasAnnotationKey: "4"})
+		r, _ := lwsStatusNewReconciler(t, newObjs(lws, 5)...)
+		plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-1", false)
+		if err != nil {
+			t.Fatalf("planRollingUpdate() error = %v", err)
+		}
+		if plan.replicas != 4 || plan.baseline != nil {
+			t.Fatalf("(replicas, baseline) = (%d, %d), want (4, nil)", plan.replicas, ptr.Deref(plan.baseline, -1))
+		}
+	})
+
+	t.Run("active rollout keeps the floor guard", func(t *testing.T) {
+		lws := combinedRolloutLWS(4, intstr.FromInt32(1), 0)
+		// Same groups, but a recorded baseline marks the rollout as active:
+		// ordinal 4 stays until the prefix holds floor (3) Ready groups.
+		sts := combinedRolloutSts(lws, 6, 0, map[string]string{
+			leaderworkerset.ReplicasAnnotationKey: "6",
+			rolloutBaselineAnnotationKey:          "6",
+		})
+		r, _ := lwsStatusNewReconciler(t, newObjs(lws, 6)...)
+		plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-1", false)
+		if err != nil {
+			t.Fatalf("planRollingUpdate() error = %v", err)
+		}
+		if plan.replicas != 5 {
+			t.Fatalf("replicas = %d, want 5", plan.replicas)
+		}
+	})
+}
