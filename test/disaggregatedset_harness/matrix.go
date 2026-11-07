@@ -49,6 +49,10 @@ var Definitions = []Definition{
 	{"native-restart", "worker and leader crashes recreate only their affected group", false},
 	{"outage", "1P/2D in three slots; integer/percentage permitted outage", false},
 	{"emergency", "bootstrap + real ≥60s Unschedulable fallback; 1P/4D", false},
+	{"canary", "4P/8D: 25→50→25→0→25, resize both revisions, then 100%; both policies", false},
+	{"canary-subroles", "same reversible canary with Prefill/Decode sharing one physical LWS", false},
+	{"canary-chain", "hold A at 50%; replace B with C inside the other 50%; preserve A Pods", false},
+	{"canary-chain-subroles", "same A→B→C hold with Prefill/Decode sharing one physical LWS", false},
 	{"large-rename", "optional 9P/4D→8P/3D rename in thirteen slots", false},
 	{"large-scale-up", "37P/19D→55P/29D while rolling out; Immediate", true},
 	{"large-scale-down", "37P/19D→28P/14D; 10% budgets; both policies", true},
@@ -114,7 +118,7 @@ func Matrix(s Selection) ([]Case, error) {
 		}
 		seen[n] = true
 		policies := []string{"Deferred"}
-		if n == "scale-down" || n == "large-scale-down" {
+		if n == "scale-down" || n == "large-scale-down" || n == "canary" || n == "canary-subroles" {
 			policies = []string{"Deferred", "Immediate"}
 			if s.Policy != "" {
 				policies = []string{s.Policy}

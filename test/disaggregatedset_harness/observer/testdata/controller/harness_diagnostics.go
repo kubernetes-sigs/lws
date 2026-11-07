@@ -124,11 +124,22 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 		inputs := buildRolloutInputs(ds, old, target, desired, readiness)
 		candidates := []map[string]any{}
 		var steadyBounds any
+		restoration := []map[string]any{}
 		if len(missing) == 0 {
+			if inputs.proportionalCanary {
+				stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, readiness)
+				others := slices.DeleteFunc(slices.Clone(old), func(r disaggutils.RevisionRoles) bool { return r.Revision == stable.Revision })
+				for _, candidate := range append(orderedRevisionCandidates(others, readiness), target) {
+					state := canaryRestorationState(old, target, stable, candidate, inputs)
+					row := harnessCandidate(inputs.allRoleNames, state)
+					row["preview"] = harnessStep(canaryRestorationStep(state))
+					row["direction"], row["drainingRevision"], row["growingRevision"] = "restore-stable-share", candidate.Revision, stable.Revision
+					row["previewMeaning"] = "Theoretical restoration: Past means this concrete canary; New means the stable revision. Other canaries are parked. Compatibility and controller write receipts are not modeled; this preview does not select the winning candidate."
+					restoration = append(restoration, row)
+				}
+			}
 			for _, active := range orderedRevisionCandidates(old, readiness) {
-				state := rolloutStateForRevision(inputs.allRoleNames, old, active, target, inputs.targetReplicas, inputs.config, readiness)
-				state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
-				state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
+				state := inputs.stateForRevision(old, active, target)
 				row := harnessCandidate(inputs.allRoleNames, state)
 				row["revision"] = active.Revision
 				// Like the executor, scheduler recovery is considered only after
@@ -141,17 +152,17 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 				candidates = append(candidates, row)
 			}
 			if len(candidates) == 0 {
-				state := rolloutStateForRevision(inputs.allRoleNames, old, disaggutils.RevisionRoles{}, target, inputs.targetReplicas, inputs.config, readiness)
-				state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
-				state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
+				state := inputs.stateForRevision(old, disaggutils.RevisionRoles{}, target)
 				steadyBounds = harnessCandidate(inputs.allRoleNames, state)["bounds"]
 			}
 		}
-		sliceRows = append(sliceRows, map[string]any{"slice": index, "roles": inputs.allRoleNames, "desired": inputs.targetReplicas, "candidates": candidates, "steadyBounds": steadyBounds})
+		sliceRows = append(sliceRows, map[string]any{"slice": index, "roles": inputs.allRoleNames, "desired": inputs.targetReplicas,
+			"candidates": candidates, "steadyBounds": steadyBounds, "stableRevision": inputs.stableRevision, "canaryRestoration": restoration})
 	}
 	return map[string]any{"schemaVersion": 1, "observedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		"observation": "independent-informer", "name": ds.Name, "namespace": ds.Namespace,
-		"targetRevision": revision, "policy": ds.Spec.ScalingPolicy, "lws": lwsRows, "slices": sliceRows, "warnings": warnings}, nil
+		"targetRevision": revision, "policy": ds.Spec.ScalingPolicy, "rolloutStrategy": ds.Spec.RolloutStrategy,
+		"lws": lwsRows, "slices": sliceRows, "warnings": warnings}, nil
 }
 
 // Match controller revision selection without writing its migration marker.

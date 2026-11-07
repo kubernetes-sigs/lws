@@ -1,10 +1,14 @@
 # Prepared harness scenarios
 
-`scenarios/small/` and `scenarios/large/` contain one gzip-compressed drawing per recorded scenario. The catalog is `site/data/trace_player.json`; documentation examples reuse `/animations/*.json`.
+`scenarios/small/`, `scenarios/large/`, and `scenarios/canary/` contain one gzip-compressed drawing per recorded scenario. The catalog is `site/data/trace_player.json`; documentation examples reuse `/animations/*.json`.
 
 These assets replay historical harness recordings, not a live cluster connection. They preserve the original Canvas renderer's observations, event explanations, readiness/limit metrics, outcomes, and inspection details. API snapshots and planner previews were captured independently; the diagrams do not invent intermediate states or make them atomic. They use the same finite drawing format as the documentation animations. Every file includes original provenance, source trace and renderer hashes, and observation/card references. No controller calculations, trace-normalization engine, videos, or duplicate source traces are shipped here.
 
-Regenerate from a separate `disaggregatedset-trace-player` checkout:
+The twelve canary recordings cover Ordinal and Hash identities, ordinary and virtual roles, percentage increases and reversals, External scaler handoff and proportional resizing. Four cases keep A's half unchanged while B rolls to C. Their compact narration runs for about two minutes per ordinary case and one minute per chained rollout. Every successful API view remains in order: changed Pod states, counts, percentages or planner fields stay visible for at least one second; unchanged views use a short dwell. The player clock measures presentation time, while each view retains its actual acquisition time and planner-preview age.
+
+The canary presentation removes repeated passing-check pages, duplicate trigger explanations and separate pages for recurring Events. It retains their recorded sequence and verdicts in `source.recordedSteps`, per-frame evidence, and `source.recordedOutcome`; failed checks and failed-read markers remain visible. `source.originalDrawing` links to the complete earlier narration at its original Git revision. Displayed percentages come from the recorded API sample; introductions describe expected behavior. Empty cleanup placeholders from preceding cases are hidden, while any observed cleanup Pods remain visible. The compact timeline is defined in `site/scripts/canary-presentation.mjs`. Export it with the standalone renderer, applying `site/scripts/canary-renderer.mjs` to its render source in memory. These adapters change narration, dwell times and empty display rows, not the source observations or controller behavior.
+
+Regenerate the bundled small/large recordings from a separate `disaggregatedset-trace-player` checkout:
 
 ```sh
 pnpm install --frozen-lockfile
