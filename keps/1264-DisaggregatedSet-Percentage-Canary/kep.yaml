@@ -1,0 +1,14 @@
+title: DisaggregatedSet Percentage Canary
+kep-number: 1264
+authors:
+  - hasB4K
+status: provisional
+creation-date: 2026-11-02
+reviewers:
+  - ahg-g
+approvers:
+  - ahg-g
+see-also:
+  - /keps/766-DisaggregatedSet
+  - /keps/1022-DisaggregatedSet-Scaling-During-Rollout
+stage: alpha
