@@ -16,7 +16,7 @@
 
 ## Summary
 
-Add an optional `spec.rolloutStrategy.canaryPercent` to hold a DisaggregatedSet rollout at one percentage across all roles and sub-roles. It supports both Ordinal and Hash groups. This is an independent alternative to per-role integer partitions, built directly on the existing DisaggregatedSet planner. It does not enable the unsupported `spec.roles[].spec.rolloutStrategy.rollingUpdateConfiguration.partition` field.
+Add an optional `spec.rolloutStrategy.canaryPercent` to hold a DisaggregatedSet rollout at one percentage across all roles and sub-roles. It supports both Ordinal and Hash groups. This is an independent alternative to per-role integer partitions, built directly on the existing DisaggregatedSet planner.
 
 ## Motivation
 
