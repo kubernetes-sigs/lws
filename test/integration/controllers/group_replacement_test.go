@@ -392,4 +392,106 @@ var _ = ginkgo.Describe("Group replacement policy", func() {
 			return !podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate)
 		}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 	})
+
+	ginkgo.It("paces combined template update and scale-up in Hash mode against the pre-rollout availability floor (#717)", func() {
+		ctx := context.Background()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lws-ns-"}}
+		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+
+		lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).MaxUnavailable(1).MaxSurge(0).Obj()
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
+
+		var deploy appsv1.Deployment
+		gomega.Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &deploy)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		rev1 := deploy.Labels[leaderworkerset.RevisionKey]
+
+		oldLeader := makeHashLeader(lws, "old-leader", rev1, false)
+		oldLeader.Finalizers = []string{"lws.test/hold"}
+		gomega.Expect(k8sClient.Create(ctx, oldLeader)).To(gomega.Succeed())
+
+		ginkgo.By("applying a combined scale-up (1 -> 2) and worker template update")
+		gomega.Eventually(func(g gomega.Gomega) {
+			var current leaderworkerset.LeaderWorkerSet
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+			current.Spec.Replicas = &[]int32{2}[0]
+			current.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "nginx:1.26"
+			g.Expect(k8sClient.Update(ctx, &current)).To(gomega.Succeed())
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		ginkgo.By("widening Deployment maxUnavailable to 2 (desired 2 - floor 0) and recording baseline=1")
+		var rev2 string
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &deploy)).To(gomega.Succeed())
+			g.Expect(*deploy.Spec.Replicas).To(gomega.Equal(int32(2)))
+			g.Expect(deploy.Labels[leaderworkerset.RevisionKey]).NotTo(gomega.Equal(rev1))
+			rev2 = deploy.Labels[leaderworkerset.RevisionKey]
+			g.Expect(deploy.Annotations["leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"]).To(gomega.Equal("1"))
+			g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal).To(gomega.Equal(int32(2)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		ginkgo.By("ungating the added slot immediately while holding the replacement gated until old-leader terminates")
+		gomega.Expect(k8sClient.Delete(ctx, oldLeader)).To(gomega.Succeed())
+		newAdd := makeHashLeader(lws, "new-leader-a", rev2, true)
+		newReplace := makeHashLeader(lws, "new-leader-b", rev2, true)
+		gomega.Expect(k8sClient.Create(ctx, newAdd)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Create(ctx, newReplace)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			var podA, podB corev1.Pod
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(newAdd), &podA)).To(gomega.Succeed())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(newReplace), &podB)).To(gomega.Succeed())
+			gatedCount := 0
+			if podutils.HasSchedulingGate(&podA, leaderworkerset.GroupReplacementSchedulingGate) {
+				gatedCount++
+			}
+			if podutils.HasSchedulingGate(&podB, leaderworkerset.GroupReplacementSchedulingGate) {
+				gatedCount++
+			}
+			g.Expect(gatedCount).To(gomega.Equal(1))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		ginkgo.By("releasing old-leader so both new groups ungate and converge, clearing baseline and restoring maxUnavailable=1")
+		gomega.Eventually(func() error {
+			var pod corev1.Pod
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(oldLeader), &pod); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			pod.Finalizers = nil
+			return k8sClient.Update(ctx, &pod)
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+		for _, name := range []string{newAdd.Name, newReplace.Name} {
+			key := types.NamespacedName{Name: name, Namespace: lws.Namespace}
+			gomega.Eventually(func(g gomega.Gomega) {
+				var pod corev1.Pod
+				g.Expect(k8sClient.Get(ctx, key, &pod)).To(gomega.Succeed())
+				g.Expect(podutils.HasSchedulingGate(&pod, leaderworkerset.GroupReplacementSchedulingGate)).To(gomega.BeFalse())
+				pod.Status = corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						{Type: leaderworkerset.GroupReadyConditionType, Status: corev1.ConditionTrue},
+					},
+				}
+				g.Expect(k8sClient.Status().Update(ctx, &pod)).To(gomega.Succeed())
+			}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		}
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &deploy)).To(gomega.Succeed())
+			if deploy.Status.ObservedGeneration < deploy.Generation || deploy.Status.ReadyReplicas != 2 {
+				deploy.Status.ObservedGeneration = deploy.Generation
+				deploy.Status.Replicas = 2
+				deploy.Status.UpdatedReplicas = 2
+				deploy.Status.ReadyReplicas = 2
+				g.Expect(k8sClient.Status().Update(ctx, &deploy)).To(gomega.Succeed())
+			}
+			g.Expect(deploy.Annotations).NotTo(gomega.HaveKey("leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"))
+			g.Expect(deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal).To(gomega.Equal(int32(1)))
+		}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+	})
 })

@@ -37,7 +37,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// The default value is 0.
 	Partition *int32 `json:"partition,omitempty"`
 	// maxUnavailable is the maximum number of replicas that can be unavailable during the update.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
+	// Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
 	// Absolute number is calculated from percentage by rounding down.
 	// This can not be 0 if MaxSurge is 0.
 	// By default, a fixed value of 1 is used.
@@ -46,11 +46,19 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// can be scaled down further, followed by scaling up the new replicas, ensuring
 	// that at least 70% of original number of replicas are available at all times
 	// during the update.
+	// During combined template updates and scale-up (or scale-up during an active
+	// rolling update), disruption is paced against the pre-rollout availability floor
+	// max(0, min(baselineReplicas, spec.replicas) - maxUnavailable), where
+	// baselineReplicas is the non-surge replica count when the rollout started and
+	// a percentage maxUnavailable resolves against baselineReplicas for this floor:
+	// Pending scale-up additions do not consume existing groups' disruption budget,
+	// while whole Ready additional or surge groups provide replacement credit.
+	// A template update that supersedes an active rollout starts from the groups
+	// that are Ready at that time, so additions that became Ready are protected.
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 	// maxSurge is the maximum number of replicas that can be scheduled above the original number of
 	// replicas.
-	// Value can be an absolute number (ex: 5) or a percentage of total replicas at
-	// the start of the update (ex: 10%).
+	// Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
 	// Absolute number is calculated from percentage by rounding up.
 	// By default, a value of 0 is used.
 	// Example: when this is set to 30%, the new replicas can be scaled up by 30%

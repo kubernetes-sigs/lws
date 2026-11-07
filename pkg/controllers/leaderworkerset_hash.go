@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,8 +96,35 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
-	if err := r.pruneHashGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+	targetRevisionKey := revisionutils.GetRevisionKey(revision)
+	if err := r.pruneHashGroupRestartCounts(ctx, lws, targetRevisionKey); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	var rolloutBaseline *int32
+	if deploy != nil {
+		lwsReplicas := *lws.Spec.Replicas
+		if deploy.Annotations[rolloutBaselineAnnotationKey] == "" {
+			if updatedRevision != nil {
+				rolloutBaseline = ptr.To(currentDeploymentRolloutBaseline(deploy, lwsReplicas))
+			}
+		} else {
+			// A recorded baseline belongs to the rollout of the Deployment's
+			// current revision. A new revision inherits it only while that
+			// rollout is still in progress.
+			converged, err := r.isHashRolloutConverged(ctx, lws, deploy, revisionKey)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			switch {
+			case !converged && updatedRevision != nil:
+				rolloutBaseline = ptr.To(supersedingDeploymentRolloutBaseline(deploy, lwsReplicas))
+			case !converged:
+				rolloutBaseline = ptr.To(resolveDeploymentRolloutBaseline(deploy, lwsReplicas))
+			case updatedRevision != nil:
+				rolloutBaseline = ptr.To(currentDeploymentRolloutBaseline(deploy, lwsReplicas))
+			}
+		}
 	}
 
 	// Scheduling prerequisites come before the leader Deployment so a leader pod
@@ -104,13 +132,13 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// be enumerated here because admission draws the group key of every leader
 	// pod; the pod controller materializes them while the leader is still
 	// scheduling gated.
-	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, revisionutils.GetRevisionKey(revision)); err != nil {
+	if err := r.reconcileWorkloadScheduling(ctx, lws, *lws.Spec.Replicas, targetRevisionKey); err != nil {
 		var scaleDown func() error
 		var updateStatus func() (bool, error)
 		if deploy != nil {
 			// The Deployment controller adds the surge pods of a rollout itself.
 			scaleDown = func() error { return r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas) }
-			updateStatus = func() (bool, error) { return r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision)) }
+			updateStatus = func() (bool, error) { return r.updateStatusHash(ctx, lws, targetRevisionKey) }
 		}
 		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
@@ -123,7 +151,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// Progressing=True would overwrite InvalidTemplate. Only for new or
 	// updated revisions, so steady-state reconciles add no API calls.
 	if needsWorkerTemplateProbe(lws) && (deploy == nil || updatedRevision != nil) {
-		if err := r.dryRunWorkerTemplate(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+		if err := r.dryRunWorkerTemplate(ctx, lws, targetRevisionKey); err != nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to validate worker statefulset template for %s: %v", lws.Name, err))
 			if apierrors.IsInvalid(err) {
 				r.recordInvalidTemplate(ctx, lws, err)
@@ -132,7 +160,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		}
 	}
 
-	if err := r.SSAWithDeployment(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+	if err := r.applyLeaderDeployment(ctx, lws, rolloutBaseline, targetRevisionKey); err != nil {
 		if deploy == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader deployment %s: %v", lws.Name, err))
 		} else {
@@ -154,7 +182,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{}, err
 	}
 
-	updateDone, err := r.updateStatusHash(ctx, lws, revisionutils.GetRevisionKey(revision))
+	updateDone, err := r.updateStatusHash(ctx, lws, targetRevisionKey)
 	if err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
@@ -162,10 +190,10 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{}, err
 	}
 	if updateDone {
-		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+		if err := revisionutils.TruncateRevisions(ctx, r.Client, lws, targetRevisionKey); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+		if err := r.cleanupObsoleteGroupRestartCounts(ctx, lws, targetRevisionKey); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -278,10 +306,79 @@ func (r *LeaderWorkerSetReconciler) scaleDownLeaderDeployment(ctx context.Contex
 	return r.Update(ctx, deploy)
 }
 
+func resolveDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
+	if raw := deploy.Annotations[rolloutBaselineAnnotationKey]; raw != "" {
+		if baseline, err := parseNonNegativeInt32(raw); err == nil {
+			return min(baseline, lwsReplicas)
+		}
+	}
+	return currentDeploymentRolloutBaseline(deploy, lwsReplicas)
+}
+
+// supersedingDeploymentRolloutBaseline returns the baseline that a new revision
+// inherits from an active rollout, raised to the leader pods the Deployment
+// reports available and capped at lwsReplicas. The readiness gate keeps a
+// leader unavailable until its workers are Ready, so available leaders are
+// whole Ready groups. Pending additions do not count. Additions that became
+// Ready during the superseded rollout do, so the new revision (or a rollback)
+// cannot disrupt them all at once.
+func supersedingDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
+	baseline := resolveDeploymentRolloutBaseline(deploy, lwsReplicas)
+	return min(lwsReplicas, max(baseline, deploy.Status.AvailableReplicas))
+}
+
+// currentDeploymentRolloutBaseline returns the baseline for a rollout that
+// starts from the Deployment's current size, ignoring any recorded baseline.
+func currentDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
+	deployReplicas := ptr.Deref(deploy.Spec.Replicas, 0)
+	if rawOriginal := deploy.Annotations[leaderworkerset.ReplicasAnnotationKey]; rawOriginal != "" {
+		if originalLwsReplicas, err := parseNonNegativeInt32(rawOriginal); err == nil {
+			return min(originalLwsReplicas, min(deployReplicas, lwsReplicas))
+		}
+	}
+	return min(deployReplicas, lwsReplicas)
+}
+
+// isHashRolloutConverged reports whether the Deployment's rollout of revisionKey
+// reached the Deployment's own desired count, with every leader on that
+// revision. It uses the Deployment's count, not the LWS's, so a scale request
+// or a new template that arrives after completion does not hide it. Readiness
+// is not required: an unready or budget-exhausted group must not leave a
+// baseline behind that relaxes the floor of the next rollout.
+func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, deploy *appsv1.Deployment, revisionKey string) (bool, error) {
+	desiredReplicas := ptr.Deref(deploy.Spec.Replicas, 0)
+	if deploy.Status.ObservedGeneration < deploy.Generation ||
+		deploy.Status.Replicas != desiredReplicas ||
+		deploy.Status.UpdatedReplicas != desiredReplicas {
+		return false, nil
+	}
+	var leaderPodList corev1.PodList
+	if err := r.List(ctx, &leaderPodList, client.InNamespace(lws.Namespace), client.MatchingLabels{
+		leaderworkerset.SetNameLabelKey:     lws.Name,
+		leaderworkerset.WorkerIndexLabelKey: "0",
+	}); err != nil {
+		return false, err
+	}
+	currentRevisionPods := 0
+	for i := range leaderPodList.Items {
+		pod := &leaderPodList.Items[i]
+		if revisionutils.GetRevisionKey(pod) == revisionKey {
+			currentRevisionPods++
+		} else if pod.DeletionTimestamp == nil {
+			return false, nil
+		}
+	}
+	return len(leaderPodList.Items) == 0 || currentRevisionPods >= int(desiredReplicas), nil
+}
+
 func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
+	return r.applyLeaderDeployment(ctx, lws, nil, revisionKey)
+}
+
+func (r *LeaderWorkerSetReconciler) applyLeaderDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, rolloutBaseline *int32, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	deploymentApplyConfig, err := constructLeaderDeploymentApplyConfiguration(lws, revisionKey)
+	deploymentApplyConfig, err := constructLeaderDeploymentApplyConfiguration(lws, rolloutBaseline, revisionKey)
 	if err != nil {
 		log.Error(err, "Constructing Deployment apply configuration.")
 		return err
@@ -301,9 +398,10 @@ func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *
 
 // constructLeaderDeploymentApplyConfiguration is the hash-identity analog of
 // constructLeaderStatefulSetApplyConfiguration. Rollout pacing (maxSurge and
-// maxUnavailable) maps directly onto the Deployment strategy; there is no
-// partition equivalent, ordering is delegated to the Deployment controller.
-func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (*appsapplyv1.DeploymentApplyConfiguration, error) {
+// maxUnavailable) maps onto the Deployment strategy; when an active rollout
+// scales above its pre-rollout baseline, maxUnavailable is widened so the
+// Deployment enforces the availability floor max(0, baseline - maxUnavailable).
+func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, rolloutBaseline *int32, revisionKey string) (*appsapplyv1.DeploymentApplyConfiguration, error) {
 	podTemplateApplyConfiguration, err := buildLeaderPodTemplateApplyConfiguration(lws, revisionKey)
 	if err != nil {
 		return nil, err
@@ -338,6 +436,16 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 		unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, 100, false)
 		if surgeErr == nil && unavailableErr == nil && surge == 0 && unavailable == 0 {
 			maxUnavailable = intstr.FromInt32(1)
+		}
+	}
+	if rolloutBaseline != nil {
+		deploymentAnnotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*rolloutBaseline))
+		if *lws.Spec.Replicas > *rolloutBaseline {
+			floor, err := rolloutFloor(lws, *rolloutBaseline, *lws.Spec.Replicas)
+			if err != nil {
+				return nil, err
+			}
+			maxUnavailable = intstr.FromInt32(*lws.Spec.Replicas - floor)
 		}
 	}
 

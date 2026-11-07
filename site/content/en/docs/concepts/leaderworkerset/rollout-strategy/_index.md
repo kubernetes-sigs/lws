@@ -80,28 +80,16 @@ Below is a trace in `Hash` mode (`groupReplacementPolicy: PostTermination`) for 
 
 ## Combined Template Update and Scale-Up
 
-When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `oldReplicas` to `newReplicas`) are updated together—or when `spec.replicas` is scaled up mid-rollout—both modes follow the same rules:
+When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `baseline` to `spec.replicas`) are updated together—or when `spec.replicas` is scaled up during an active rollout—both `Ordinal` and `Hash` modes follow the same rules:
 
-1. **Added capacity comes up on the new revision**:
-   - In `Ordinal` mode, the controller sets `partition = oldReplicas` while scaling to `newReplicas`, so new ordinals (`oldReplicas .. newReplicas - 1`) are created directly with the new template.
-   - In `Hash` mode, although the Deployment controller briefly scales the old `ReplicaSet` before rolling to the new `ReplicaSet`, gating prevents outdated leader pods from ever scheduling or creating workers; they are immediately deleted as the new `ReplicaSet` scales up.
-2. **Unready scaled-up groups count against `maxUnavailable`** (evaluated relative to `newReplicas`):
-   - **If `newReplicas - oldReplicas >= maxUnavailable`**: No existing old-revision groups are disrupted initially. Existing groups keep running until enough new groups become ready to free room within `maxUnavailable`.
-   - **If `newReplicas - oldReplicas < maxUnavailable`**: Up to `maxUnavailable - (newReplicas - oldReplicas)` existing old-revision groups begin updating immediately alongside the newly added groups.
-
-### Resource Deadlock When Reducing Per-Group Resources During Scale-Up ([#717](https://github.com/kubernetes-sigs/lws/issues/717))
-
-On capacity-constrained clusters (for example, a fixed pool of 8 GPUs), a common operation is **halving per-group resources while doubling `spec.replicas` in a single update** (such as `1 × 8 GPUs -> 2 × 4 GPUs`, or `4 × 8 GPUs -> 8 × 4 GPUs`) with default rollout settings (`maxUnavailable: 1`, `maxSurge: 0`).
-
-Because `newReplicas - oldReplicas >= maxUnavailable`, this update **deadlocks in both modes**: the controller refuses to terminate any old `8`-GPU group until a new `4`-GPU group becomes ready, but the new `4`-GPU groups stay `Pending` because the existing `8`-GPU groups still occupy all cluster GPUs.
-
-To avoid or recover from this state:
-
-1. **Update in two steps (recommended)**:
-   - First update `.spec.leaderWorkerTemplate` to the smaller per-group resource request while keeping `spec.replicas` unchanged. Once existing groups roll and free capacity, scale `spec.replicas` up.
-2. **Increase `maxUnavailable` above the scale-up delta (`maxUnavailable > newReplicas - oldReplicas`)**:
-   - **In `Hash` mode**: Setting `maxUnavailable` to at least `(newReplicas - oldReplicas) + 1` (e.g. `2` for `1 -> 2`, or `5` for `4 -> 8`) lets the Deployment immediately terminate one old `8`-GPU group. Once it exits, two new `4`-GPU groups fit into the freed capacity, and because any ready group increases Deployment availability regardless of order, the remaining old groups cascade through the rollout.
-   - **In `Ordinal` mode**: Because `partition` only steps down as tail ordinals become contiguously ready from the highest ordinal (`newReplicas - 1`) downward, freeing capacity for a lower pending ordinal (such as `R-4` while `R-7` stays `Pending`) does not advance `partition`. When multiple scaled-up ordinals are `Pending`, single-step recovery requires setting `maxUnavailable: 100%` (or `newReplicas`) so `partition` drops to `0` immediately.
+1. **Added capacity starts on the new revision**:
+   - In `Ordinal` mode, the controller sets `partition = baseline` while scaling to `spec.replicas` (plus any `maxSurge`), so newly added ordinals (`baseline .. spec.replicas - 1`) are created directly with the new template.
+   - In `Hash` mode, `group-replacement` scheduling gates prevent outdated leader pods from scheduling or creating workers while the new `ReplicaSet` scales up on the updated template.
+2. **Pre-rollout availability-floor pacing**:
+   - Controller-authorized disruption is paced against the pre-rollout non-surge floor `max(0, min(baseline, spec.replicas) - maxUnavailable)`. For this floor, a percentage `maxUnavailable` resolves against `baseline`, so a large scale-up does not widen the disruption of the existing groups. Elsewhere, percentage `maxUnavailable` and `maxSurge` resolve against desired `spec.replicas`:
+     - **Capacity-constrained reconfiguration (`maxUnavailable >= 1`)**: Pending scale-up additions do not consume existing groups' `maxUnavailable` budget. For example, halving per-group accelerators while doubling replicas (such as `1 × 8 GPUs -> 2 × 4 GPUs` or `4 × 8 GPUs -> 8 × 4 GPUs`) on a fixed GPU pool with default `maxUnavailable: 1, maxSurge: 0` immediately replaces an old `8`-GPU group so two `4`-GPU groups can schedule into the freed capacity and cascade through the remaining groups.
+     - **Zero-downtime growth (`maxUnavailable: 0, maxSurge > 0`)**: With `maxUnavailable: 0`, the floor equals `baseline`, so no existing group is disrupted while new groups are starting. Each newly added or surge group that becomes whole-group `Ready` (leader and all workers) grants credit to replace one old group while keeping at least `baseline` Ready groups available throughout the rollout.
+     - **Superseding updates and scale-down**: A superseding template update during an active rollout preserves the original pre-rollout `baseline`, raised to the number of groups that are whole-group `Ready` when the update arrives (capped at `spec.replicas`). Additions that became `Ready` during the superseded rollout are therefore protected, while `Pending` additions still do not count. The rollout stays active until every group runs the target revision (in `Ordinal` mode with a user `partition`, until the groups at or above it are also whole-group `Ready`); an unhealthy group alone does not keep it active, so the next rollout starts from a fresh `baseline`. Scaling `spec.replicas` down clamps the floor to `max(0, min(baseline, spec.replicas) - maxUnavailable)` and retires excess replicas immediately. A scale-down with no active rollout retires excess replicas as requested, even when some remaining groups are unready.
 
 ## MaxUnavailable Feature Gate
 
