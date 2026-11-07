@@ -41,7 +41,6 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
-	"sigs.k8s.io/lws/pkg/utils"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 )
@@ -118,6 +117,8 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 				return ctrl.Result{}, err
 			}
 			switch {
+			case !converged && updatedRevision != nil:
+				rolloutBaseline = ptr.To(supersedingDeploymentRolloutBaseline(deploy, lwsReplicas))
 			case !converged:
 				rolloutBaseline = ptr.To(resolveDeploymentRolloutBaseline(deploy, lwsReplicas))
 			case updatedRevision != nil:
@@ -314,6 +315,18 @@ func resolveDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int
 	return currentDeploymentRolloutBaseline(deploy, lwsReplicas)
 }
 
+// supersedingDeploymentRolloutBaseline returns the baseline that a new revision
+// inherits from an active rollout, raised to the leader pods the Deployment
+// reports available and capped at lwsReplicas. The readiness gate keeps a
+// leader unavailable until its workers are Ready, so available leaders are
+// whole Ready groups. Pending additions do not count. Additions that became
+// Ready during the superseded rollout do, so the new revision (or a rollback)
+// cannot disrupt them all at once.
+func supersedingDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
+	baseline := resolveDeploymentRolloutBaseline(deploy, lwsReplicas)
+	return min(lwsReplicas, max(baseline, deploy.Status.AvailableReplicas))
+}
+
 // currentDeploymentRolloutBaseline returns the baseline for a rollout that
 // starts from the Deployment's current size, ignoring any recorded baseline.
 func currentDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int32) int32 {
@@ -335,7 +348,6 @@ func currentDeploymentRolloutBaseline(deploy *appsv1.Deployment, lwsReplicas int
 func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, deploy *appsv1.Deployment, revisionKey string) (bool, error) {
 	desiredReplicas := ptr.Deref(deploy.Spec.Replicas, 0)
 	if deploy.Status.ObservedGeneration < deploy.Generation ||
-		revisionutils.GetRevisionKey(deploy) != revisionKey ||
 		deploy.Status.Replicas != desiredReplicas ||
 		deploy.Status.UpdatedReplicas != desiredReplicas {
 		return false, nil
@@ -429,13 +441,10 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	if rolloutBaseline != nil {
 		deploymentAnnotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*rolloutBaseline))
 		if *lws.Spec.Replicas > *rolloutBaseline {
-			unavailable, err := intstr.GetScaledValueFromIntOrPercent(&rollingUpdate.MaxUnavailable, int(*lws.Spec.Replicas), false)
+			floor, err := rolloutFloor(lws, *rolloutBaseline, *lws.Spec.Replicas)
 			if err != nil {
 				return nil, err
 			}
-			effectiveBaseline := min(*rolloutBaseline, *lws.Spec.Replicas)
-			effectiveUnavailable := int32(min(unavailable, int(*lws.Spec.Replicas)))
-			floor := utils.NonZeroValue(effectiveBaseline - effectiveUnavailable)
 			maxUnavailable = intstr.FromInt32(*lws.Spec.Replicas - floor)
 		}
 	}

@@ -49,9 +49,12 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// During combined template updates and scale-up (or scale-up during an active
 	// rolling update), disruption is paced against the pre-rollout availability floor
 	// max(0, min(baselineReplicas, spec.replicas) - maxUnavailable), where
-	// baselineReplicas is the non-surge replica count when the rollout started:
+	// baselineReplicas is the non-surge replica count when the rollout started and
+	// a percentage maxUnavailable resolves against baselineReplicas for this floor:
 	// Pending scale-up additions do not consume existing groups' disruption budget,
 	// while whole Ready additional or surge groups provide replacement credit.
+	// A template update that supersedes an active rollout starts from the groups
+	// that are Ready at that time, so additions that became Ready are protected.
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 	// maxSurge is the maximum number of replicas that can be scheduled above the original number of
 	// replicas.

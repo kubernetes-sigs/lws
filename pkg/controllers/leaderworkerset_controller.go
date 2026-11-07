@@ -735,11 +735,35 @@ func currentRolloutBaseline(sts *appsv1.StatefulSet, lwsReplicas int32) (int32, 
 	return min(originalLwsReplicas, min(stsReplicas, lwsReplicas)), nil
 }
 
+// raiseBaselineToReady raises the baseline that a superseding revision inherits
+// to the number of whole-group Ready groups, capped at lwsReplicas. The floor of
+// the new rollout is the availability it starts from. Pending additions do not
+// count. Additions that became Ready during the superseded rollout do, so the
+// new revision (or a rollback) cannot disrupt them all at once.
+func raiseBaselineToReady(baseline int32, states []replicaState, lwsReplicas int32) int32 {
+	return min(lwsReplicas, max(baseline, countReadyStates(states)))
+}
+
+// rolloutFloor returns the number of Ready groups that controller-authorized
+// disruption keeps during a rollout: max(0, min(baseline, lwsReplicas) -
+// maxUnavailable). A percentage maxUnavailable resolves against the baseline
+// here, not against desired spec.replicas, so a scale-up during the rollout
+// does not widen the disruption of the existing groups.
+func rolloutFloor(lws *leaderworkerset.LeaderWorkerSet, baseline, lwsReplicas int32) (int32, error) {
+	effectiveBaseline := min(baseline, lwsReplicas)
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(effectiveBaseline), false)
+	if err != nil {
+		return 0, err
+	}
+	return utils.NonZeroValue(effectiveBaseline - int32(min(maxUnavailable, int(effectiveBaseline)))), nil
+}
+
 // supersedingRolloutBaseline returns the baseline for a new template revision.
 // A recorded baseline belongs to the rollout of the StatefulSet's current
 // revision. The new revision inherits it only while that rollout is still in
-// progress. Once every desired group runs the current revision, the recorded
-// baseline is stale (the clearing pass has not run yet) and is ignored.
+// progress, raised to the groups that are Ready now (see raiseBaselineToReady).
+// Once every desired group runs the current revision, the recorded baseline is
+// stale (the clearing pass has not run yet) and is ignored.
 func (r *LeaderWorkerSetReconciler) supersedingRolloutBaseline(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, userPartition int32) (int32, error) {
 	lwsReplicas := *lws.Spec.Replicas
 	if sts.Annotations[rolloutBaselineAnnotationKey] == "" || sts.Spec.UpdateStrategy.RollingUpdate == nil || sts.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
@@ -760,7 +784,11 @@ func (r *LeaderWorkerSetReconciler) supersedingRolloutBaseline(ctx context.Conte
 		return 0, err
 	}
 	if rolloutBaselineActive(states, *sts.Spec.UpdateStrategy.RollingUpdate.Partition, userPartition, previousReplicas) {
-		return resolveRolloutBaseline(sts, lwsReplicas)
+		baseline, err := resolveRolloutBaseline(sts, lwsReplicas)
+		if err != nil {
+			return 0, err
+		}
+		return raiseBaselineToReady(baseline, states, lwsReplicas), nil
 	}
 	return currentRolloutBaseline(sts, lwsReplicas)
 }
@@ -777,8 +805,9 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 
 // planRollingUpdate paces Ordinal rolling updates against the pre-rollout
 // non-surge availability floor max(0, min(baseline, spec.replicas) - maxUnavailable)
-// so Pending scale-up additions do not consume existing groups' disruption
-// budget, while Ready additions or surge groups can offset replacements.
+// (see rolloutFloor) so Pending scale-up additions do not consume existing
+// groups' disruption budget, while Ready additions or surge groups can offset
+// replacements.
 func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revisionKey string, leaderWorkerSetUpdated bool) (plan rollingUpdatePlan, err error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("leaderworkerset", klog.KObj(lws))
 	ctx = ctrl.LoggerInto(ctx, log)
@@ -852,9 +881,10 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 			}, nil
 		}
 		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsReplicas)
-		effectiveBaseline := min(baseline, lwsReplicas)
-		effectiveUnavailable := int32(min(maxUnavailable, int(lwsReplicas)))
-		floor := utils.NonZeroValue(effectiveBaseline - effectiveUnavailable)
+		floor, err := rolloutFloor(lws, baseline, lwsReplicas)
+		if err != nil {
+			return rollingUpdatePlan{}, err
+		}
 		var requeue bool
 		if targetReplicas < stsReplicas && floor > 0 {
 			states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
@@ -899,10 +929,15 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		if err != nil {
 			return rollingUpdatePlan{}, err
 		}
+		floor, err := rolloutFloor(lws, baseline, lwsReplicas)
+		if err != nil {
+			return rollingUpdatePlan{}, err
+		}
 		return rollingUpdatePlan{
 			partition: partition,
 			replicas:  lwsReplicas,
 			baseline:  ptr.To(baseline),
+			floor:     floor,
 		}, nil
 	}
 
@@ -914,9 +949,10 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	if err != nil {
 		return rollingUpdatePlan{}, err
 	}
-	effectiveBaseline := min(baseline, lwsReplicas)
-	effectiveUnavailable := int32(min(maxUnavailable, int(lwsReplicas)))
-	floor := utils.NonZeroValue(effectiveBaseline - effectiveUnavailable)
+	floor, err := rolloutFloor(lws, baseline, lwsReplicas)
+	if err != nil {
+		return rollingUpdatePlan{}, err
+	}
 	stsObserved := sts.Status.ObservedGeneration == 0 || sts.Status.ObservedGeneration >= sts.Generation
 
 	// Case 4: Desired replicas shrank during an active rolling update. Apply the
@@ -931,14 +967,18 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 		lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+		// The floor is a rollout guarantee. A plain scale-down with no active
+		// rollout retires excess ordinals as requested, even while some of the
+		// remaining groups are unready.
+		rolloutActive := hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas)
 		if hasUncertain {
 			targetReplicas = max(targetReplicas, stsReplicas)
-		} else {
+		} else if rolloutActive {
 			targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
 		}
 		recordSurgeDeletionEvent(targetReplicas)
 		var nextBaseline *int32
-		if !stsObserved || hasRolloutBaseline || hasUncertain || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
+		if !stsObserved || hasUncertain || rolloutActive {
 			nextBaseline = ptr.To(baseline)
 		}
 		return rollingUpdatePlan{
@@ -982,8 +1022,12 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 
 	// Case 5: Advance partition as far as the availability floor allows.
-	rawTargetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
-	targetReplicas := preserveFloorDuringSurgeTrim(states, rawTargetReplicas, stsReplicas, floor)
+	targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+	// Surplus ordinals of a completed rollout are retired as computed. The
+	// floor guard only delays that while a rollout is active.
+	if hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
+		targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
+	}
 	recordSurgeDeletionEvent(targetReplicas)
 	activeStates := states[:min(len(states), int(targetReplicas))]
 	nextPartition := rollingUpdatePartitionWithFloor(activeStates, floor, min(partition, targetReplicas), userPartition)
