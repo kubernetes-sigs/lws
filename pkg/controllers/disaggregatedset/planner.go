@@ -111,7 +111,7 @@ func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState 
 	}
 	for i, desired := range snapshot.Target.DesiredReplicas {
 		parked := max(0, snapshot.old.parkedReady[i].usable)
-		if disjoint {
+		if disjoint || snapshot.ProportionalCanary {
 			parked = 0
 		}
 		residual := desired - parked
@@ -123,10 +123,12 @@ func targetReplicasForActiveRevision(snapshot rolloutSnapshot) RoleReplicaState 
 	return targets
 }
 
+// The canary is a growth ceiling, not a smaller phase: the coordination window
+// still measures each role against its whole phase.
 func furthestNewTargets(snapshot rolloutSnapshot, phase, limits RoleReplicaState) RoleReplicaState {
 	targets := make(RoleReplicaState, len(phase))
 	for i := range targets {
-		targets[i] = min(phase[i], limits[i])
+		targets[i] = min(phase[i], limits[i], snapshot.canaryCeiling(i))
 	}
 	return boundGrowingSnapshotTargets(snapshot, phase, targets)
 }
@@ -263,7 +265,8 @@ func snapshotWithBootstrapSurge(snapshot rolloutSnapshot, phase, normalLimits Ro
 		}
 		ceiling := snapshot.surgeCeiling(i)
 		coordinationBlocked := (snapshot.ScaleDownDuringRollout || scaleUp) && old+current == ceiling && snapshot.Target.ReadyReplicas[i] >= current
-		if config.MaxSurge+config.MaxUnavailable > 0 && phase[i] > current && normalLimits[i] == current &&
+		// A role held at its requested canary share is not blocked.
+		if config.MaxSurge+config.MaxUnavailable > 0 && min(phase[i], snapshot.canaryCeiling(i)) > current && normalLimits[i] == current &&
 			(current == 0 || coordinationBlocked) {
 			bootstrap.Config[i].MaxSurge = max(config.MaxSurge+1, config.MaxSurge+old-ceiling+1)
 			needed = true
@@ -311,6 +314,18 @@ func demandExceedsOldBaseline(snapshot rolloutSnapshot) bool {
 func boundDrainingSnapshotTargets(snapshot rolloutSnapshot, proposed RoleReplicaState) RoleReplicaState {
 	old := snapshot.ActiveOld
 	bounded := boundDrainingRoleTargetsToWindow(old.SpecReplicas, old.InitialReplicas, proposed)
+	if snapshot.ProportionalCanary {
+		// Replenished old groups belong to today's desired split. Count parked
+		// revisions once, then translate the aggregate bound back to this candidate.
+		total := make(RoleReplicaState, len(proposed))
+		for i := range total {
+			total[i] = proposed[i] + snapshot.old.spec[i] - old.SpecReplicas[i]
+		}
+		bounded = boundDrainingRoleTargetsToWindow(snapshot.old.spec, snapshot.Target.DesiredReplicas, total)
+		for i := range bounded {
+			bounded[i] -= snapshot.old.spec[i] - old.SpecReplicas[i]
+		}
+	}
 	if snapshot.ScaleDownDuringRollout || demandExceedsOldBaseline(snapshot) {
 		for i, desired := range snapshot.Target.DesiredReplicas {
 			if desired > 0 {

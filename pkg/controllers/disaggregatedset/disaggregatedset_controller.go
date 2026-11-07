@@ -172,6 +172,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Collect per-slice errors and join them; a non-nil result requeues the whole set.
 	var result ctrl.Result
 	var errs []error
+	// A slice that is pending or failed may be rolling unobserved, so no hold
+	// is reported for the set.
+	settled := true
 	// Scaler reconciliation should normally resolve every desired role. A target
 	// can remain unresolved only when a generated scaler cannot be created or
 	// adopted because its name is occupied by an object this DS does not own.
@@ -188,6 +191,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			sliceResult, err := r.reconcileSlice(ctx, executor, disaggregatedSet, slice, revision, desiredReplicasByRole)
 			if errors.Is(err, errReplicaGroupsPending) {
 				sliceResult, err = ctrl.Result{RequeueAfter: time.Second}, nil
+				settled = false
 			}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("slice %d: %w", slice, err))
@@ -205,7 +209,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Observe status after workload writes, including slices that failed to
 	// reconcile. DisaggregatedSet and scaler counts come from the same aggregate.
-	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers); errors.Is(statusErr, errStatusPending) || errors.Is(statusErr, errReplicaGroupsPending) {
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers, settled && len(errs) == 0 && executor.CanaryHeld(), executor.canaryBlocked); errors.Is(statusErr, errStatusPending) || errors.Is(statusErr, errReplicaGroupsPending) {
 		result = earliestRequeue(result, ctrl.Result{RequeueAfter: time.Second})
 	} else if statusErr != nil {
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))

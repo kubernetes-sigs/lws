@@ -235,6 +235,53 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetRolloutStrategy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec)
+
+
+<p>DisaggregatedSetRolloutStrategy configures a set-wide canary hold.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>canaryPercent</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>CanaryPercent is the canary share of each role or sub-role's desired replica
+groups, applied independently in every slice. Omitted or 100 applies no hold.
+The oldest revision with surviving groups is recorded as the baseline;
+that choice survives controller restarts. A later template update replaces
+the canary within its share while retaining the recorded baseline's share.
+Lowering the percentage restores baseline capacity within rollout budgets;
+0 drains canary groups but keeps the target LWS objects at zero replicas.
+For a durable rollback, restore the stable templates in Git. If they match
+the surviving baseline, the rollout converges fully to it without a hold.
+Also resetting CanaryPercent to 100 is recommended for future rollouts.
+It does not limit initial creation when there is no old revision.
+For 1..99, the canary count rounds up and keeps at least one group on each
+side. A positive one-group role cannot be split and blocks until replicas
+increase or CanaryPercent reaches 100. This is not a traffic percentage.
+While held, scaling changes baseline and canary shares under either
+scaling policy, including Deferred. Readiness and availability budgets may
+delay convergence. Percentage changes alone never recreate retired history.
+The active role/sub-role layout must match the recorded baseline; an
+incompatible baseline blocks even if a younger revision is compatible.
+An ambiguous initial choice or conflicting recorded baselines also blocks.
+Scaling a required role/sub-role to zero while peers remain positive blocks.
+Finish such layout changes at 100; scaling the whole set to zero is allowed.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
     
 
@@ -342,6 +389,14 @@ Changing Slices scales copies up or down and does not trigger a rollout.</p>
    <p>ScalingPolicy controls scale-up and scale-down during rolling updates.
 Omit it to use Deferred for both directions: readiness-paced growth and
 target reductions after old revisions drain.</p>
+</td>
+</tr>
+<tr><td><code>rolloutStrategy</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy"><code>DisaggregatedSetRolloutStrategy</code></a>
+</td>
+<td>
+   <p>RolloutStrategy controls progressive delivery across all roles and sub-roles.
+Changing it does not create a new revision.</p>
 </td>
 </tr>
 <tr><td><code>placementPolicy</code><br/>

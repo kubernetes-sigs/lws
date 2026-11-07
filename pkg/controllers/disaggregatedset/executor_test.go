@@ -3659,7 +3659,14 @@ func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	}
 	for _, group := range s.Groups {
 		if group.Ordinal >= f.start+n {
-			require.NoError(f.t, f.manager.client.Delete(f.t.Context(), group.Leader))
+			// The fake client has no garbage collector. Remove owned workers
+			// too, so a later growth can reuse the ordinal like the real controller.
+			for _, pod := range group.Pods {
+				require.NoError(f.t, client.IgnoreNotFound(f.nativeClient.Delete(f.t.Context(), pod)))
+			}
+			if group.WorkerStatefulSet != nil {
+				require.NoError(f.t, f.nativeClient.Delete(f.t.Context(), group.WorkerStatefulSet))
+			}
 		}
 	}
 	for ordinal := f.start; ordinal < f.start+n; ordinal++ {
@@ -4841,6 +4848,8 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 		for health := range 16 {
 			for _, target := range []map[string]int{{"a": 1, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 1}} {
 				t.Run(fmt.Sprint(children, health, target), func(t *testing.T) {
+					t.Parallel()
+
 					f := newSubRoleFixture(t, 7, children...)
 					for i, group := range f.observe().Groups {
 						if health&(1<<i) == 0 {
