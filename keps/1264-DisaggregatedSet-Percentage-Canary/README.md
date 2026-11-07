@@ -3,12 +3,16 @@
 <!-- toc -->
 - [Summary](#summary)
 - [Motivation](#motivation)
-- [Proposal](#proposal)
-  - [Replica counts and readiness](#replica-counts-and-readiness)
-  - [Scaling and interrupted rollouts](#scaling-and-interrupted-rollouts)
-  - [Rollback and explicit limitations](#rollback-and-explicit-limitations)
-  - [Status and progressive-delivery tools](#status-and-progressive-delivery-tools)
-- [Implementation](#implementation)
+- [Proposed behavior](#proposed-behavior)
+  - [Choose how much to replace](#choose-how-much-to-replace)
+  - [Round to whole groups](#round-to-whole-groups)
+  - [Promote or reduce the canary](#promote-or-reduce-the-canary)
+  - [Scale while the canary is held](#scale-while-the-canary-is-held)
+  - [Replace B with C while keeping A](#replace-b-with-c-while-keeping-a)
+- [Remember which version to keep](#remember-which-version-to-keep)
+- [Safety and limitations](#safety-and-limitations)
+- [Status and Argo CD](#status-and-argo-cd)
+- [Implementation outline](#implementation-outline)
 - [Test plan](#test-plan)
 - [Alternatives](#alternatives)
 - [Implementation history](#implementation-history)
@@ -16,15 +20,23 @@
 
 ## Summary
 
-Add an optional `spec.rolloutStrategy.canaryPercent` to hold a DisaggregatedSet rollout at one percentage across all roles and sub-roles. It supports both Ordinal and Hash groups. This is an independent alternative to per-role integer partitions, built directly on the existing DisaggregatedSet planner.
+Add `spec.rolloutStrategy.canaryPercent` so an operator can try a new application version on part of a DisaggregatedSet before replacing the rest.
+
+For example, with four Prefill groups and eight Decode groups, `canaryPercent: 25` runs one Prefill and two Decode groups on the new version. The remaining groups stay on the previous version. The rollout waits there until the operator changes the percentage.
+
+The same field applies to every role, including virtual roles (sub-roles), with either Ordinal or Hash group identity. Increasing the percentage promotes the new version. Decreasing it restores more of the previous version, while that version is still available.
 
 ## Motivation
 
-A new inference engine should be able to serve a small amount of real traffic before the full workload is replaced. Today a DisaggregatedSet rollout keeps advancing as readiness permits. Operators need a deliberate hold, then promotion after manual checks or automated analysis.
+Today a rollout keeps replacing the old version as readiness permits. Being Ready is not enough to know whether a new engine behaves well under real traffic: an operator may want to inspect errors, latency, or model output before continuing.
 
-One percentage avoids making the promotion tool calculate and continuously update a separate integer for every role, virtual role, and autoscaler target. This controls replica groups, not traffic weights or GPU capacity; the routing layer still decides where requests go.
+A percentage provides an explicit place to pause. It also lets promotion tools use one value instead of calculating separate counts for every role and updating those counts whenever an autoscaler changes demand.
 
-## Proposal
+This percentage controls replica groups. A replica group contains a leader and its workers; it may use several Pods or GPUs. A 25% canary does not itself route 25% of requests to the new version. Traffic routing and application checks remain the responsibility of the deployment's existing tools.
+
+## Proposed behavior
+
+### Choose how much to replace
 
 ```yaml
 spec:
@@ -32,91 +44,174 @@ spec:
     canaryPercent: 25
 ```
 
-The field is an optional integer from 0 to 100. Omitted or 100 means no canary hold. Set 0 together with a template change to retain the baseline; raising the percentage advances the rollout and lowering it restores the baseline share while compatible baseline groups survive. Changing the percentage does not change the revision hash. Initial creation without an old revision still starts the full desired workload.
+The field accepts an integer from 0 to 100. In the examples below, **A** is the previous version kept as the **baseline**, and **B** is the new version described by the desired Pod templates.
 
-### Replica counts and readiness
+For four Prefill groups and eight Decode groups, the completed steps are:
 
-For each logical role, independently in each slice, let `d` be its resolved desired group count and `p` the percentage. During a partial hold (`0 < p < 100`, `d >= 2`):
+| `canaryPercent` | A: Prefill / Decode groups | B: Prefill / Decode groups | Result |
+| --- | --- | --- | --- |
+| `0` | 4 / 8 | 0 / 0 | Keep the workload on A. |
+| `25` | 3 / 6 | 1 / 2 | Try B on part of each role. |
+| `50` | 2 / 4 | 2 / 4 | Run half of each role on B. |
+| `100` or omitted | 0 / 0 | 4 / 8 | Finish replacing A with B. |
+
+These are the counts after each step settles. During a step, some groups may still be starting or terminating. The usual rollout checks control that transition.
+
+Changing only the percentage does not create another application revision. Set the percentage together with the template change to control how that rollout starts. If there is no previous version, initial creation starts the full desired workload regardless of the percentage.
+
+### Round to whole groups
+
+The controller calculates the split separately for each role, or each sub-role when a physical role has sub-roles. It repeats that calculation independently in each slice.
+
+For a percentage between 1 and 99, round the new share up to a whole group, while keeping at least one group on both versions. For example, 25% of four groups is one new group; 99% of two groups is still one old and one new. Use `100` to remove the last old group.
+
+For desired count `d >= 2` and percentage `0 < p < 100`, the exact rule is:
 
 ```text
 new = min(d - 1, max(1, ceil(d * p / 100)))
 old = d - new
 ```
 
-The new count rounds up but keeps at least one group on each revision. At 25%, four groups become three old and one new; eight groups become six old and two new. For a physical role containing sub-roles, the formula applies to each sub-role, not the parent's aggregate. At 0%, all desired groups remain old.
+A role with only one desired group cannot be split this way. The controller reports `CanaryBlocked` for a positive partial percentage. Zero percent can keep that single group on A.
 
-The planner receives an internal old-group hold derived from this formula. Existing availability budgets, revision completeness, and group assignment still apply. A hold is not declared until every rolling slice has no further step and every requested group is Ready at the desired total and requested split. The cross-role coordination window can delay a faster role. The settled replica share follows the formula; it is not a traffic split or a guarantee of application quality.
+### Promote or reduce the canary
 
-### Scaling and interrupted rollouts
+Changing `25` to `50` grows B's share and reduces A's share. Changing `50` back to `25` does the opposite: the controller starts more groups using A's existing templates and removes excess B groups.
 
-A percentage recalculates both shares when desired replicas change. A 25% hold at four groups is three old plus one new; increasing desired to eight becomes six old plus two new. Decreasing back to four returns to three old plus one new, under either ordinary scaling policy.
+Both directions use the existing rollout planner. For a role with four groups, moving from two A + two B to three A + one B illustrates the budget choices:
 
-Before normal forward planning, the executor restores a missing baseline share by using the existing planner in reverse: the baseline supplies replacement capacity and canary revisions may drain. Both directions enforce readiness, availability, and surge checks. For zero-surge rollouts, this can spend configured unavailability to make room; with surge, restoration can grow before it drains.
+- With `maxSurge: 1` and `maxUnavailable: 0`, an extra A group can start and become Ready before a B group is removed.
+- With `maxSurge: 0` and `maxUnavailable: 1`, the controller may remove a B group first to make room. That temporary reduction is explicitly allowed by the budget.
 
-The oldest revision with surviving groups is the baseline. Before the first partial scaling step, the controller records the choice on its LWS objects using the internal boolean annotation `disaggregatedset.x-k8s.io/canary-stable`. The recorded baseline is reused across reconciles, later canary templates, and controller restarts; B → C must not transfer the baseline from A to B. The marker disappears with A's LWS objects when A is fully promoted away.
+Restoring A preserves its saved templates, rollout settings, and original replica-count annotations. Newly requested groups count toward capacity usage, but cannot be counted as Ready before they are actually Ready.
 
-The baseline's layout is validated after selection: the controller must not silently choose a younger compatible canary when the oldest survivor is incompatible. With no recorded baseline, equally old surviving revisions make the choice ambiguous; conflicting markers also report `CanaryBlocked`. Set `100` to finish the current rollout before starting another canary rather than guessing a baseline.
+At `0`, B's LWS objects remain with `spec.replicas: 0`. They can be reused if the operator raises the percentage again.
 
-The baseline receives restored capacity with its historical templates, rollout budgets, and frozen initial-replica annotations unchanged. This ordering rule does not determine that it is the last known-good release; application analysis remains external. Loading groups count as requested capacity. Serving readiness is calculated per complete revision before aggregation: a Prefill in one revision and a Decode in another do not form a serving revision.
+> **To roll back permanently, restore A's templates in Git.** Setting `canaryPercent: 0` stops running B, but leaves B's templates desired. Raising the percentage or removing the field could deploy B again. Resetting `canaryPercent` to `100` in the same Git change is recommended so later rollouts do not inherit an unintended hold.
 
-An interrupted canary keeps the baseline separate from revisions being tested. If A and B are held at 50% and the templates change to C at the same percentage, A keeps its 50% share and B rolls to C within the remaining share. For four Prefill / eight Decode, this changes `A=2/4, B=2/4, C=0/0` into `A=2/4, B=0/0, C=2/4`. With demand and percentage unchanged, this replacement does not scale or recreate A's LWS or Pods. A and B are not interchangeable parts of an aggregate old quota.
+If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage reset to `100` starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
 
-During B → C, the canary share temporarily contains both B and C. The planner coordinates their replacement using budgets calculated from full workload demand; baseline A's serving readiness contributes to the availability floor. Temporary excess is bounded by surge, and B only drains when the remaining serving capacity permits it. The hold becomes settled once the latest canary C supplies the whole requested canary share.
+### Scale while the canary is held
 
-**During an active canary hold, the `Deferred` / `Immediate` settings for `scaleUpDuringRollout` and `scaleDownDuringRollout` are ignored: both revisions resize to preserve the requested percentage.** Started canary groups may therefore be removed when demand or the percentage decreases, even with `Deferred`. Readiness, availability, and surge checks still apply. An intentionally held rollout might never finish, so deferring these changes until completion would prevent proportional resizing. The configured scaling policies resume at `canaryPercent: 100` or when the field is removed; rollouts without an active percentage hold retain their existing behavior.
+The split follows the latest desired replica count, whether it comes from a Static role or an External scaler. For one role held at 25%:
 
-While held, coordination uses today's desired shares. After Prefill grows from four to twenty while Decode stays at eight, judging Prefill against its original four groups can prevent Decode from reaching its requested share. Using current demand keeps both roles progressing toward the same percentage. The usual readiness checks still limit every deletion. Promotion to 100 releases the baseline hold and completes the rollout to the current templates.
+| Change | Desired groups | A groups | B groups |
+| --- | --- | --- | --- |
+| Initial hold | 4 | 3 | 1 |
+| Scale up | 8 | 6 | 2 |
+| Scale down again | 4 | 3 | 1 |
 
-### Rollback and explicit limitations
+Each role follows its own desired count. If Prefill grows while Decode stays the same size, the controller uses those current counts to coordinate progress. It does not keep judging Prefill against its size before the scale-up.
 
-Lowering the percentage restores the old share and reduces the new share while compatible old history remains. For four Prefill and eight Decode groups, `50 → 25 → 0` changes the settled new counts from `2/4` to `1/2` to `0/0`. At zero, actual target LWS objects and their intended-replica annotations remain, with `spec.replicas: 0`; a subsequent promotion can grow them again.
+**During an active canary, `Deferred` and `Immediate` are ignored for both `scaleUpDuringRollout` and `scaleDownDuringRollout`.** Both revision shares resize to reach the requested split. This includes removing already-started B groups when demand or the percentage decreases. Otherwise a deliberately held rollout could prevent scale-down indefinitely.
 
-> **Zero percent is not a durable rollback.** The desired templates still describe the new revision. Raising the percentage or removing the field can deploy those templates again. **Restore the stable templates in Git** to make the rollback durable. If they match the surviving baseline, that baseline becomes the target and the rollout converges fully to it without a percentage hold. Resetting `canaryPercent` to `100` in the same change is recommended to avoid retaining a hold for later releases and to allow an ordinary rollout when the former baseline has gone. Normal rollout safety checks apply.
+Readiness and rollout safety checks still apply. The configured scaling policies resume when the percentage is `100` or omitted, or when there is no active canary, such as initial creation or a rollout whose old history has already gone.
 
-- A positive one-group logical role cannot be split while keeping both revisions within desired. Report `CanaryBlocked` until every affected role has at least two groups or the percentage reaches 100. Scaling a held role from two to one can therefore retain excess groups until one of those actions is taken. Zero percent can hold a singleton entirely old.
-- A fresh `External` role starts at one until its RoleScaler receives a scaling request. Initialize each active role or sub-role to at least two before requesting a positive partial canary.
-- Replenishment requires the recorded baseline to have the same active logical-role layout and surviving groups for every active role. A younger compatible revision does not replace an incompatible baseline. Renames, ordinary-role/sub-role conversion, and positive↔zero leaf changes are not mapped onto history. In particular, scaling one required role or sub-role to zero while peers remain positive reports `CanaryBlocked`; finish the layout change at 100. Scaling the whole set to zero remains allowed.
-- Percentage changes alone never recreate fully drained history. A completed rollout is not rewound by adding or lowering the percentage; without surviving old groups, the target converges normally. Restoring a surviving baseline's templates is different: that revision becomes the target, the hold is bypassed, and the set converges fully to it.
-- Integer rounding can make actual shares differ significantly for small roles: 99% of two groups remains one old plus one new until promotion to 100.
+### Replace B with C while keeping A
 
-### Status and progressive-delivery tools
+An operator may change the canary templates again before finishing the rollout. At a 50% hold, A must remain the baseline while C replaces B in the other half.
 
-A settled hold reports current-generation `Progressing=True`, reason `CanaryHeld`, with a message containing the requested percentage and observed new/desired role counts. `MinimumReplicasAvailable` remains the independent availability signal. Completion remains `Available=True`, reason `AllRolesReady`. `CanaryBlocked` explains why the split cannot currently be achieved and what action is required.
+For four Prefill and eight Decode groups:
 
-Argo CD can recognize these conditions through a custom health check; Git-driven promotion only changes the top-level percentage field. Kargo can automate this workflow by writing and syncing successive percentages in Git, then verifying the requested release and hold. Alternatively, an external controller can own the live percentage while Argo CD owns templates, with explicit field ownership so sync does not overwrite promotion. This does not make DisaggregatedSet a native Argo Rollouts `workloadRef`: an integration must bridge the APIs. Traffic routing and analysis metrics are separate concerns; Ready groups alone do not prove that an engine passed analysis.
+| Stage | A: Prefill / Decode | B: Prefill / Decode | C: Prefill / Decode |
+| --- | --- | --- | --- |
+| B is held at 50% | 2 / 4 | 2 / 4 | 0 / 0 |
+| C has replaced B | 2 / 4 | 0 / 0 | 2 / 4 |
 
-Verification of `External` roles must use each current RoleScaler's `spec.replicas`. A RoleScaler update does not change the DisaggregatedSet generation; `observedGeneration` alone therefore cannot establish that status includes the latest desired counts.
+While B is being replaced, B and C temporarily share the canary part. With demand and percentage unchanged, this replacement leaves A's LWS specs and existing Pods unchanged. B is not allowed to take over A's retained share merely because B is now also an older revision.
 
-A companion documentation PR will provide the complete health and optional manual-action configuration for stock Argo CD, along with field-ownership rules. No Argo CD source patch is required.
+The replacement uses rollout budgets calculated from the full desired workload, and A's serving groups still contribute to availability. The hold is reached again when C supplies the requested canary share and the intermediate B groups have drained.
 
-## Implementation
+## Remember which version to keep
 
-- Validate and preserve the new percentage field in the API and CRD. Per-role LWS partition rejection remains unchanged.
-- Derive internal `CanaryOldReplicas` limits in the existing executor; do not send a partition to child LWS resources.
-- Bound target growth and old drain by the hold; resize both revisions during a canary independently of ordinary Deferred/Immediate policy.
-- Reuse the planner in reverse to restore baseline capacity and safely reduce the canary share; calculate shares from current demand and serving readiness per complete revision.
-- Keep the baseline separate when canary templates change again: replace B with C within the canary share without consuming A's retained groups.
-- Record the baseline on its LWS objects before partial scaling; reuse the marker across restarts and block ambiguous or conflicting history.
-- Bypass the percentage hold when the surviving baseline is itself the desired target, allowing a Git template rollback to converge fully.
-- Preserve target LWS resources and intended counts at zero percent for later promotion.
-- Report a hold only after all rolling slices settle and all groups are Ready. Reuse the existing planner, observer, executor, and sub-role assignment logic.
+The controller needs to remember: **“A is the baseline for this canary.”** Revision IDs identify the templates in each LWS, but do not record that choice.
+
+It records the choice on A's LWS objects using this internal annotation:
+
+```yaml
+metadata:
+  annotations:
+    disaggregatedset.x-k8s.io/canary-stable: "true"
+```
+
+**Operators do not set this annotation.** The controller writes it before making canary scaling changes and reuses it on later reconciliations, after restarts, and when B is replaced by C. Marking A directly avoids copying the choice between successive canary versions or adding another resource to store it. When A's LWS objects are eventually deleted, their markers disappear too.
+
+Choosing the oldest revision on every reconciliation would work when creation times remain unambiguous. The marker makes the earlier choice explicit instead of continually inferring it from timestamps, which can tie. It does not certify that A passed application checks: “baseline” means the version retained for this rollout, not a release approved by Argo CD or an operator.
+
+For example, A has replicas and B's LWS exists at zero replicas, with the same recorded creation time. The controller can choose A because B has no replicas yet. It records A before growing B. Once both have replicas, timestamps alone would be ambiguous and the rollout would block; the marker preserves the choice already made.
+
+The selection rules are:
+
+1. Reuse the marked revision while it still has requested groups.
+2. Without a marker, choose the oldest revision that still has requested groups. The current implementation compares each revision's newest LWS creation time.
+3. If there is no marker and the oldest times tie, or different revisions with replicas carry conflicting markers, report `CanaryBlocked` rather than guess.
+4. Check that the chosen baseline still has the roles needed by the desired workload. Do not silently replace an incompatible baseline with a younger canary.
+
+A marker cannot resolve an ambiguous first choice that has never been recorded. In that case, finish the existing rollout at `100` before starting another canary.
+
+## Safety and limitations
+
+The controller keeps the existing planner and group-assignment safeguards. `maxSurge` normally limits extra groups, and `maxUnavailable` normally limits the temporary loss of serving capacity. The [existing recovery rules](../1022-DisaggregatedSet-Scaling-During-Rollout/README.md#keep-bounded-recovery) can still make limited exceptions to get a stuck rollout moving; this feature does not add new emergency overrides.
+
+Availability is calculated for complete revisions. A Ready Prefill group in A and a Ready Decode group in B do not form a working A or B deployment. Groups still starting, or already committed to deletion, cannot provide replacement readiness.
+
+Some changes require finishing the canary first:
+
+| Situation | Behavior and next step |
+| --- | --- |
+| An active role has only one desired group at 1–99%. | Report `CanaryBlocked`. Increase that role to at least two groups or finish at `100`. Scaling two groups down to one can therefore leave excess groups temporarily. |
+| A new External role has not received its first scaling request. | It starts with a desired count of one. Set every active role or sub-role to at least two before requesting a positive partial canary. |
+| Roles are renamed, or ordinary roles are changed into sub-roles. | The controller cannot map the old baseline onto the new layout. Finish the layout change at `100` before starting another canary. |
+| One role or sub-role changes between zero and a positive desired count while others remain active. | Report `CanaryBlocked` because the active roles no longer match the baseline. Finish that change at `100`. |
+| All roles scale to zero. | This is allowed. The current revision's empty LWS objects remain; once the old groups are gone, resuming scales the current version normally. |
+| The selected baseline is missing requested groups for a required role. | It cannot restore that role's share. Complete the rollout at `100`; the controller does not substitute another historical version. |
+| No old groups remain anywhere. | There is no active canary to preserve. The current revision scales normally, even if a partial percentage remains configured. |
+
+Small replica counts can differ substantially from the requested percentage because groups cannot be divided. Rollout progress also still depends on readiness, cross-role coordination, and enough schedulable capacity.
+
+## Status and Argo CD
+
+The controller reports a successful hold only when **every rolling slice** has reached the requested total and split, every requested group is Ready, intermediate canary revisions have drained, and no further rollout step is needed.
+
+| Status | Meaning |
+| --- | --- |
+| `Progressing=True`, reason `CanaryHeld` | The current generation has reached its requested hold. The message includes the percentage and each role's new/desired counts. |
+| `Available=True`, reason `AllRolesReady` | The rollout has completed to the current templates. |
+| `Progressing=True`, reason `CanaryBlocked` | The requested split cannot currently be made. The message explains the reason and required action. |
+| `MinimumReplicasAvailable` | The separate signal for whether minimum serving capacity is available. |
+
+Stock Argo CD can sync the percentage field and use a configured health check to recognize these conditions. An operator or Kargo can promote through Git by changing the percentage in successive commits. If another controller writes the percentage directly, Argo CD must be configured not to overwrite it during sync.
+
+For External scaling, checks must also use the current RoleScaler's `spec.replicas`. A scaler update does not change the DisaggregatedSet generation, so `observedGeneration` alone cannot prove that status reflects the latest demand.
+
+The [Argo CD documentation PR](https://github.com/kubernetes-sigs/lws/pull/1310) provides configuration and examples. No Argo CD source change is required. Native Argo Rollouts `workloadRef` support, traffic weights, and application analysis are outside this proposal; any such automation must explicitly connect those tools to the percentage and status checks.
+
+## Implementation outline
+
+The [implementation PR](https://github.com/kubernetes-sigs/lws/pull/1307) adds the API field and validation, then converts each role's requested split into limits for the existing planner.
+
+Normal forward planning replaces A with the canary while retaining A's required share. When A needs to grow, the same planner is used in the other direction: A provides replacement groups and canary revisions may shrink. The controller checks these plans before applying them, preserves A's historical settings, and waits when another safe step requires readiness.
+
+The controller recalculates the split and checks progress using the latest observations. The annotation records which revision is the baseline; it does not store replica targets or the next rollout step.
 
 ## Test plan
 
-- Percentage rounding, initial creation, unchanged revision hashing, zero/100 controls, forward and reverse changes, and no revival of fully drained history.
-- Held progress and completion with different surge/unavailability budgets; validate every simulated plan and availability floor.
-- Ordinal/Hash and Deferred/Immediate growth/downscale; asymmetric Prefill growth and downscale followed by full promotion.
-- Real observer and assignment paths for Ordinal/Hash virtual roles, preserving old annotations and checking actual group labels.
-- A → B → C at a fixed percentage, unchanged baseline group/LWS/Pod identities, multiple canary revisions, complementary incomplete revisions, singleton and layout restrictions, settled status, and every-slice readiness.
-- API-server/webhook persistence and range validation; unchanged rejection of unsupported per-role partitions.
-- Git → Argo CD promotion and external automation comparisons, including analysis failure, reversal, and resync while held.
+- Check rounding, valid percentage values, and that percentage-only changes do not create revisions.
+- Exercise promotion, reduction to zero, re-promotion, and Git template rollback with different surge and unavailability budgets.
+- Resize both shares with Ordinal and Hash groups, ordinary roles and sub-roles, and both configured scaling policies. Include asymmetric Prefill/Decode changes and controller restarts.
+- Keep A's workloads, Pod identities, and sub-role assignments while B rolls to C. Check multiple historical revisions and incomplete serving revisions.
+- Check baseline markers, ambiguous history, singleton roles, incompatible layouts, whole-set scale-to-zero, and every-slice hold reporting.
+- Validate API persistence and webhook behavior, plus Argo CD health and field ownership.
+- Use the [harness and recorded traces](https://github.com/kubernetes-sigs/lws/pull/1309) to check real groups, readiness gates, autoscaler handoff, and successive rollout steps.
 
 ## Alternatives
 
-Per-role integer partitions, proposed in [PR #1265](https://github.com/kubernetes-sigs/lws/pull/1265), reuse the familiar StatefulSet/LWS count. They let roles choose different fixed holds, but promotion tools must calculate and track each count as demand changes, and virtual roles need their own treatment. This proposal adapts the bounded-hold arithmetic without depending on that API or its commits. Only the percentage field is exposed by this alternative.
+[PR #1265](https://github.com/kubernetes-sigs/lws/pull/1265) proposes a separate integer partition for each role. That follows StatefulSet and LWS conventions and lets roles choose different holds. A promotion tool would need to calculate and update every partition as desired counts change.
+
+This proposal uses one percentage and lets DisaggregatedSet calculate the counts for every role and sub-role. It is implemented directly on the existing planner and does not depend on the per-role partition API.
 
 ## Implementation history
 
-- 2026-11-02: work-in-progress independent proposal for comparing set-wide percentage canaries with per-role integer partitions.
-- 2026-11-06: make active canaries reversible and resize both revisions proportionally under either scaling policy; document durable rollback and stock Argo CD ownership workflows.
-- 2026-11-06: retain the baseline when a held canary receives another template update; roll B to C within the canary share.
+- 2026-11-02: propose a percentage shared by all roles, as an alternative to per-role integer partitions.
+- 2026-11-06: add canary reversal, proportional resizing, Git rollback guidance, and stock Argo CD configuration.
+- 2026-11-06: retain A while a held canary changes from B to C.
