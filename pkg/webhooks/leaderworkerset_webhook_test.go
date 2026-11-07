@@ -1310,6 +1310,33 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			annotations:    map[string]string{v1.ExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone"},
 			subGroupPolicy: exclusive("rack"),
 		},
+		{
+			name: "group ExclusiveSlice is accepted without annotations",
+			groupPolicy: &v1.SubGroupPlacementPolicy{
+				Type:     v1.PlacementExclusiveSlice,
+				Topology: "topology.kubernetes.io/zone",
+			},
+		},
+		{
+			name: "group and subgroup ExclusiveSlice on different topologies",
+			groupPolicy: &v1.SubGroupPlacementPolicy{
+				Type:     v1.PlacementExclusiveSlice,
+				Topology: "topology.kubernetes.io/zone",
+			},
+			subGroupPolicy: &v1.SubGroupPlacementPolicy{
+				Type:     v1.PlacementExclusiveSlice,
+				Topology: "cloud.google.com/gke-nodepool",
+			},
+		},
+		{
+			name:        "group ExclusiveSlice on the subgroup annotation's topology",
+			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
+			groupPolicy: &v1.SubGroupPlacementPolicy{
+				Type:     v1.PlacementExclusiveSlice,
+				Topology: "rack",
+			},
+			errSubstr: "spec.placementPolicy.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
+		},
 	}
 
 	r := &LeaderWorkerSetWebhook{}
@@ -1371,9 +1398,25 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 		groupPolicy    *v1.SubGroupPlacementPolicy
 		subGroupPolicy *v1.SubGroupPlacementPolicy
 		errSubstr      string
+		errContains    string
 	}{
 		{name: "matching group annotation", annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"}, groupPolicy: rack},
 		{name: "matching subgroup annotation", annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"}, subGroupPolicy: rack},
+		{name: "group ExclusiveSlice without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"}},
+		{
+			name:        "group ExclusiveSlice with the annotation is rejected",
+			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			errSubstr:   "spec.placementPolicy.topology",
+			errContains: "requires removing annotation",
+		},
+		{
+			name:           "subgroup ExclusiveSlice with the annotation is rejected",
+			annotations:    map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
+			subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			errSubstr:      "spec.placementPolicy.subGroup.topology",
+			errContains:    "requires removing annotation",
+		},
 		{
 			name:        "different group annotation",
 			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "zone"},
@@ -1406,7 +1449,11 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.errSubstr+": Invalid value") || !strings.Contains(err.Error(), "conflicts with annotation") {
+			wantDetail := tc.errContains
+			if wantDetail == "" {
+				wantDetail = "conflicts with annotation"
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.errSubstr+": Invalid value") || !strings.Contains(err.Error(), wantDetail) {
 				t.Fatalf("expected a conflict on %s, got %v", tc.errSubstr, err)
 			}
 		})
@@ -1511,5 +1558,11 @@ func TestValidateSubGroupPlacementPolicyRequiresSubGroups(t *testing.T) {
 	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementNone})
 	if err := r.generalValidate(lws).ToAggregate(); err != nil {
 		t.Fatalf("expected a None subgroup placement to be accepted without subGroupPolicy, got %v", err)
+	}
+
+	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"})
+	err = r.generalValidate(lws).ToAggregate()
+	if err == nil || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
+		t.Fatalf("expected an ExclusiveSlice subgroup placement without subGroupPolicy to be rejected, got %v", err)
 	}
 }

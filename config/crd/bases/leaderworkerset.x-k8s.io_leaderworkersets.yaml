@@ -18539,16 +18539,18 @@ spec:
                           Defaults to None.
                         enum:
                         - None
+                        - ExclusiveSlice
                         - ExclusiveTopology
                         type: string
                     type: object
                     x-kubernetes-validations:
                     - message: topology is required when type is ExclusiveTopology
-                      rule: self.type != 'ExclusiveTopology' || (has(self.topology)
-                        && size(self.topology) > 0)
+                        or ExclusiveSlice
+                      rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSlice''])
+                        || (has(self.topology) && size(self.topology) > 0)'
                     - message: topology must be empty when type is None
-                      rule: self.type == 'ExclusiveTopology' || !has(self.topology)
-                        || size(self.topology) == 0
+                      rule: self.type in ['ExclusiveTopology', 'ExclusiveSlice'] ||
+                        !has(self.topology) || size(self.topology) == 0
                   topology:
                     description: |-
                       topology is the node label key that defines the topology domain of a
@@ -18561,16 +18563,18 @@ spec:
                       Defaults to None.
                     enum:
                     - None
+                    - ExclusiveSlice
                     - ExclusiveTopology
                     type: string
                 type: object
                 x-kubernetes-validations:
-                - message: topology is required when type is ExclusiveTopology
-                  rule: self.type != 'ExclusiveTopology' || (has(self.topology) &&
-                    size(self.topology) > 0)
+                - message: topology is required when type is ExclusiveTopology or
+                    ExclusiveSlice
+                  rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSlice''])
+                    || (has(self.topology) && size(self.topology) > 0)'
                 - message: topology must be empty when type is None
-                  rule: self.type == 'ExclusiveTopology' || !has(self.topology) ||
-                    size(self.topology) == 0
+                  rule: self.type in ['ExclusiveTopology', 'ExclusiveSlice'] || !has(self.topology)
+                    || size(self.topology) == 0
               podTerminationPolicy:
                 default: Sequential
                 description: |-

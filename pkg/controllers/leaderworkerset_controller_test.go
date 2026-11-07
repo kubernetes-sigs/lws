@@ -425,6 +425,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
 								"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+								"leaderworkerset.sigs.k8s.io/exclusive-scope":    "ExclusiveTopology",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
@@ -498,6 +499,7 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 							Annotations: map[string]string{
 								"leaderworkerset.sigs.k8s.io/size":               "2",
 								"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
+								"leaderworkerset.sigs.k8s.io/exclusive-scope":    "ExclusiveTopology",
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{
@@ -706,10 +708,11 @@ func TestLeaderStatefulSetApplyConfig(t *testing.T) {
 								"leaderworkerset.sigs.k8s.io/template-revision-hash": revisionKey1,
 							},
 							Annotations: map[string]string{
-								"leaderworkerset.sigs.k8s.io/size":                "2",
-								leaderworkerset.SubGroupSizeAnnotationKey:         "2",
-								leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "topologyKey",
-								leaderworkerset.SubGroupPolicyTypeAnnotationKey:   string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
+								"leaderworkerset.sigs.k8s.io/size":                  "2",
+								leaderworkerset.SubGroupSizeAnnotationKey:           "2",
+								leaderworkerset.SubGroupExclusiveKeyAnnotationKey:   "topologyKey",
+								leaderworkerset.SubGroupExclusiveScopeAnnotationKey: string(leaderworkerset.PlacementExclusiveTopology),
+								leaderworkerset.SubGroupPolicyTypeAnnotationKey:     string(leaderworkerset.SubGroupPolicyTypeLeaderWorker),
 							},
 						},
 						Spec: &coreapplyv1.PodSpecApplyConfiguration{

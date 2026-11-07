@@ -1342,14 +1342,16 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = (string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
-		if topologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+		if topologyKey, scope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
+			podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(scope)
 		}
 	}
 
