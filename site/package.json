@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "gifenc": "1.0.3",
-    "mediabunny": "1.65.0"
+    "mediabunny": "1.65.1"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
