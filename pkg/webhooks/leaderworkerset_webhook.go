@@ -925,13 +925,13 @@ func validatePlacementPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) fiel
 	subGroupFromField := false
 	if policy.SubGroup != nil {
 		allErrs = append(allErrs, validateTopologyKey(policy.SubGroup.Topology, subGroupPath.Child("topology"))...)
-		subGroupFromField = policy.SubGroup.Type == v1.PlacementExclusiveTopology
+		subGroupFromField = utils.IsExclusivePlacement(policy.SubGroup.Type)
 		if subGroupFromField && lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 			allErrs = append(allErrs, field.Invalid(subGroupPath, policy.SubGroup, "requires leaderWorkerTemplate.subGroupPolicy"))
 		}
 	}
-	groupKey, group := utils.ExclusiveTopologyKey(lws)
-	subGroupKey, subGroup := utils.SubGroupExclusiveTopologyKey(lws)
+	groupKey, _, group := utils.ExclusivePlacement(lws)
+	subGroupKey, _, subGroup := utils.SubGroupExclusivePlacement(lws)
 	if group && subGroup && groupKey == subGroupKey {
 		path := policyPath.Child("topology")
 		if subGroupFromField {
@@ -954,11 +954,15 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 	return allErrs
 }
 
-// validatePlacementPolicyAnnotations rejects an ExclusiveTopology placement
-// that disagrees with the exclusive-topology annotation of the same level. A
-// matching pair is accepted so a value can be moved from the annotation to the
-// field in two steps. A level whose type is None falls back to the annotation,
-// since the API server defaults the type whenever placementPolicy is set.
+// validatePlacementPolicyAnnotations rejects an exclusive placement that
+// disagrees with the exclusive-topology annotation of the same level. A
+// matching ExclusiveTopology pair is accepted so a value can be moved from the
+// annotation to the field in two steps. A level whose type is None falls back
+// to the annotation, since the API server defaults the type whenever
+// placementPolicy is set. An ExclusiveSlice field is rejected while the
+// annotation of the same level is set at all: the annotation is globally
+// scoped, so keeping it would silently change which pods the domain is
+// exclusive against.
 func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	policy := lws.Spec.PlacementPolicy
 	if policy == nil {
@@ -974,7 +978,10 @@ func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWo
 }
 
 func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
-	if placementType != v1.PlacementExclusiveTopology || annotationValue == "" || topology == annotationValue {
+	if placementType == v1.PlacementExclusiveSlice && annotationValue != "" {
+		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
+	}
+	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {
 		return nil
 	}
 	return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue))}
@@ -999,8 +1006,8 @@ func placementPolicyWarnings(lws *v1.LeaderWorkerSet) admission.Warnings {
 	if _, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {
 		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy.subGroup instead", v1.SubGroupExclusiveKeyAnnotationKey))
 	}
-	_, exclusive := utils.ExclusiveTopologyKey(lws)
-	_, subGroupExclusive := utils.SubGroupExclusiveTopologyKey(lws)
+	_, _, exclusive := utils.ExclusivePlacement(lws)
+	_, _, subGroupExclusive := utils.SubGroupExclusivePlacement(lws)
 	if !exclusive && !subGroupExclusive {
 		return warnings
 	}

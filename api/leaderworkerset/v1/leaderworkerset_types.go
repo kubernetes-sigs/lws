@@ -40,6 +40,17 @@ const (
 	// which will be used for 1:1 exclusive scheduling in a given subgroup.
 	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"
 
+	// Exclusive scope annotation records the PlacementType of the group-level
+	// exclusive placement the group was created with, so the pod webhook can
+	// scope the injected anti-affinity accordingly. It is absent for objects
+	// created before the scope existed, which keeps the global (ExclusiveTopology)
+	// behavior.
+	ExclusiveScopeAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-scope"
+
+	// Subgroup exclusive scope annotation records the PlacementType of the
+	// subgroup-level exclusive placement, mirroring ExclusiveScopeAnnotationKey.
+	SubGroupExclusiveScopeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-scope"
+
 	// Set name label will record the leaderworkerset name that those resources
 	// (Pod/Service/StatefulSets) belong to.
 	SetNameLabelKey string = "leaderworkerset.sigs.k8s.io/name"
@@ -570,12 +581,12 @@ const (
 
 // PlacementPolicy defines the topology placement of the pods in each group,
 // and optionally in each subgroup.
-// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
-// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSlice']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSlice"
+// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSlice'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 type PlacementPolicy struct {
 	// type selects the group level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveSlice,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -593,12 +604,12 @@ type PlacementPolicy struct {
 
 // SubGroupPlacementPolicy defines the topology placement of the pods in each
 // subgroup.
-// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
-// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSlice']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSlice"
+// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSlice'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 type SubGroupPlacementPolicy struct {
 	// type selects the subgroup level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveSlice,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -615,9 +626,17 @@ const (
 	// PlacementNone injects no placement affinity.
 	PlacementNone PlacementType = "None"
 
+	// PlacementExclusiveSlice places all pods of a group, or of a subgroup,
+	// in one topology domain and keeps the pods of other groups, or subgroups,
+	// of the same LeaderWorkerSet out of that domain. Groups of other
+	// LeaderWorkerSets may share the domain.
+	PlacementExclusiveSlice PlacementType = "ExclusiveSlice"
+
 	// PlacementExclusiveTopology places all pods of a group, or of a subgroup,
 	// in one topology domain and keeps the pods of other groups, or subgroups,
-	// out of that domain.
+	// out of that domain, regardless of the workload they belong to. This is
+	// the physical-exclusivity scope the deprecated annotations always had,
+	// and the one hardware-sliced accelerators (e.g. TPU slices) require.
 	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
 )
 

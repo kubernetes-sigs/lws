@@ -154,7 +154,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			}
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
-			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey,
+				exclusivePlacementScope(pod, leaderworkerset.ExclusiveScopeAnnotationKey))
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
@@ -169,7 +170,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey,
+					exclusivePlacementScope(pod, leaderworkerset.SubGroupExclusiveScopeAnnotationKey))
 			}
 		}
 	} else {
@@ -195,7 +197,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey,
+					exclusivePlacementScope(pod, leaderworkerset.SubGroupExclusiveScopeAnnotationKey))
 			}
 		}
 	}
@@ -266,8 +269,24 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 	return fmt.Sprintf("%s-%s", lwsName, key)
 }
 
-// SetExclusiveAffinities set the pod affinity/anti-affinity
-func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+// exclusivePlacementScope reads the placement scope of one exclusive level
+// from the pod annotations. Pods created before the scope was recorded, or by
+// the deprecated annotations, have no scope annotation and keep the global
+// (ExclusiveTopology) behavior.
+func exclusivePlacementScope(pod *corev1.Pod, scopeAnnotation string) leaderworkerset.PlacementType {
+	if scope := pod.Annotations[scopeAnnotation]; scope != "" {
+		return leaderworkerset.PlacementType(scope)
+	}
+	return leaderworkerset.PlacementExclusiveTopology
+}
+
+// SetExclusiveAffinities set the pod affinity/anti-affinity. The scope decides
+// how widely the anti-affinity repels: ExclusiveTopology keeps every other
+// group out of the domain, matching the deprecated annotations and the physical
+// exclusivity hardware-sliced accelerators need; ExclusiveSlice keeps only the
+// groups of this LeaderWorkerSet out, scoped by the set name label, so groups of
+// other LeaderWorkerSets may share the domain.
+func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, scope leaderworkerset.PlacementType) {
 	if exclusiveAffinityApplied(*pod, topologyKey) {
 		return
 	}
@@ -294,20 +313,32 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			TopologyKey: topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
+	// An ExclusiveSlice scope limits the repelled pods to the groups of this
+	// LeaderWorkerSet, so groups of other LeaderWorkerSets may share the domain.
+	antiAffinityExpressions := []metav1.LabelSelectorRequirement{
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpExists,
+		},
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{groupUniqueKey},
+		},
+	}
+	if scope == leaderworkerset.PlacementExclusiveSlice {
+		if lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]; lwsName != "" {
+			antiAffinityExpressions = append(antiAffinityExpressions, metav1.LabelSelectorRequirement{
+				Key:      leaderworkerset.SetNameLabelKey,
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{lwsName},
+			})
+		}
+	}
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpExists,
-				},
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: antiAffinityExpressions},
+			TopologyKey:   topologyKey,
 		})
 }
 

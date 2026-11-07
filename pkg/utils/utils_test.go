@@ -244,21 +244,23 @@ func Test_GetOperatorNamespace(t *testing.T) {
 	}
 }
 
-func Test_ExclusiveTopologyKey(t *testing.T) {
+func Test_ExclusivePlacement(t *testing.T) {
 	testCases := []struct {
 		name       string
 		annotation *string
 		policyType leaderworkerset.PlacementType
 		topology   string
 		wantKey    string
+		wantScope  leaderworkerset.PlacementType
 		wantOK     bool
 	}{
 		{name: "neither set"},
-		{name: "annotation only", annotation: ptr.To("rack"), wantKey: "rack", wantOK: true},
+		{name: "annotation only", annotation: ptr.To("rack"), wantKey: "rack", wantScope: leaderworkerset.PlacementExclusiveTopology, wantOK: true},
 		{name: "empty annotation", annotation: ptr.To("")},
-		{name: "placementPolicy only", policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
-		{name: "placementPolicy takes precedence over the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
-		{name: "placementPolicy None falls back to the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementNone, wantKey: "rack", wantOK: true},
+		{name: "ExclusiveTopology only", policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementExclusiveTopology, wantOK: true},
+		{name: "ExclusiveSlice only", policyType: leaderworkerset.PlacementExclusiveSlice, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementExclusiveSlice, wantOK: true},
+		{name: "placementPolicy takes precedence over the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementExclusiveTopology, wantOK: true},
+		{name: "placementPolicy None falls back to the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementNone, wantKey: "rack", wantScope: leaderworkerset.PlacementExclusiveTopology, wantOK: true},
 		{name: "placementPolicy None without the annotation", policyType: leaderworkerset.PlacementNone},
 	}
 
@@ -271,8 +273,12 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 			if tc.policyType != "" {
 				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: tc.policyType, Topology: tc.topology}
 			}
-			if gotKey, gotOK := ExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
-				t.Errorf("ExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			gotKey, gotScope, gotOK := ExclusivePlacement(lws)
+			if gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("ExclusivePlacement() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+			if gotOK && gotScope != tc.wantScope {
+				t.Errorf("ExclusivePlacement() scope = %q, want %q", gotScope, tc.wantScope)
 			}
 		})
 		t.Run("subgroup/"+tc.name, func(t *testing.T) {
@@ -287,8 +293,12 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: tc.policyType, Topology: tc.topology},
 				}
 			}
-			if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
-				t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			gotKey, gotScope, gotOK := SubGroupExclusivePlacement(lws)
+			if gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("SubGroupExclusivePlacement() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+			if gotOK && gotScope != tc.wantScope {
+				t.Errorf("SubGroupExclusivePlacement() scope = %q, want %q", gotScope, tc.wantScope)
 			}
 		})
 	}
@@ -296,8 +306,8 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 	t.Run("subgroup/annotation without subGroupPolicy", func(t *testing.T) {
 		lws := &leaderworkerset.LeaderWorkerSet{}
 		lws.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
-		if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != "" || gotOK {
-			t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (\"\", false)", gotKey, gotOK)
+		if gotKey, _, gotOK := SubGroupExclusivePlacement(lws); gotKey != "" || gotOK {
+			t.Errorf("SubGroupExclusivePlacement() = (%q, %t), want (\"\", false)", gotKey, gotOK)
 		}
 	})
 }
