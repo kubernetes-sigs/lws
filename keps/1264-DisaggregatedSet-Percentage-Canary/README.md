@@ -89,9 +89,9 @@ At `0`, B's LWS objects remain with `spec.replicas: 0`. They can be reused if th
 
 > **To roll back permanently, restore A's templates in Git.** Setting `canaryPercent: 0` stops running B, but leaves B's templates desired. Raising the percentage or removing the field without restoring A's templates could deploy B again.
 >
-> In the same Git change, it is recommended to remove `canaryPercent` or set it to `100`. **Omitting the field restores its default, `nil`, which means no canary hold, just like `100`.** This prevents later rollouts from inheriting an unintended hold.
+> In the same Git change, we recommend removing `canaryPercent` to restore its default, `nil` (field omitted). **This means no canary hold.** For the next canary release, explicitly set a percentage such as `25` together with its new templates.
 
-If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage omitted or set to `100` starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
+If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage omitted starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
 
 ### Scale while the canary is held
 
