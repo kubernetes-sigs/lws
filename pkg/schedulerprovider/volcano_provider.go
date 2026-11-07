@@ -110,13 +110,13 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 				return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected LeaderWorkerSet %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, lws.Name, lws.UID)
 			}
 			if owner.UID == lws.UID {
-				return nil
+				return v.syncPodGroupPriorityClassName(ctx, lws, &pg)
 			}
 			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
 		}
 		// Earlier releases made hash PodGroups LWS-owned.
 		if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && owner != nil && owner.Kind == "LeaderWorkerSet" && owner.UID == lws.UID {
-			return nil
+			return v.syncPodGroupPriorityClassName(ctx, lws, &pg)
 		}
 
 		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
@@ -128,7 +128,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 			return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected v1 Pod %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, leaderPod.Name, leaderPod.UID)
 		}
 		if owner.UID == leaderPod.UID {
-			return nil
+			return v.syncPodGroupPriorityClassName(ctx, lws, &pg)
 		}
 
 		// The stale PodGroup is owned by the previous leader Pod. Wait for owner-reference garbage collection
@@ -156,9 +156,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		},
 		Spec: volcanov1beta1.PodGroupSpec{
 			// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
-			MinMember:       *lws.Spec.LeaderWorkerTemplate.Size,
-			MinResources:    &minResources,
-			NetworkTopology: networkTopology,
+			MinMember:         *lws.Spec.LeaderWorkerTemplate.Size,
+			MinResources:      &minResources,
+			PriorityClassName: podGroupPriorityClassName(lws),
+			NetworkTopology:   networkTopology,
 		},
 	}
 
@@ -189,6 +190,32 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	log.V(2).Info("Created PodGroup for LeaderWorkerSet")
 
 	return nil
+}
+
+// podGroupPriorityClassName returns the PodGroup priority class, or "" when the
+// leader and worker templates disagree and no single class describes the group.
+func podGroupPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) string {
+	// A size 1 group has only the leader, so the unused worker template does not matter.
+	if *lws.Spec.LeaderWorkerTemplate.Size == 1 && lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		return lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName
+	}
+	priorityClassName, consistent := workloadPriorityClassName(lws)
+	if !consistent {
+		return ""
+	}
+	return priorityClassName
+}
+
+// syncPodGroupPriorityClassName patches an existing PodGroup whose priority class
+// does not match the LeaderWorkerSet, so PodGroups created before the field was set get it.
+func (v *VolcanoProvider) syncPodGroupPriorityClassName(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, pg *volcanov1beta1.PodGroup) error {
+	desired := podGroupPriorityClassName(lws)
+	if pg.Spec.PriorityClassName == desired {
+		return nil
+	}
+	patch := client.MergeFrom(pg.DeepCopy())
+	pg.Spec.PriorityClassName = desired
+	return v.client.Patch(ctx, pg, patch)
 }
 
 func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {

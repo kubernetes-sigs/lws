@@ -633,6 +633,71 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists_TypedSchedulingIsNoop(t *test
 	}
 }
 
+func TestVolcanoProvider_CreatePodGroupSetsPriorityClassName(t *testing.T) {
+	ctx := context.Background()
+	lws := &leaderworkerset.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+		Spec: leaderworkerset.LeaderWorkerSetSpec{
+			LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+				Size: ptr.To[int32](2),
+				LeaderTemplate: &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{PriorityClassName: "high-priority"},
+				},
+				WorkerTemplate: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{PriorityClassName: "high-priority"},
+				},
+			},
+		},
+	}
+	leaderPod := createTestLeaderPod("test-lws-0", "default", "test-lws", "0", "abc123")
+	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	require.NoError(t, NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, lws, leaderPod))
+
+	var pg volcanov1beta1.PodGroup
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg))
+	assert.Equal(t, "high-priority", pg.Spec.PriorityClassName)
+
+	t.Run("existing PodGroup without priority class is updated", func(t *testing.T) {
+		existing := &volcanov1beta1.PodGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            pgName,
+				Namespace:       lws.Namespace,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leaderPod, corev1.SchemeGroupVersion.WithKind("Pod"))},
+			},
+			Spec: volcanov1beta1.PodGroupSpec{MinMember: 2},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+		require.NoError(t, NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, lws, leaderPod))
+
+		var pg volcanov1beta1.PodGroup
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg))
+		assert.Equal(t, "high-priority", pg.Spec.PriorityClassName)
+	})
+
+	t.Run("size 1 uses leader priority class despite unused worker template", func(t *testing.T) {
+		singleLWS := lws.DeepCopy()
+		singleLWS.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+		singleLWS.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName = "leader-priority"
+		singleLWS.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName = "worker-priority"
+		existing := &volcanov1beta1.PodGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            pgName,
+				Namespace:       lws.Namespace,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leaderPod, corev1.SchemeGroupVersion.WithKind("Pod"))},
+			},
+			Spec: volcanov1beta1.PodGroupSpec{MinMember: 1, PriorityClassName: "leader-priority"},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+		require.NoError(t, NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, singleLWS, leaderPod))
+
+		var pg volcanov1beta1.PodGroup
+		require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg))
+		assert.Equal(t, "leader-priority", pg.Spec.PriorityClassName)
+	})
+}
+
 // Helper function to create test leader pods
 func createTestLeaderPod(name, namespace, lwsName, groupIndex, revision string) *corev1.Pod {
 	return &corev1.Pod{
