@@ -44,7 +44,7 @@ spec:
     canaryPercent: 25
 ```
 
-The field accepts an integer from 0 to 100. In the examples below, **A** is the previous version kept as the **baseline**, and **B** is the new version described by the desired Pod templates.
+The field is optional and accepts an integer from 0 to 100. Its default is `nil` (omitted), which behaves like `100`: no canary hold. In the examples below, **A** is the previous version kept as the **baseline**, and **B** is the new version described by the desired Pod templates.
 
 For four Prefill groups and eight Decode groups, the completed steps are:
 
@@ -87,9 +87,11 @@ Restoring A preserves its saved templates, rollout settings, and original replic
 
 At `0`, B's LWS objects remain with `spec.replicas: 0`. They can be reused if the operator raises the percentage again.
 
-> **To roll back permanently, restore A's templates in Git.** Setting `canaryPercent: 0` stops running B, but leaves B's templates desired. Raising the percentage or removing the field could deploy B again. Resetting `canaryPercent` to `100` in the same Git change is recommended so later rollouts do not inherit an unintended hold.
+> **To roll back permanently, restore A's templates in Git.** Setting `canaryPercent: 0` stops running B, but leaves B's templates desired. Raising the percentage or removing the field without restoring A's templates could deploy B again.
+>
+> In the same Git change, it is recommended to remove `canaryPercent` or set it to `100`. **Omitting the field restores its default, `nil`, which means no canary hold, just like `100`.** This prevents later rollouts from inheriting an unintended hold.
 
-If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage reset to `100` starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
+If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage omitted or set to `100` starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
 
 ### Scale while the canary is held
 
