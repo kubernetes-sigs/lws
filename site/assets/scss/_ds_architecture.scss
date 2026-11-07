@@ -1,0 +1,13 @@
+.da-diagram {
+  display: block; width: 100%; height: auto;
+  text { fill: var(--de-ink); font-family: var(--bs-body-font-family); font-size: 18px; }
+  .da-title { font-size: 26px; font-weight: 600; }
+  .da-child-title { font-size: 22px; font-weight: 600; }
+  .da-accent { fill: var(--de-green); }
+  .da-muted { fill: var(--de-muted); font-size: 16px; }
+  .da-centered { text-anchor: middle; }
+  .da-panel { fill: var(--de-panel); stroke: var(--de-group); }
+  .da-parent { stroke: var(--de-border); stroke-width: 1.5; }
+  .da-divider { fill: none; stroke: var(--de-group); stroke-opacity: .55; }
+  .da-connector { fill: none; stroke: var(--de-line); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+}

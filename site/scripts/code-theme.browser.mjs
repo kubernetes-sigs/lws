@@ -139,7 +139,7 @@ try {
   let minimum = Infinity;
   for (const prefix of ['main', 'stable', 'v0.11']) {
     const paths = ['installation/', 'troubleshooting/'];
-    if (prefix !== 'v0.11') paths.push('concepts/disaggregatedset/scaling-during-rollout/');
+    if (prefix !== 'v0.11') paths.push(`concepts/disaggregatedset/${prefix === 'main' ? 'role-scaler' : 'scaling-during-rollout'}/`);
     for (const path of paths) {
       const url = `/${prefix}/docs/${path}`;
       await visit(page, url);
@@ -150,7 +150,7 @@ try {
     }
   }
 
-  await visit(page, '/main/docs/concepts/disaggregatedset/scaling-during-rollout/');
+  await visit(page, '/main/docs/concepts/disaggregatedset/role-scaler/');
   const tokenCount = await addFixture(page);
   minimum = Math.min(minimum, assertDark(await inspect(page, '#code-theme-fixture pre'), 'Prism fixture'));
   assert.equal(await page.locator('#code-theme-inline').evaluate(node => getComputedStyle(node).display), 'inline');

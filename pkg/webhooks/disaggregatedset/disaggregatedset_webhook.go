@@ -118,6 +118,11 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 			allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: role.ObjectMeta, Spec: role.Spec}
 			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws)...)
+			var oldSpec *leaderworkerset.LeaderWorkerSetSpec
+			if oldRole != nil {
+				oldSpec = &oldRole.Spec
+			}
+			allErrs = append(allErrs, webhooks.ValidateTPUSubGroupOnWrite(rolePath.Child("spec"), oldSpec, &role.Spec)...)
 		}
 		if len(role.SubRoles) > 0 {
 			if role.Scaling != nil && !unchanged {
@@ -350,11 +355,14 @@ func unchangedRoleTemplate(role, oldRole *disaggv1.DisaggregatedRoleSpec) bool {
 	if oldRole == nil {
 		return false
 	}
-	key := leaderworkerset.SubGroupExclusiveKeyAnnotationKey
-	value, found := role.Annotations[key]
-	oldValue, oldFound := oldRole.Annotations[key]
-	if found != oldFound || value != oldValue {
-		return false
+	// The template rules read both exclusive-topology annotations: the subgroup
+	// one needs subGroupPolicy, and either one must agree with placementPolicy.
+	for _, key := range exclusiveTopologyAnnotationKeys {
+		value, found := role.Annotations[key]
+		oldValue, oldFound := oldRole.Annotations[key]
+		if found != oldFound || value != oldValue {
+			return false
+		}
 	}
 	external := role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal
 	oldExternal := oldRole.Scaling != nil && oldRole.Scaling.Mode == disaggv1.RoleScalingExternal
@@ -524,9 +532,11 @@ func (w *DisaggregatedSetWebhook) validateGeneratedNames(obj *disaggv1.Disaggreg
 }
 
 // validatePlacement validates the DisaggregatedSet PlacementPolicy. A non-None policy
-// needs a topology key, and conflicts with the LWS group-level exclusive-topology
-// annotation on a role: both co-locate/exclude at overlapping levels, so the slice
-// would never schedule.
+// needs a topology key, and conflicts with any LWS exclusive placement on a role, set
+// by the exclusive-topology annotations or by the role's spec.placementPolicy, on any
+// topology key. The slice affinity and the group or subgroup affinity are both
+// required terms: once the first group of a slice is placed, kube-scheduler cannot
+// place later groups so that both hold, and the slice is split across domains.
 func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.DisaggregatedSet) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -539,7 +549,9 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.Disagg
 	if policy.Topology == "" {
 		allErrs = append(allErrs, field.Required(policyPath.Child("topology"),
 			"topology is required when type is not None"))
-	} else if oldObj == nil || oldObj.Spec.PlacementPolicy == nil || policy.Topology != oldObj.Spec.PlacementPolicy.Topology {
+		return allErrs
+	}
+	if oldObj == nil || oldObj.Spec.PlacementPolicy == nil || policy.Topology != oldObj.Spec.PlacementPolicy.Topology {
 		for _, msg := range utilvalidation.IsQualifiedName(policy.Topology) {
 			allErrs = append(allErrs, field.Invalid(policyPath.Child("topology"), policy.Topology, msg))
 		}
@@ -553,9 +565,30 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.Disagg
 				fmt.Sprintf("the %q annotation must not be combined with a non-None spec.placementPolicy.type (%s)",
 					key, policy.Type)))
 		}
+		if path, found := rolePlacementPolicy(role, rolesPath.Index(i)); found {
+			allErrs = append(allErrs, field.Forbidden(path,
+				fmt.Sprintf("exclusive placement must not be combined with a non-None spec.placementPolicy.type (%s)", policy.Type)))
+		}
 	}
 
 	return allErrs
+}
+
+// rolePlacementPolicy returns the path of the first exclusive placement in a role's
+// spec.placementPolicy, at the group or subgroup level.
+func rolePlacementPolicy(role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) (*field.Path, bool) {
+	policy := role.Spec.PlacementPolicy
+	if policy == nil {
+		return nil, false
+	}
+	policyPath := rolePath.Child("spec", "placementPolicy")
+	if policy.Type == leaderworkerset.PlacementExclusiveTopology {
+		return policyPath.Child("type"), true
+	}
+	if policy.SubGroup != nil && policy.SubGroup.Type == leaderworkerset.PlacementExclusiveTopology {
+		return policyPath.Child("subGroup", "type"), true
+	}
+	return nil, false
 }
 
 // exclusiveTopologyAnnotationKeys are the LWS annotations that make the LWS pod
@@ -572,17 +605,15 @@ var exclusiveTopologyAnnotationKeys = []string{
 // a template-level annotation would enable LWS exclusive placement too).
 func roleExclusiveTopologyAnnotation(role disaggv1.DisaggregatedRoleSpec) (string, bool) {
 	template := role.Spec.LeaderWorkerTemplate
+	sources := []map[string]string{role.ObjectMeta.Annotations, template.WorkerTemplate.Annotations}
+	if template.LeaderTemplate != nil {
+		sources = append(sources, template.LeaderTemplate.Annotations)
+	}
 	for _, key := range exclusiveTopologyAnnotationKeys {
-		if _, ok := role.ObjectMeta.Annotations[key]; ok {
-			return key, true
-		}
-		if template.LeaderTemplate != nil {
-			if _, ok := template.LeaderTemplate.Annotations[key]; ok {
+		for _, annotations := range sources {
+			if _, ok := annotations[key]; ok {
 				return key, true
 			}
-		}
-		if _, ok := template.WorkerTemplate.Annotations[key]; ok {
-			return key, true
 		}
 	}
 	return "", false

@@ -103,6 +103,11 @@ const (
 	// GroupRestartBackoff indicates that group recreation is delayed by restart backoff.
 	GroupRestartBackoff = "GroupRestartBackoff"
 
+	// InvalidTemplate is the condition reason recorded when the API server
+	// permanently rejects the rendered workload template, so retries can never
+	// succeed without a spec change.
+	InvalidTemplate = "InvalidTemplate"
+
 	// UnexpectedPodGroupOwner indicates that PodGroup ownership prevents reconciliation.
 	UnexpectedPodGroupOwner = "UnexpectedPodGroupOwner"
 
@@ -201,6 +206,13 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Creating controller revision")
 		return ctrl.Result{}, err
 	}
+	if leaderSts != nil {
+		revision, err = r.recordPlacementInRevision(ctx, lws, revision, leaderSts.Spec.Template.Annotations)
+		if err != nil {
+			log.Error(err, "Recording placement in controller revision")
+			return ctrl.Result{}, err
+		}
+	}
 
 	var updatedRevision *appsv1.ControllerRevision
 	if leaderSts != nil {
@@ -241,11 +253,32 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
 	}
 
+	// With a dedicated leader template the leader apply below never sees the
+	// worker template. Probe it BEFORE the leader apply stamps the new
+	// revision onto the leader StatefulSet: once stamped, the StatefulSet
+	// starts recreating leader pods with the broken revision, and the next
+	// reconcile's gate (leaderSts == nil || lwsUpdated) reads false — the probe
+	// would be skipped and a healthy-looking Progressing=True would overwrite
+	// InvalidTemplate. Only for new or updated revisions, so steady-state
+	// reconciles add no API calls.
+	if needsWorkerTemplateProbe(lws) && (leaderSts == nil || lwsUpdated) {
+		if err := r.dryRunWorkerTemplate(ctx, lws, revisionutils.GetRevisionKey(revision)); err != nil {
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to validate worker statefulset template for %s: %v", lws.Name, err))
+			if apierrors.IsInvalid(err) {
+				r.recordInvalidTemplate(ctx, lws, err)
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
 	if err := r.SSAWithStatefulset(ctx, lws, partition, replicas, revisionutils.GetRevisionKey(revision)); err != nil {
 		if leaderSts == nil {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
 		} else {
 			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, fmt.Sprintf("Failed to update leader statefulset %s: %v", lws.Name, err))
+		}
+		if apierrors.IsInvalid(err) {
+			r.recordInvalidTemplate(ctx, lws, err)
 		}
 		return ctrl.Result{}, err
 	}
@@ -754,6 +787,102 @@ func (r *LeaderWorkerSetReconciler) serverSideApply(ctx context.Context, applyCo
 	return r.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership)
 }
 
+// recordInvalidTemplate surfaces a permanent API-server rejection of the
+// rendered workload template on the LWS status. An invalid pod template (e.g.
+// a container securityContext setting both privileged=true and
+// allowPrivilegeEscalation=false) fails every StatefulSet/Deployment apply, so
+// the rollout retries forever while the conditions keep reporting
+// Progressing=True — neither kubectl nor watching controllers can tell why no
+// replicas are coming up. The FailedCreate/FailedUpdate warning events are
+// transient; these conditions make the root cause visible in the object
+// itself:
+//
+//   - Progressing=False with reason InvalidTemplate and the API-server
+//     message as the detail;
+//   - Available=False, because a previously healthy generation must not keep
+//     advertising readiness at the rejected generation — the top-level
+//     status.observedGeneration is refreshed for the same reason, so
+//     generation-aware callers see the rejected update as not ready;
+//   - UpdateInProgress=False when a rollout was interrupted by the rejection.
+//
+// It self-heals: once the template is fixed (or rolled back), the next
+// successful reconcile recomputes conditions from replica state, and
+// setCondition resets a stale InvalidTemplate reason on Progressing when
+// Available becomes True again.
+func (r *LeaderWorkerSetReconciler) recordInvalidTemplate(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, applyErr error) {
+	log := ctrl.LoggerFrom(ctx)
+	updateStatus := lws.Status.ObservedGeneration != lws.Generation
+	lws.Status.ObservedGeneration = lws.Generation
+	conditions := []metav1.Condition{
+		makeFalseCondition(leaderworkerset.LeaderWorkerSetAvailable, lws, InvalidTemplate, "Not all replicas are ready"),
+		makeFalseCondition(leaderworkerset.LeaderWorkerSetProgressing, lws, InvalidTemplate, applyErr.Error()),
+	}
+	if c := apimeta.FindStatusCondition(lws.Status.Conditions, string(leaderworkerset.LeaderWorkerSetUpdateInProgress)); c != nil && c.Status == metav1.ConditionTrue {
+		conditions = append(conditions, makeFalseCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws, InvalidTemplate, "No rolling update is in progress"))
+	}
+	if setConditions(lws, conditions) {
+		updateStatus = true
+	}
+	if !updateStatus {
+		return
+	}
+	if err := r.Status().Update(ctx, lws); err != nil {
+		if !apierrors.IsConflict(err) {
+			log.Error(err, "Updating LeaderWorkerSet status after invalid template error")
+		}
+	}
+}
+
+// workerTemplateProbeName is the synthetic object name used when dry-run
+// validating the worker StatefulSet template; no object with this name is
+// ever persisted.
+const workerTemplateProbeName = "lws-worker-template-probe"
+
+// needsWorkerTemplateProbe reports whether the leader workload apply leaves
+// the worker template unvalidated: with a dedicated leaderTemplate set (or
+// under hash identity) SSAWithStatefulset/SSAWithDeployment render only the
+// leader template, while PodReconciler submits the workerTemplate separately
+// when it creates each group's worker StatefulSet. An invalid workerTemplate
+// would pass the leader apply, replace healthy groups with leader pods that
+// never get workers, and leave Progressing=True forever.
+func needsWorkerTemplateProbe(lws *leaderworkerset.LeaderWorkerSet) bool {
+	if ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) <= 1 {
+		return false
+	}
+	return lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil ||
+		lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash
+}
+
+// dryRunWorkerTemplate validates the worker StatefulSet template with a
+// DryRunAll server-side apply of a representative (group 0) worker
+// StatefulSet. It runs the same API-server validation a real worker
+// StatefulSet create would, persists nothing, and avoids waiting for
+// cross-controller status writes from the pod controller. Callers invoke it
+// only for new or updated revisions, so steady-state reconciles add zero API
+// calls.
+func (r *LeaderWorkerSetReconciler) dryRunWorkerTemplate(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
+	probePod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workerTemplateProbeName,
+			Namespace: lws.Namespace,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:         lws.Name,
+				leaderworkerset.GroupIndexLabelKey:      "0",
+				leaderworkerset.GroupUniqueHashLabelKey: revisionKey,
+				leaderworkerset.RevisionKey:             revisionKey,
+			},
+		},
+		// The worker StatefulSet serviceName always matches the leader's
+		// subdomain in every mode and subdomain policy.
+		Spec: corev1.PodSpec{Subdomain: lws.Name},
+	}
+	applyConfig, err := constructWorkerStatefulSetApplyConfiguration(probePod, *lws)
+	if err != nil {
+		return err
+	}
+	return r.Apply(ctx, applyConfig, client.FieldOwner(fieldManager), client.ForceOwnership, client.DryRunAll)
+}
+
 // updates the condition of the leaderworkerset to either Progressing or Available.
 // leaderReplicas is the replica count of the leader StatefulSet, which exceeds
 // spec.replicas while a rolling update surges.
@@ -1139,6 +1268,37 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, rev
 	return newRevision, err
 }
 
+// recordPlacementInRevision replaces a revision created before revisions
+// recorded placement with one that records it under the same revision key, and
+// returns the revision to use. Such a revision keeps the live exclusive-topology
+// annotations when it is applied, so it matches any annotation value. Without
+// this, adding, changing or removing the annotation on a LeaderWorkerSet that
+// existed before the upgrade would never create a revision: the leader workload
+// template would change under the same revision key and every group would be
+// replaced at once. leaderTemplateAnnotations are the pod template annotations
+// of the leader workload, which hold the placement the groups run with.
+func (r *LeaderWorkerSetReconciler) recordPlacementInRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision, leaderTemplateAnnotations map[string]string) (*appsv1.ControllerRevision, error) {
+	recorded, err := revisionutils.RecordsPlacement(revision)
+	if err != nil || recorded {
+		return revision, err
+	}
+	migrated, err := revisionutils.NewRevisionRecordingPlacement(ctx, r.Client, lws, revision, leaderTemplateAnnotations)
+	if err != nil {
+		return nil, err
+	}
+	migrated, err = revisionutils.CreateRevision(ctx, r.Client, migrated)
+	if err != nil {
+		return nil, err
+	}
+	// GetRevision returns the highest revision for a key, which is the new one,
+	// so removing the old one only avoids keeping two revisions for one key.
+	if err := r.Delete(ctx, revision); err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	ctrl.LoggerFrom(ctx).V(2).Info("Recorded placement in controller revision", "revisionKey", revisionutils.GetRevisionKey(migrated), "revision", klog.KObj(migrated))
+	return migrated, nil
+}
+
 func (r *LeaderWorkerSetReconciler) getUpdatedRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	currentRevision, err := revisionutils.NewRevision(ctx, r.Client, lws, "")
 	if err != nil {
@@ -1182,14 +1342,14 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	if lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] != "" {
-		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = (string(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
-		if lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] != "" {
-			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
+		if topologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
 		}
 	}
 
@@ -1467,6 +1627,24 @@ func setCondition(lws *leaderworkerset.LeaderWorkerSet, newCondition metav1.Cond
 					lws.Status.Conditions[i].Reason = defaults.Reason
 					lws.Status.Conditions[i].Message = defaults.Message
 				}
+				shouldUpdate = true
+			}
+			// Recovery from InvalidTemplate: when Available becomes True (the
+			// operator rolled back to the running revision, or fixed a template
+			// at zero replicas), updateConditions emits Available only, so a
+			// Progressing=False left behind by recordInvalidTemplate would keep
+			// the stale failure reason and message forever. Reset both to the
+			// defaults, matching the normal steady state (Progressing=False
+			// with the default text alongside Available=True).
+			if newCondition.Type == string(leaderworkerset.LeaderWorkerSetAvailable) &&
+				newCondition.Status == metav1.ConditionTrue &&
+				curCondition.Type == string(leaderworkerset.LeaderWorkerSetProgressing) &&
+				curCondition.Status == metav1.ConditionFalse &&
+				curCondition.Reason == InvalidTemplate {
+				defaults := makeCondition(leaderworkerset.LeaderWorkerSetProgressing, lws)
+				lws.Status.Conditions[i].Reason = defaults.Reason
+				lws.Status.Conditions[i].Message = defaults.Message
+				lws.Status.Conditions[i].ObservedGeneration = newCondition.ObservedGeneration
 				shouldUpdate = true
 			}
 		}

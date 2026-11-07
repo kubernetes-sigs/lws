@@ -25,7 +25,7 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("snapshot-docs.py")
 ASSETS = ("images/diagram.svg", "videos/demo.mp4", "examples/demo.yaml")
-BRANDING = ("images/lws-ds-logos.svg", "images/ds-concept.svg", "images/ds-logo.svg")
+BRANDING = ("images/lws-ds-logos.svg", "images/lws-concept.svg", "images/ds-concept.svg", "images/ds-logo.svg")
 
 
 class SnapshotDocsTest(unittest.TestCase):

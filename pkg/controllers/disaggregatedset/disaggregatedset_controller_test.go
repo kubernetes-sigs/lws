@@ -20,6 +20,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -893,4 +894,51 @@ func TestCleanupRemovedSlicesSkipsDeletingLWS(t *testing.T) {
 		event := <-recorder.Events
 		assert.NotContains(t, event, controller.EventReasonLWSDeleted)
 	}
+}
+
+func TestReconcileUpdateStatusPendingReplicaGroupsRequeues(t *testing.T) {
+	ctx := context.Background()
+	scheme := wrappers.DisaggregatedSetTestScheme()
+
+	disaggregatedSet := wrappers.BuildDisaggregatedSet("pending-requeue-ds", "default").
+		WithRole(testControllerRolePrefill, 2, "nginx:1.0").
+		Obj()
+	disaggregatedSet.Spec.Slices = ptr.To[int32](0)
+	markCurrentRevisionHash(disaggregatedSet)
+	disaggregatedSet.Spec.Roles[0].SubRoles = []disaggregatedsetv1.DisaggregatedSubRoleSpec{
+		{Name: "a", Replicas: ptr.To[int32](1)},
+		{Name: "b", Replicas: ptr.To[int32](1)},
+	}
+
+	oldRevision := "testrev"
+	lws := createOldLeaderWorkerSet(disaggregatedSet, testControllerRolePrefill, oldRevision, 2)
+	lws.UID = "test-lws-uid"
+	lws.Finalizers = []string{"test-finalizer"}
+	if lws.Annotations == nil {
+		lws.Annotations = make(map[string]string)
+	}
+	lws.Annotations["disaggregatedset.x-k8s.io/subrole-replicas"] = `{"a":1,"b":1}`
+
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		disaggregatedSet,
+		lws,
+	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+	require.NoError(t, base.Delete(ctx, lws))
+
+	// Intercept Get on LeaderWorkerSet to simulate informer delay where the replica group observer
+	// cannot read the LWS, causing errReplicaGroupsPending during updateStatus.
+	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+				return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	reconciler := newTestDisaggregatedSetReconciler(fakeClient, scheme)
+
+	res, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}})
+	require.NoError(t, err, "replica groups pending during status observation must requeue without controller error")
+	assert.Equal(t, ctrl.Result{RequeueAfter: time.Second}, res)
 }

@@ -1,0 +1,13 @@
+.sf-diagram {
+  display: block; width: 100%; height: auto;
+  text { fill: var(--de-ink); font-family: var(--bs-body-font-family); font-size: 16px; text-anchor: middle; }
+  .sf-title { font-size: 18px; font-weight: 600; }
+  .sf-kind { fill: var(--de-muted); font-size: 14px; }
+  .sf-code { font-family: var(--bs-font-monospace); }
+  .sf-note { fill: var(--de-green); }
+  .sf-read-label { text-anchor: start; }
+  .sf-panel { fill: var(--de-panel); stroke: var(--de-border); }
+  .sf-box { fill: none; stroke: var(--de-group); }
+  .sf-group { stroke-dasharray: 4 3; }
+  .sf-connector { fill: none; stroke: var(--de-line); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+}

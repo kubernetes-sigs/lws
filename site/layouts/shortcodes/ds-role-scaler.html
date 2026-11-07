@@ -1,0 +1,37 @@
+{{- $id := printf "role-scaler-%d" .Ordinal -}}
+<figure id="dsrs-schematic" class="ds-scaling-flow">
+  <svg class="sf-diagram" viewBox="0 0 760 550" role="img" aria-labelledby="{{ $id }}-title {{ $id }}-description">
+    <title id="{{ $id }}-title">Independent role autoscaling</title>
+    <desc id="{{ $id }}-description">HPA or KEDA writes the desired replica count to my-inference-prefill through the Kubernetes /scale subresource. The DisaggregatedSet controller reads this stable DisaggregatedSetRoleScaler and manages the previous and new child LeaderWorkerSets within rollout budgets.</desc>
+    <defs>
+      <marker id="{{ $id }}-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="sf-connector" d="M2 1 8 5 2 9"/>
+      </marker>
+    </defs>
+    <rect class="sf-panel" x="1" y="1" width="758" height="548" rx="30"/>
+    <rect class="sf-box" x="18" y="18" width="212" height="104" rx="9"/>
+    <text class="sf-kind" x="124" y="44">Autoscaler</text>
+    <text class="sf-title" x="124" y="72">HPA / KEDA</text>
+    <text class="sf-note" x="124" y="99">Chooses the replica target</text>
+    <text class="sf-note" x="326" y="47">Writes desired replicas</text>
+    <text class="sf-note" x="326" y="69">via the <tspan class="sf-code">/scale</tspan> API</text>
+    <path class="sf-connector" d="M242 88H410" marker-end="url(#{{ $id }}-arrow)"/>
+    <rect class="sf-box" x="422" y="18" width="320" height="104" rx="9"/>
+    <text class="sf-title" x="582" y="47">DisaggregatedSetRoleScaler</text>
+    <text class="sf-code" x="582" y="74">my-inference-prefill</text>
+    <text class="sf-note" x="582" y="100">Stable autoscaler target</text>
+    <path class="sf-connector" d="M380 199V178Q380 165 400 165H562Q582 165 582 145V133" marker-end="url(#{{ $id }}-arrow)"/>
+    <text class="sf-read-label sf-note" x="408" y="193">Reads the desired count</text>
+    <image href="{{ "images/ds-logo.svg" | relURL }}" x="351" y="214" width="58" height="58"/>
+    <text class="sf-title" x="380" y="298">DisaggregatedSet controller</text>
+    <text class="sf-note" x="380" y="323">Applies rollout budgets</text>
+    <path class="sf-connector" d="M380 334V350M194 369V350H566V369"/>
+    {{ range slice (dict "x" 18 "center" 194 "revision" "old" "label" "Previous revision") (dict "x" 390 "center" 566 "revision" "new" "label" "New revision") }}
+    <rect class="sf-box sf-group" x="{{ .x }}" y="369" width="352" height="162" rx="14"/>
+    <image href="{{ "images/logo.svg" | relURL }}" x="{{ sub .center 29 }}" y="387" width="58" height="58"/>
+    <text class="sf-title sf-note" x="{{ .center }}" y="473">{{ .label }}</text>
+    <text class="sf-code" x="{{ .center }}" y="505">my-inference-0-&lt;{{ .revision }}&gt;-prefill</text>
+    {{ end }}
+  </svg>
+  <figcaption>The autoscaler writes desired replicas through the Kubernetes <code>/scale</code> subresource exposed by DisaggregatedSetRoleScaler. Its target stays <code>my-inference-prefill</code> across rollouts.</figcaption>
+</figure>

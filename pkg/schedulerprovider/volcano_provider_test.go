@@ -146,7 +146,10 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 		{
 			name: "podgroup already exists",
 			lws: &leaderworkerset.LeaderWorkerSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-lws", Namespace: "default",
+					Annotations: map[string]string{VolcanoNetworkTopologyTierAnnotationKey: "1"},
+				},
 				Spec: leaderworkerset.LeaderWorkerSetSpec{
 					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](3)},
 				},
@@ -408,6 +411,83 @@ func TestVolcanoProvider_CreatePodGroupIfNotExists(t *testing.T) {
 			if diff := cmp.Diff(tt.expectedPG, &actualPG, opts...); diff != "" {
 				t.Errorf("PodGroup mismatch (-want +got):\n%s", diff)
 			}
+		})
+	}
+}
+
+func TestVolcanoProvider_NetworkTopology(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        *volcanov1beta1.NetworkTopologySpec
+		wantError   bool
+	}{
+		{
+			name: "explicit hard mode with tier zero",
+			annotations: map[string]string{
+				VolcanoNetworkTopologyTierAnnotationKey: "0",
+				VolcanoNetworkTopologyModeAnnotationKey: "hard",
+			},
+			want: &volcanov1beta1.NetworkTopologySpec{Mode: volcanov1beta1.HardNetworkTopologyMode, HighestTierAllowed: ptr.To(0)},
+		},
+		{
+			name: "soft mode with a different tier",
+			annotations: map[string]string{
+				VolcanoNetworkTopologyTierAnnotationKey: "2",
+				VolcanoNetworkTopologyModeAnnotationKey: "soft",
+			},
+			want: &volcanov1beta1.NetworkTopologySpec{Mode: volcanov1beta1.SoftNetworkTopologyMode, HighestTierAllowed: ptr.To(2)},
+		},
+		{
+			name:        "reject non-numeric tier",
+			annotations: map[string]string{VolcanoNetworkTopologyTierAnnotationKey: "rack"},
+			wantError:   true,
+		},
+		{
+			name:        "reject negative tier",
+			annotations: map[string]string{VolcanoNetworkTopologyTierAnnotationKey: "-1"},
+			wantError:   true,
+		},
+		{
+			name: "reject invalid mode",
+			annotations: map[string]string{
+				VolcanoNetworkTopologyTierAnnotationKey: "1",
+				VolcanoNetworkTopologyModeAnnotationKey: "invalid",
+			},
+			wantError: true,
+		},
+		{
+			name:        "reject mode without tier",
+			annotations: map[string]string{VolcanoNetworkTopologyModeAnnotationKey: "hard"},
+			wantError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			lws := &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default", Annotations: tt.annotations},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{Size: ptr.To[int32](4)},
+				},
+			}
+			leader := createTestLeaderPod("test-lws-0", lws.Namespace, lws.Name, "0", "rev1")
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			err := NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, lws, leader)
+			if tt.wantError {
+				require.Error(t, err)
+				var groups volcanov1beta1.PodGroupList
+				require.NoError(t, fakeClient.List(ctx, &groups))
+				assert.Empty(t, groups.Items)
+				return
+			}
+			require.NoError(t, err)
+			var pg volcanov1beta1.PodGroup
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+				Name: leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey], Namespace: lws.Namespace,
+			}, &pg))
+			assert.Equal(t, tt.want, pg.Spec.NetworkTopology)
 		})
 	}
 }
