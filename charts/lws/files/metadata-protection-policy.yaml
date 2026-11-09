@@ -38,11 +38,13 @@ spec:
       operations: [CREATE, UPDATE]
       resources: [computedomains, computedomains/*]
   validations:
-  - expression: variables.isManager || variables.nativeCreate || variables.protectedLabelsUnchanged
+  # Variables are lazy: consult authorization only for a protected change that
+  # is not already allowed by a scoped controller exception.
+  - expression: variables.protectedLabelsUnchanged || variables.nativeCreate || variables.isManager
     message: LWS/DisaggregatedSet controller-owned labels may only be written by their
       approved controllers, including in templates.
     reason: Forbidden
-  - expression: variables.isManager || variables.nativeCreate || variables.isBindingAnnotationWriter || variables.protectedAnnotationsUnchanged
+  - expression: variables.protectedAnnotationsUnchanged || variables.nativeCreate || variables.isBindingAnnotationWriter || variables.isManager
     message: LWS/DisaggregatedSet controller-owned annotations may only be written
       by their approved controllers, including in templates.
     reason: Forbidden

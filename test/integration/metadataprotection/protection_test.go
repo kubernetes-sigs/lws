@@ -127,6 +127,7 @@ func TestMetadataProtection(t *testing.T) {
 		ErrorIfCRDPathMissing:       true,
 		ControlPlaneStartTimeout:    60 * time.Second,
 	}
+	authorizations := countMetadataAuthorizations(t, env)
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +183,26 @@ func TestMetadataProtection(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	t.Run("unchanged_metadata_skips_authorizer", func(t *testing.T) {
+		p := newPod("unchanged-metadata")
+		p.Labels = map[string]string{labelKey: "original"}
+		p.Annotations = map[string]string{"leaderworkerset.sigs.k8s.io/size": "2"}
+		must(t, allowed.Create(ctx, p))
+		before := authorizations.Load()
+		must(t, denied.Create(ctx, newPod("ordinary-pod")))
+		must(t, patch(denied, p, `{"metadata":{"labels":{"app":"changed"},"annotations":{"leaderworkerset.sigs.k8s.io/recover":"true"}}}`))
+		must(t, denied.Status().Patch(ctx, p, client.RawPatch(types.MergePatchType, []byte(`{"status":{"phase":"Pending"}}`))))
+		native := newPod("native-no-authorization")
+		native.Labels = p.Labels
+		must(t, actor("system:serviceaccount:kube-system:statefulset-controller").Create(ctx, native))
+		if got := authorizations.Load() - before; got != 0 {
+			t.Fatalf("unchanged metadata/native creation caused %d authorization webhook calls", got)
+		}
+		assertDenied(t, patch(denied, p, fmt.Sprintf(`{"metadata":{"labels":{%q:"changed"}}}`, labelKey)))
+		if authorizations.Load() == before {
+			t.Fatal("a protected change did not consult the authorization webhook")
+		}
+	})
 	t.Run("all_public_annotation_exceptions_remain_editable", func(t *testing.T) {
 		for i, key := range []string{
 			"leaderworkerset.sigs.k8s.io/exclusive-topology",
