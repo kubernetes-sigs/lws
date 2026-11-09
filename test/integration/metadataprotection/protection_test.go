@@ -417,10 +417,53 @@ func TestMetadataProtection(t *testing.T) {
 		}
 	})
 	t.Run("unrelated_opaque_revision_data_remains_usable", func(t *testing.T) {
-		for i, data := range []any{map[string]any{"spec": "opaque"}, map[string]any{"metadata": map[string]any{"labels": "opaque"}}} {
+		for i, data := range []any{
+			map[string]any{"spec": "opaque"},
+			map[string]any{"metadata": map[string]any{"labels": "opaque"}},
+			map[string]any{"custom": map[string]any{"Labels": map[string]any{"leaderworkerset.sigs.k8s.io/name": "unrelated"}}},
+		} {
 			obj := workload("ControllerRevision", fmt.Sprintf("opaque-%d", i))
 			obj.Object["data"] = data
 			must(t, denied.Create(ctx, obj))
+		}
+	})
+	t.Run("revision_metadata_paths_require_canonical_field_names", func(t *testing.T) {
+		for _, field := range []string{"labels", "annotations"} {
+			obj := workload("ControllerRevision", "coexisting-alias-"+field)
+			path := []string{"data", "spec", "leaderWorkerTemplate", "workerTemplate", "metadata", field}
+			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"app": "test"}, path...))
+			must(t, denied.Create(ctx, obj.DeepCopy()))
+			obj.SetName(obj.GetName() + "-protected")
+			path[len(path)-1] = strings.ToUpper(field[:1]) + field[1:]
+			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/worker-index": "0"}, path...))
+			assertDenied(t, denied.Create(ctx, obj))
+		}
+		paths := [][]string{
+			{"data", "metadata"},
+			{"data", "spec", "template", "metadata"},
+			{"data", "spec", "leaderWorkerTemplate", "leaderTemplate", "metadata"},
+			{"data", "spec", "leaderWorkerTemplate", "workerTemplate", "metadata"},
+		}
+		for location, metaPath := range paths {
+			for _, field := range []string{"labels", "annotations"} {
+				path := append(append([]string{}, metaPath...), field)
+				for i := 1; i < len(path); i++ {
+					alias := append([]string{}, path...)
+					alias[i] = strings.ToUpper(alias[i])
+					obj := workload("ControllerRevision", fmt.Sprintf("alias-%d-%s-%d", location, field, i))
+					must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/worker-index": "0"}, alias...))
+					assertDenied(t, denied.Create(ctx, obj))
+				}
+			}
+		}
+		// Go's JSON decoder also folds long S and the Kelvin sign to ASCII S/K.
+		for i, path := range [][]string{
+			{"data", "ſpec", "leaderWorkerTemplate", "workerTemplate", "metadata", "labels"},
+			{"data", "spec", "leaderWorkerTemplate", "worKerTemplate", "metadata", "annotations"},
+		} {
+			obj := workload("ControllerRevision", fmt.Sprintf("unicode-alias-%d", i))
+			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"disaggregatedset.x-k8s.io/name": "model"}, path...))
+			assertDenied(t, denied.Create(ctx, obj))
 		}
 	})
 	t.Logf("Tested metadata protection against Kubernetes %s", kubernetesVersion)

@@ -48,6 +48,12 @@ spec:
     message: LWS/DisaggregatedSet controller-owned annotations may only be written
       by their approved controllers, including in templates.
     reason: Forbidden
+  - expression: >-
+      request.resource.group != 'apps' || request.resource.resource != 'controllerrevisions' ||
+      variables.revisionFieldMaps.all(m, type(m.value) != map ||
+        m.value.all(k, m.names.all(n, k == n || !k.matches('(?i)^' + n + '$'))))
+    message: LWS/DisaggregatedSet metadata paths in ControllerRevision data must use canonical field names.
+    reason: Forbidden
   variables:
   # Reserve future keys automatically. Only explicit user annotation inputs
   # are exempt; new public inputs must be added to that exception list.
@@ -114,6 +120,20 @@ spec:
     expression: variables.entries[0]
   - name: oldEntries
     expression: variables.entries[1]
+  # Raw revision data retains field aliases that encoding/json later folds onto
+  # typed fields. Reject aliases at every structural level before inspecting keys.
+  # RE2's Unicode case folding also covers Go's long-S and Kelvin-sign aliases.
+  - name: revisionFieldMaps
+    expression: |-
+      [
+        {'value':object.?data.orValue({}), 'names':dyn(['metadata','spec'])},
+        {'value':object.?data.?spec.orValue({}), 'names':dyn(['template','leaderWorkerTemplate'])},
+        {'value':object.?data.?spec.?template.orValue({}), 'names':dyn(['metadata'])},
+        {'value':object.?data.?spec.?leaderWorkerTemplate.orValue({}), 'names':dyn(['leaderTemplate','workerTemplate'])},
+        {'value':object.?data.?spec.?leaderWorkerTemplate.?leaderTemplate.orValue({}), 'names':dyn(['metadata'])},
+        {'value':object.?data.?spec.?leaderWorkerTemplate.?workerTemplate.orValue({}), 'names':dyn(['metadata'])}
+      ] + variables.newEntries.filter(e, e.id.startsWith('revision')).map(e,
+        {'value':e.meta, 'names':dyn(['labels','annotations'])})
   # Compare both directions to catch additions and removals, including empty values.
   - name: protectedLabelsUnchanged
     expression: |-
