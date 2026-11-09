@@ -270,9 +270,9 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 }
 
 // exclusivePlacementScope reads the placement scope of one exclusive level
-// from the pod annotations. Pods created before the scope was recorded, or by
-// the deprecated annotations, have no scope annotation and keep the global
-// (ExclusiveTopology) behavior.
+// from the pod annotations. Only the Slice scope is recorded, since it is the
+// only value that changes the injected affinity; a missing scope keeps the
+// global (ExclusiveTopology) behavior.
 func exclusivePlacementScope(pod *corev1.Pod, scopeAnnotation string) leaderworkerset.PlacementType {
 	if scope := pod.Annotations[scopeAnnotation]; scope != "" {
 		return leaderworkerset.PlacementType(scope)

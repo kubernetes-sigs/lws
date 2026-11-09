@@ -207,13 +207,19 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		pod.Spec.Subdomain = pod.Name
 	}
+	// Mirror the leader template: a missing scope resolves as
+	// ExclusiveTopology, so only the Slice scope is recorded.
 	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
-		pod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
+		if scope == leaderworkerset.PlacementExclusiveSlice {
+			pod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
+		}
 	}
 	if subGroupTopologyKey, subGroupScope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = subGroupTopologyKey
-		pod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(subGroupScope)
+		if subGroupScope == leaderworkerset.PlacementExclusiveSlice {
+			pod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(subGroupScope)
+		}
 	}
 	// Set the controller owner reference for garbage collection and reconciliation.
 	if err := ctrl.SetControllerReference(&leaderSts, pod, scheme.Scheme); err != nil {

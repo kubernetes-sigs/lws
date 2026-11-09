@@ -534,3 +534,52 @@ func TestGetSlices(t *testing.T) {
 		assert.Equal(t, int32(3), GetSlices(ds))
 	})
 }
+
+func TestComputeRevisionPlacement(t *testing.T) {
+	role := func(policy *leaderworkersetv1.PlacementPolicy) []disaggregatedsetv1.DisaggregatedRoleSpec {
+		return []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: testUtilsRolePrefill,
+			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{PlacementPolicy: policy},
+			},
+		}}
+	}
+	slice := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: topology}
+	}
+	topology := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Topology: topology}
+	}
+	subGroupSlice := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone,
+			SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: topology}}
+	}
+
+	// Both revision algorithms must see the same placement identities: a
+	// disabled level and None hash the same, every exclusive change rolls.
+	for name, compute := range map[string]func([]disaggregatedsetv1.DisaggregatedRoleSpec) string{
+		"V1": ComputeRevisionV1,
+		"V2": ComputeRevision,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, compute(role(nil)), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone, Topology: "rack"})),
+				"a topology key on a None level does not change the identity")
+			assert.Equal(t, compute(role(nil)), compute(role(&leaderworkersetv1.PlacementPolicy{})),
+				"an empty policy does not change the identity")
+
+			assert.NotEqual(t, compute(role(nil)), compute(role(slice("rack"))),
+				"enabling ExclusiveSlice must roll out")
+			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(slice("block"))),
+				"changing the ExclusiveSlice topology must roll out")
+			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(topology("rack"))),
+				"switching between the exclusive scopes must roll out")
+			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(nil)),
+				"removing ExclusiveSlice must roll out")
+
+			assert.NotEqual(t, compute(role(nil)), compute(role(subGroupSlice("rack"))),
+				"enabling a subgroup ExclusiveSlice must roll out")
+			assert.NotEqual(t, compute(role(subGroupSlice("rack"))), compute(role(subGroupSlice("host"))),
+				"changing the subgroup ExclusiveSlice topology must roll out")
+		})
+	}
+}

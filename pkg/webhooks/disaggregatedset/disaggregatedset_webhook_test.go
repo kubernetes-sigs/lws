@@ -1758,6 +1758,18 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
+			name:     "group ExclusiveSlice placementPolicy",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSlice, Topology: sliceTopology},
+			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
+		},
+		{
+			name: "subgroup ExclusiveSlice placementPolicy",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSlice, Topology: sliceTopology}},
+			subGroups: true,
+			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
+		},
+		{
 			// The slice affinity and the group affinity are both required, so
 			// later groups of a slice cannot satisfy both and the slice splits.
 			name:     "group placementPolicy on a finer topology",
