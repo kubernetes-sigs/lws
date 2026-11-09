@@ -165,6 +165,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	metrics.InitLeaderWorkerSet(lws.Namespace, lws.Name)
 
 	if lws.DeletionTimestamp != nil {
 		if lws.Spec.PodTerminationPolicy == leaderworkerset.ParallelPodTerminationPolicy {

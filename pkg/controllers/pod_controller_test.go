@@ -3270,19 +3270,21 @@ func podCtrlReadCounters(lws *leaderworkerset.LeaderWorkerSet) podCtrlCounters {
 	}
 }
 
+// podCtrlRestartedLeader is the leader of a one-pod group, created age ago,
+// whose container restarted once.
+func podCtrlRestartedLeader(lws *leaderworkerset.LeaderWorkerSet, age time.Duration) *corev1.Pod {
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.CreationTimestamp = metav1.NewTime(time.Now().Add(-age))
+	leader.Status.Phase = corev1.PodRunning
+	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+	return leader
+}
+
 // TestHandleRestartPolicyMetrics checks that each restart-policy outcome is
 // counted once per group, however often the group is reconciled afterwards.
 func TestHandleRestartPolicyMetrics(t *testing.T) {
 	scheme := podCtrlTestScheme(t)
-
-	restartedLeader := func(lws *leaderworkerset.LeaderWorkerSet, age time.Duration) *corev1.Pod {
-		leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
-		leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
-		leader.CreationTimestamp = metav1.NewTime(time.Now().Add(-age))
-		leader.Status.Phase = corev1.PodRunning
-		leader.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
-		return leader
-	}
 
 	tests := []struct {
 		name string
@@ -3316,7 +3318,7 @@ func TestHandleRestartPolicyMetrics(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			leader := restartedLeader(tc.lws, tc.leaderAge)
+			leader := podCtrlRestartedLeader(tc.lws, tc.leaderAge)
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws, leader).Build()
 			r := &PodReconciler{Client: c, Scheme: scheme, Record: fakeEventRecorder{}}
 			before := podCtrlReadCounters(tc.lws)
@@ -3325,6 +3327,71 @@ func TestHandleRestartPolicyMetrics(t *testing.T) {
 			// pending and must not count it again.
 			for range 2 {
 				if _, _, err := r.handleRestartPolicy(context.Background(), *leader, *tc.lws.DeepCopy()); err != nil {
+					t.Fatalf("handleRestartPolicy() error = %v", err)
+				}
+			}
+
+			after := podCtrlReadCounters(tc.lws)
+			got := podCtrlCounters{
+				recreations:     after.recreations - before.recreations,
+				budgetExhausted: after.budgetExhausted - before.budgetExhausted,
+				backoffs:        after.backoffs - before.backoffs,
+			}
+			if got != tc.want {
+				t.Errorf("counter increments = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleRestartPolicyMetricsStaleLeader checks that a reconcile reading
+// the leader from before the first reconcile's writes, as a lagging cache
+// does, acts on the leader again but does not count it again.
+func TestHandleRestartPolicyMetricsStaleLeader(t *testing.T) {
+	tests := []struct {
+		name string
+		lws  *leaderworkerset.LeaderWorkerSet
+		// leaderAge is how long ago the leader pod was created.
+		leaderAge time.Duration
+		want      podCtrlCounters
+	}{
+		{
+			name: "the terminating leader is deleted again",
+			lws:  wrappers.BuildLeaderWorkerSet("metrics-stale-recreate").Size(1).Obj(),
+			want: podCtrlCounters{recreations: 1},
+		},
+		{
+			name:      "the pending recreation is marked again",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-stale-backoff").Size(1).RestartBackoff(ptr.To[int32](10), ptr.To[int32](300)).Obj(),
+			leaderAge: 2 * time.Second,
+			want:      podCtrlCounters{backoffs: 1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := podCtrlTestScheme(t)
+			leader := podCtrlRestartedLeader(tc.lws, tc.leaderAge)
+			leader.UID = "leader"
+			// Keeps the deleted leader terminating, like graceful pod deletion.
+			leader.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws, leader).Build()
+			stale := &corev1.Pod{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(leader), stale); err != nil {
+				t.Fatal(err)
+			}
+			cached := interceptor.NewClient(c, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if pod, ok := obj.(*corev1.Pod); ok && key == client.ObjectKeyFromObject(stale) {
+					stale.DeepCopyInto(pod)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			}})
+			r := &PodReconciler{Client: cached, Scheme: scheme, Record: fakeEventRecorder{}}
+			before := podCtrlReadCounters(tc.lws)
+
+			for range 2 {
+				if _, _, err := r.handleRestartPolicy(ctx, *leader, *tc.lws.DeepCopy()); err != nil {
 					t.Fatalf("handleRestartPolicy() error = %v", err)
 				}
 			}

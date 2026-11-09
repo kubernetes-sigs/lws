@@ -77,6 +77,6 @@ Besides the [controller-runtime metrics](https://book.kubebuilder.io/reference/m
 | `lws_group_restart_budget_exhausted_total` | `namespace`, `name` | Groups terminated because they used up `maxGroupRestarts`. Such a group stays down until it is recovered explicitly. |
 | `lws_group_restart_backoffs_total` | `namespace`, `name` | Group recreations delayed by `restartBackoff`. |
 
-`namespace` and `name` identify the LeaderWorkerSet. Its series are removed when the LeaderWorkerSet is deleted.
+`namespace` and `name` identify the LeaderWorkerSet. Its series start at 0 when the controller first reconciles it, so that `rate()` and `increase()` see the first event, and are removed when the LeaderWorkerSet is deleted.
 
 With the ServiceMonitor that the Kustomize and Helm installations above create, Prometheus sets `namespace` to the namespace of the scraped LWS manager and keeps the LeaderWorkerSet's namespace as `exported_namespace`, unless the ServiceMonitor sets `honorLabels: true`.

@@ -91,6 +91,16 @@ func GroupRestartBackedOff(namespace, name string) {
 	GroupRestartBackoffsTotal.WithLabelValues(namespace, name).Inc()
 }
 
+// InitLeaderWorkerSet creates the series of the LeaderWorkerSet namespace/name
+// at 0, so that rate() and increase() see its first recreation, exhaustion or
+// backoff.
+func InitLeaderWorkerSet(namespace, name string) {
+	GroupRecreationsTotal.WithLabelValues(namespace, name, GroupRecreateReasonPodRestart)
+	GroupRecreationsTotal.WithLabelValues(namespace, name, GroupRecreateReasonUpgradeSplit)
+	GroupRestartBudgetExhaustedTotal.WithLabelValues(namespace, name)
+	GroupRestartBackoffsTotal.WithLabelValues(namespace, name)
+}
+
 // ClearLeaderWorkerSet removes the series of the LeaderWorkerSet
 // namespace/name, so a deleted LeaderWorkerSet does not keep them until the
 // manager restarts.

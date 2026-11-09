@@ -2822,6 +2822,28 @@ func TestLeaderWorkerSetReconcilerClearsMetricsOfDeletedLWS(t *testing.T) {
 	}
 }
 
+func TestLeaderWorkerSetReconcilerInitializesMetrics(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	lws := wrappers.BuildLeaderWorkerSet("metrics-init").Obj()
+	t.Cleanup(func() { metrics.ClearLeaderWorkerSet(lws.Namespace, lws.Name) })
+
+	r := NewLeaderWorkerSetReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).WithStatusSubresource(lws).Build(), scheme, fakeEventRecorder{})
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	for name, existed := range map[string]bool{
+		"group_recreations_total PodRestart":   metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonPodRestart),
+		"group_recreations_total UpgradeSplit": metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit),
+		"group_restart_budget_exhausted_total": metrics.GroupRestartBudgetExhaustedTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+		"group_restart_backoffs_total":         metrics.GroupRestartBackoffsTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+	} {
+		if !existed {
+			t.Errorf("the LeaderWorkerSet has no %s series", name)
+		}
+	}
+}
+
 func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 	annotations := map[string]string{
 		leaderworkerset.ExclusiveKeyAnnotationKey:         "zone",

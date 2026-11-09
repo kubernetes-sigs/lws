@@ -98,6 +98,29 @@ func TestClearLeaderWorkerSet(t *testing.T) {
 	}
 }
 
+func TestInitLeaderWorkerSet(t *testing.T) {
+	resetAll(t)
+
+	InitLeaderWorkerSet("ns", "lws")
+
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"group_recreations_total", testutil.CollectAndCount(GroupRecreationsTotal), 2},
+		{"group_restart_budget_exhausted_total", testutil.CollectAndCount(GroupRestartBudgetExhaustedTotal), 1},
+		{"group_restart_backoffs_total", testutil.CollectAndCount(GroupRestartBackoffsTotal), 1},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s has %d series, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+	if got := testutil.ToFloat64(GroupRecreationsTotal.WithLabelValues("ns", "lws", GroupRecreateReasonPodRestart)); got != 0 {
+		t.Errorf("recreations ns/lws PodRestart = %v, want 0", got)
+	}
+}
+
 func TestRegister(t *testing.T) {
 	resetAll(t)
 	Register()
