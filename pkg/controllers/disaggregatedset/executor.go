@@ -303,13 +303,14 @@ func buildRolloutInputs(
 			config[i].CanaryOldReplicas = 0
 		}
 	}
+	scaleDownEnabled := canary || scaleDownDuringRolloutEnabled(disaggregatedSet)
 	return rolloutInputs{
 		allRoleNames:           allRoleNames,
-		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole, readiness),
+		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole, readiness, scaleDownEnabled),
 		config:                 config,
 		readiness:              readiness,
 		scaleUpDuringRollout:   canary || scaleUpDuringRolloutEnabled(disaggregatedSet),
-		scaleDownDuringRollout: canary || scaleDownDuringRolloutEnabled(disaggregatedSet),
+		scaleDownDuringRollout: scaleDownEnabled,
 		proportionalCanary:     canary,
 		stableRevision:         stable.Revision,
 	}
@@ -632,9 +633,9 @@ func rolloutTargetReplicas(
 	newRevision disaggregatedsetutils.RevisionRoles,
 	desiredReplicasByRole map[string]int,
 	readiness rolloutReadiness,
+	scaleDownDuringRollout bool,
 ) RoleReplicaState {
 	targets := make(RoleReplicaState, len(allRoleNames))
-	_, canary := canaryPercent(ds)
 	for i, roleName := range allRoleNames {
 		if !desiredRoles.Has(roleName) {
 			continue
@@ -643,7 +644,7 @@ func rolloutTargetReplicas(
 		// Keep an External target from shrinking only while old capacity for
 		// this role still overlaps it. Drained old objects or another role's
 		// old replicas must not keep this target artificially high.
-		if !canary && !scaleDownDuringRolloutEnabled(ds) && isExternal(ds, roleName) && readiness.totalReplicas(oldRevisions, roleName) > 0 {
+		if !scaleDownDuringRollout && isExternal(ds, roleName) && readiness.totalReplicas(oldRevisions, roleName) > 0 {
 			targets[i] = max(targets[i], readiness.role(newRevision, roleName).spec)
 		}
 	}
