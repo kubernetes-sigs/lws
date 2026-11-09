@@ -190,6 +190,24 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		}
 	}
 	if selectedStep == nil {
+		// Match forward recovery: only persistent scheduler rejection may spend
+		// the bounded availability fallback, after ordinary and bootstrap work.
+		unschedulable, err := executor.targetUnschedulableRoles(ctx, stable, inputs.allRoleNames, inputs.readiness)
+		if err != nil {
+			return true, err
+		}
+		if slices.Contains(unschedulable, true) {
+			for _, candidate := range candidates {
+				state := canaryRestorationState(old, target, stable, candidate, inputs)
+				state.Target.UnschedulableRoles = unschedulable
+				if step := canaryRestorationStep(state); step != nil {
+					selected, selectedState, selectedStep = candidate, state, step
+					break
+				}
+			}
+		}
+	}
+	if selectedStep == nil {
 		return true, nil // Wait for replacement readiness before another drain.
 	}
 	return true, executor.applyCanaryRestoration(ctx, ds, selected, stable, inputs, selectedState, selectedStep)
@@ -241,7 +259,14 @@ func (executor *RollingUpdateExecutor) applyCanaryRestoration(ctx context.Contex
 		roles := bootstrapSurgeRoleNames(inputs.allRoleNames, state, step)
 		executor.Record.Eventf(ds, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge, "Bootstrap", "Created one bootstrap replica for roles %v while restoring the stable canary share", roles)
 	}
-	return executor.scaleRevision(ctx, ds, draining, inputs.allRoleNames, step.Past, scaleDown)
+	if err := executor.scaleRevision(ctx, ds, draining, inputs.allRoleNames, step.Past, scaleDown); err != nil {
+		return err
+	}
+	if step.Kind == UnavailableFallbackStep {
+		roles := unavailableFallbackRoleNames(inputs.allRoleNames, state, step)
+		executor.Record.Eventf(ds, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily relaxed availability by at most one replica per role while retiring revision %s to release excess bootstrap capacity for scheduler-unschedulable stable roles %v", draining.Revision, roles)
+	}
+	return nil
 }
 
 func compatibleCanaryRevision(revision disaggutils.RevisionRoles, names []string, desired map[string]int, readiness rolloutReadiness) bool {

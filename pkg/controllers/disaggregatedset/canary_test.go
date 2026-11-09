@@ -19,12 +19,14 @@ package disaggregatedset
 import (
 	"fmt"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
@@ -905,4 +907,49 @@ func canaryReverseTestInputs(desired, stable, previous, current RoleReplicaState
 		revisions[index] = revision
 	}
 	return inputs, revisions[:2], revisions[2]
+}
+
+func TestCanaryRestorationReleasesUnschedulableBootstrapCapacity(t *testing.T) {
+	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			desired := [2]int32{1, 4}
+			ds := newTwoRoleTestDisaggregatedSet(desired, [2]int{1, 1}, [2]int{})
+			setCanaryPercent(ds, 0)
+			objects := revisionLWSObjects("stable", [2]int32{1, 1}, [2]int32{0, 1}, desired, time.Unix(0, 0))
+			objects = append(objects, revisionLWSObjects("previous", [2]int32{1, 3}, [2]int32{1, 3}, desired, time.Unix(1, 0))...)
+			objects = append(objects, revisionLWSObjects("current", [2]int32{1, 1}, [2]int32{1, 1}, desired, time.Unix(2, 0))...)
+			for _, object := range objects {
+				object.(*leaderv1.LeaderWorkerSet).Spec.GroupIdentity = identity
+			}
+			pod := podWithSchedulingCondition(corev1.PodPending, corev1.ConditionFalse, corev1.PodReasonUnschedulable, metav1.Now())
+			pod.Name, pod.Namespace = "restoring-prefill", testNamespace
+			pod.Labels = map[string]string{leaderv1.SetNameLabelKey: "test-0-stable-prefill"}
+			c := newTestClient(append(objects, pod)...)
+			executor := newTestExecutor(c)
+			recorder := executor.Record.(*events.FakeRecorder)
+			// The bootstrap group already exceeds surge. Wait for scheduler evidence,
+			// then release capacity once without cascading through healthy history.
+			for _, persistent := range []bool{false, true, true} {
+				if persistent {
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(pod), pod))
+					pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-unschedulablePodGracePeriod - time.Second))
+					require.NoError(t, c.Status().Update(t.Context(), pod))
+				}
+				reconcileExistingForTest(t, executor, ds, "current")
+				want := [2]int32{1, 1}
+				if persistent {
+					want = [2]int32{}
+				}
+				assertRevisionReplicas(t, c, "current", want)
+				assertRevisionReplicas(t, c, "previous", [2]int32{1, 3})
+				assertRevisionReplicas(t, c, "stable", [2]int32{1, 2})
+			}
+			emitted := ""
+			for len(recorder.Events) > 0 {
+				emitted += <-recorder.Events
+			}
+			require.Equal(t, 1, strings.Count(emitted, EventReasonAvailabilityFallback))
+			require.Equal(t, 1, strings.Count(emitted, EventReasonBootstrapSurge))
+		})
+	}
 }
