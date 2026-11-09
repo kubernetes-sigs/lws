@@ -264,7 +264,7 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 			if tc.message != "" {
 				require.Contains(t, executor.canaryBlocked, tc.message)
 				r := newTestReconciler(c)
-				require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill"}, "new", desired, nil, false, executor.canaryBlocked))
+				require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill"}, "new", desired, nil, ptr.To(false), executor.canaryBlocked))
 				require.Equal(t, "CanaryBlocked", meta.FindStatusCondition(ds.Status.Conditions, "Progressing").Reason)
 			}
 			stored := &leaderv1.LeaderWorkerSet{}

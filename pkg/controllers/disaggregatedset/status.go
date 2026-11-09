@@ -42,8 +42,9 @@ import (
 // updateStatus publishes cached counts and conditions.
 // Scalers use the same counts as the DisaggregatedSet's nested role status.
 // canaryHeld reports that the rollout executor found every rolling slice
-// settled at the canary percentage in this reconcile.
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld bool, canaryBlocked string) error {
+// settled at the canary percentage in this reconcile. Nil means observation
+// is pending, so only an unchanged, previously verified hold can be retained.
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld *bool, canaryBlocked string) error {
 	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
@@ -54,10 +55,16 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	setMinAvailableReplicas(ds, roleStatuses, desiredReplicasByRole, sliceCount)
 	observedReplicas, available := summarizeRoleStatuses(roleStatuses)
 
+	held := ptr.Deref(canaryHeld, false)
+	if canaryHeld == nil {
+		previous := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+		held = previous != nil && previous.Status == metav1.ConditionTrue && previous.Reason == reasonCanaryHeld &&
+			previous.ObservedGeneration == ds.Generation && equality.Semantic.DeepEqual(ds.Status.RoleStatuses, roleStatuses)
+	}
 	changed := setRoleStatuses(ds, roleStatuses)
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
 	unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole)
-	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, canaryHeld)
+	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, held)
 	if canaryBlocked != "" && len(unresolvedRoles) == 0 {
 		condition.Type = string(disaggregatedsetv1.DisaggregatedSetProgressing)
 		condition.Reason, condition.Message = "CanaryBlocked", canaryBlocked
