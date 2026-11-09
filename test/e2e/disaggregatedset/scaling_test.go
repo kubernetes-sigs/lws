@@ -48,7 +48,7 @@ var _ = Describe("Scaling During a Rolling Update", func() {
 		}
 		setReadiness := func(version string, ready bool) error {
 			for _, role := range []string{"prefill", "decode"} {
-				pods, err := kubectl.Get("pods").Label("disaggregatedset.x-k8s.io/name", name).
+				pods, err := kubectl.Pods(name).
 					Label("scaling-test-version", version).Label("disaggregatedset.x-k8s.io/role", role).
 					FieldSelector("status.phase=Running").Output("name").RunQuiet()
 				if err != nil {
@@ -61,7 +61,7 @@ var _ = Describe("Scaling During a Rolling Update", func() {
 					}
 					// A terminating group may disappear between list and exec. The
 					// caller retries until observed readiness reaches its goal.
-					_, _ = utils.Run(exec.Command("kubectl", append([]string{"exec", pod, "--"}, command...)...))
+					_, _ = utils.Run(exec.Command("kubectl", append([]string{"exec", "-n", "default", pod, "--"}, command...)...))
 					if !ready {
 						break // Lose one group's readiness, preserving a healthy old revision.
 					}

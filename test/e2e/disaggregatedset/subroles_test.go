@@ -103,7 +103,7 @@ var _ = Describe("Ordinal subroles", func() {
 				for _, count := range members {
 					g.Expect(count).To(Equal(2))
 				}
-				output, err = kubectl.Get("disaggregatedset/" + name).Output("json").RunQuiet()
+				output, err = kubectl.Get("disaggregatedset/" + name).Namespace("default").Output("json").RunQuiet()
 				g.Expect(err).NotTo(HaveOccurred())
 				var live disaggv1.DisaggregatedSet
 				g.Expect(json.Unmarshal([]byte(output), &live)).To(Succeed())
