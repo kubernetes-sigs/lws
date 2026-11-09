@@ -81,8 +81,12 @@ option from your values files.
 
 ##### Metadata protection
 
-Metadata protection is enabled by default and requires Kubernetes 1.30 or newer.
-For offline rendering, pass `--kube-version 1.30.0` (or your target version) to `helm template`.
+Metadata protection is enabled by default, so installers need permission to create
+`ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` resources.
+To disable it, set `metadataProtection.enabled=false` in Helm or remove the
+`../components/metadata-protection` component from `config/default/kustomization.yaml`
+when building manifests with Kustomize.
+For offline rendering, pass your target cluster version with `--kube-version` to `helm template`.
 The chart installs a ValidatingAdmissionPolicy and enforcing binding, plus an
 admission-only RBAC permission for the manager ServiceAccount. Other clients
 cannot add, change or remove labels or annotations under the
@@ -98,7 +102,6 @@ values below. Native controllers must use separate credentials
 (`--use-service-account-credentials=true`). The shared `system:kube-controller-manager`
 identity is excluded by default: allowing it also trusts Pods copied from Job,
 CronJob, DaemonSet and ReplicationController templates that this policy does not inspect.
-Disable enforcement with `--set metadataProtection.enabled=false`.
 `bindingAnnotationUsernames` trusts the default Kubernetes and Volcano schedulers
 to write protected annotations through Pod bindings, since Volcano copies Pod
 annotations into its binding requests. Binding admission has no previous Pod to
@@ -106,9 +109,7 @@ compare; these identities can overwrite protected annotations during binding,
 but cannot modify protected labels or perform ordinary protected Pod updates.
 The manager's ClusterRoleBinding grants the admission-only `manage-metadata`
 verb. Normal object-write permissions do not grant it; cluster administrators
-retain access. Installers need permission to manage admission policies and bindings.
-For Kustomize, remove `../components/metadata-protection` from `config/default`
-to disable enforcement. Existing clusters gain protection when upgraded.
+retain access. Existing clusters gain protection when upgraded.
 
 ### Upgrading the chart
 
