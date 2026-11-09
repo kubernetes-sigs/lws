@@ -24,7 +24,7 @@ serviceAccount:
 # or server-side apply field-manager names.
 metadataProtection:
   enabled: true
-  # Require --use-service-account-credentials=true for native controllers.
+  # Defaults assume native controllers use --use-service-account-credentials=true.
   podControllerUsernames:
     - system:serviceaccount:kube-system:statefulset-controller
     - system:serviceaccount:kube-system:replicaset-controller

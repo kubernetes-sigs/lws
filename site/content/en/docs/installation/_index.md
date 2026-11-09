@@ -39,6 +39,13 @@ machine type for your nodes.**
   To disable it, set `metadataProtection.enabled=false` in Helm or remove the
   `../components/metadata-protection` component from `config/default/kustomization.yaml`
   when building manifests with Kustomize.
+  Before installing or upgrading a cluster using the shared `system:kube-controller-manager`
+  identity (`--use-service-account-credentials=false`), switch to separate controller credentials
+  or include that identity in `metadataProtection.podControllerUsernames`,
+  `metadataProtection.deploymentControllerUsernames` and
+  `metadataProtection.statefulSetControllerUsernames` (the corresponding policy variables
+  for Kustomize); otherwise LWS Pod creation is denied. Trusting the shared identity also
+  allows protected metadata from uninspected Job, CronJob, DaemonSet and ReplicationController templates.
 
 {{% if-main %}}
 <div id="install-a-released-version"></div>
