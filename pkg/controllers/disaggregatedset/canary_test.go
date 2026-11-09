@@ -953,3 +953,24 @@ func TestCanaryRestorationReleasesUnschedulableBootstrapCapacity(t *testing.T) {
 		})
 	}
 }
+
+func TestCanaryMixedResizeCanDrainWhileBaselineLoads(t *testing.T) {
+	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			// Demand changed in opposite directions. Stable Prefill is still
+			// loading and short of its 15-group share; Decode can safely shrink.
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{20, 4}, [2]int{1, 1}, [2]int{})
+			setCanaryPercent(ds, 25)
+			objects := revisionLWSObjects("stable", [2]int32{14, 6}, [2]int32{6, 6}, [2]int32{8, 8}, time.Unix(0, 0))
+			objects = append(objects, revisionLWSObjects("current", [2]int32{6, 1}, [2]int32{6, 1}, [2]int32{20, 4}, time.Unix(1, 0))...)
+			for _, object := range objects {
+				object.(*leaderv1.LeaderWorkerSet).Spec.GroupIdentity = identity
+			}
+			c := newTestClient(objects...)
+			executor := newTestExecutor(c)
+			reconcileExistingForTest(t, executor, ds, "current")
+			assertRevisionReplicas(t, c, "stable", [2]int32{14, 3})
+			assertRevisionReplicas(t, c, "current", [2]int32{6, 1})
+		})
+	}
+}

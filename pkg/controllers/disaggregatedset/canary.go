@@ -208,7 +208,9 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		}
 	}
 	if selectedStep == nil {
-		return true, nil // Wait for replacement readiness before another drain.
+		// A reverse-only pass cannot reduce an oversized stable role. Let the
+		// forward planner find any safe progress while its other roles load.
+		return false, nil
 	}
 	return true, executor.applyCanaryRestoration(ctx, ds, selected, stable, inputs, selectedState, selectedStep)
 }
