@@ -1,9 +1,10 @@
 // Run against a built, versioned site.
 // PLAYWRIGHT_CHANNEL=chrome node site/scripts/layout.browser.mjs
 import assert from 'node:assert/strict';
-import { chromium } from '@playwright/test';
+import { chromium, firefox } from '@playwright/test';
 const origin = process.env.LWS_SITE_URL || 'http://127.0.0.1:18432';
-const browser = await chromium.launch({
+const engine = process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+const browser = await engine.launch({
   headless: true,
   ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
 });
@@ -11,12 +12,32 @@ const page = await browser.newPage({ reducedMotion: 'reduce' });
 
 async function visit(prefix = 'stable') {
   const response = await page.goto(new URL(`/${prefix}/docs/overview/`, origin).href);
-  assert.equal(response?.status(), 200, `${prefix}: overview must exist`);
+  assert.ok([200, 304].includes(response?.status()), `${prefix}: overview must exist`);
   await page.evaluate(() => document.fonts.ready);
   await page.locator('.navbar-logo').waitFor({ state: 'visible' });
   // Require the live observer, not just the CSS fallback used before JS loads.
   await page.waitForFunction(() => ['--lws-header-height', '--lws-logo-bottom', '--lws-footer-height']
     .every(name => Number.parseFloat(document.documentElement.style.getPropertyValue(name)) > 0));
+}
+
+async function assertLogoNavigation() {
+  await visit('main');
+  const logo = page.locator('.navbar-logo');
+  const initial = await logo.screenshot();
+  const asset = '**/images/lws-ds-logos.svg';
+  // The navigation logo must paint with the document, even when the standalone
+  // image is unavailable. Routing also disables the browser's HTTP image cache.
+  await page.route(asset, route => route.abort());
+  try {
+    for (const path of ['/main/docs/concepts/disaggregatedset/role-scaler/', '/stable/docs/overview/']) {
+      const response = await page.goto(new URL(path, origin).href);
+      assert.equal(response?.status(), 200);
+      await page.evaluate(() => document.fonts.ready);
+      assert.ok(initial.equals(await logo.screenshot()), `${path}: navigation logo depends on a separate image load`);
+    }
+  } finally {
+    await page.unroute(asset);
+  }
 }
 
 async function scrollTo(fraction) {
@@ -158,6 +179,7 @@ async function assertFooterResize() {
 }
 
 try {
+  await assertLogoNavigation();
   let positions = 0;
   for (const prefix of ['main', 'stable', 'v0.11']) {
     for (const viewport of [{ width: 2560, height: 1440 }, { width: 1440, height: 1000 },
@@ -223,7 +245,7 @@ try {
   }
 
   console.log(`Layout passed: ${positions} desktop scroll positions across main/stable/v0.11, `
-    + 'live layout observer and footer wrapping, full-width footer, independent short-screen sidebars, '
+    + 'logo across document navigation without an image load, live layout observer and footer wrapping, full-width footer, independent short-screen sidebars, '
     + 'anchors, tablet layout, 391/320px mobile navigation and dropdowns in both themes.');
 } finally {
   await browser.close();

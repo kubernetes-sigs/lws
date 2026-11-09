@@ -182,6 +182,28 @@ var _ = ginkgo.Describe("disaggregatedset policy validation", func() {
 			},
 			expectedError: leaderworkerset.SubGroupExclusiveKeyAnnotationKey,
 		}),
+		ginkgo.Entry("policy combined with exclusive-topology on a different topology key is rejected", &testValidationCase{
+			makeDisaggregatedSet: func() *disaggregatedset.DisaggregatedSet {
+				return buildDisaggregatedSet().
+					WithPlacementPolicy(disaggregatedset.PlacementExclusiveSlice, "topology.kubernetes.io/rack").
+					WithRoleAnnotation("prefill", leaderworkerset.ExclusiveKeyAnnotationKey, "kubernetes.io/hostname").
+					Obj()
+			},
+			expectedError: leaderworkerset.ExclusiveKeyAnnotationKey,
+		}),
+		ginkgo.Entry("policy combined with a role spec.placementPolicy on a different topology key is rejected", &testValidationCase{
+			makeDisaggregatedSet: func() *disaggregatedset.DisaggregatedSet {
+				disagg := buildDisaggregatedSet().
+					WithPlacementPolicy(disaggregatedset.PlacementExclusiveSlice, "topology.kubernetes.io/rack").
+					Obj()
+				disagg.Spec.Roles[0].Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
+					Type:     leaderworkerset.PlacementExclusiveTopology,
+					Topology: "kubernetes.io/hostname",
+				}
+				return disagg
+			},
+			expectedError: "spec.roles[0].spec.placementPolicy.type",
+		}),
 	)
 
 	ginkgo.It("rejects adding an LWS exclusive-topology annotation to a DisaggregatedSet with a placement policy", func() {

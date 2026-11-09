@@ -128,8 +128,15 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 		// GroupIdentity is normalized so "" and the CRD default Ordinal hash
 		// identically: objects persisted before the field existed must keep
 		// their revision once the API server starts defaulting it on reads.
-		GroupIdentity leaderworkersetv1.GroupIdentityType    `json:"groupIdentity,omitempty"`
-		Template      leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
+		GroupIdentity leaderworkersetv1.GroupIdentityType `json:"groupIdentity,omitempty"`
+		// PlacementPolicy is the role's exclusive placement from
+		// spec.placementPolicy. The DisaggregatedSet controller does not patch it
+		// onto existing LWS objects in place, so a change must roll out through a
+		// new revision. It is nil, and so omitted, when the role has no exclusive
+		// placement, which keeps the hashes of existing objects unchanged: the
+		// field did not exist before.
+		PlacementPolicy *leaderworkersetv1.PlacementPolicy     `json:"placementPolicy,omitempty"`
+		Template        leaderworkersetv1.LeaderWorkerTemplate `json:"template"`
 	}
 
 	templates := make([]roleTemplate, 0, len(roles))
@@ -139,13 +146,40 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 			groupIdentity = ""
 		}
 		templates = append(templates, roleTemplate{
-			Name:          role.Name,
-			GroupIdentity: groupIdentity,
-			Template:      role.Spec.LeaderWorkerTemplate,
+			Name:            role.Name,
+			GroupIdentity:   groupIdentity,
+			PlacementPolicy: normalizedPlacementPolicy(role.Spec.PlacementPolicy),
+			Template:        role.Spec.LeaderWorkerTemplate,
 		})
 	}
 
 	return computeRevision(templates)
+}
+
+// normalizedPlacementPolicy returns the exclusive placement that policy sets, or
+// nil when it sets none at either level, so an absent policy and type None hash
+// the same. Topology keys of levels that are not exclusive are dropped.
+func normalizedPlacementPolicy(policy *leaderworkersetv1.PlacementPolicy) *leaderworkersetv1.PlacementPolicy {
+	if policy == nil {
+		return nil
+	}
+	group := policy.Type == leaderworkersetv1.PlacementExclusiveTopology
+	subGroup := policy.SubGroup != nil && policy.SubGroup.Type == leaderworkersetv1.PlacementExclusiveTopology
+	if !group && !subGroup {
+		return nil
+	}
+	normalized := &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone}
+	if group {
+		normalized.Type = leaderworkersetv1.PlacementExclusiveTopology
+		normalized.Topology = policy.Topology
+	}
+	if subGroup {
+		normalized.SubGroup = &leaderworkersetv1.SubGroupPlacementPolicy{
+			Type:     leaderworkersetv1.PlacementExclusiveTopology,
+			Topology: policy.SubGroup.Topology,
+		}
+	}
+	return normalized
 }
 
 // ComputeRevision returns the current revision hash. Unlike the legacy
@@ -182,6 +216,11 @@ func ComputeRevision(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string {
 		if role.Spec.PodTerminationPolicy == leaderworkersetv1.SequentialPodTerminationPolicy {
 			role.Spec.PodTerminationPolicy = ""
 		}
+
+		// An absent policy and one without exclusive placement hash the same, so
+		// setting type None does not roll the slices. A nil policy stays nil, so
+		// existing hashes do not change.
+		role.Spec.PlacementPolicy = normalizedPlacementPolicy(role.Spec.PlacementPolicy)
 	}
 
 	// spec.roles is a map-style list keyed by name, so its order has no

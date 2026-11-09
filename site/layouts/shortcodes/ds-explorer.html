@@ -1,0 +1,39 @@
+{{- $slices := eq (.Get "kind") "slices" -}}
+<figure id="child-topology" class="ds-explorer{{ if $slices }} ds-explorer--slices{{ end }}">
+  <div class="de-map">
+    <div class="de-parent">
+      <img src="{{ "images/ds-logo.svg" | relURL }}" width="64" height="64" alt="">
+      <div><small>DisaggregatedSet</small><strong>my-inference</strong>{{ if $slices }}<code>spec.slices: 3</code>{{ end }}</div>
+    </div>
+    {{ if $slices }}
+    <div class="de-slices">
+      {{ range $index := slice 0 1 2 }}
+      <section class="de-slice" aria-label="Slice {{ $index }}">
+        <div class="de-slice-heading">Slice <strong>{{ $index }}</strong></div>
+        <div class="de-pair">
+          {{ range slice "prefill" "decode" }}
+          <div class="de-resource">
+            <img src="{{ "images/logo.svg" | relURL }}" width="50" height="50" alt="LeaderWorkerSet">
+            <strong>{{ . }}</strong>
+            <code><span>my-inference</span><wbr>-{{ $index }}-&lt;rev&gt;-<wbr>{{ . }}</code>
+          </div>
+          {{ end }}
+        </div>
+      </section>
+      {{ end }}
+    </div>
+    {{ else }}
+    <div class="de-role-tree" aria-label="Slice 0">
+      <span class="de-group-title">Slice 0</span>
+      {{ range slice "prefill" "decode" "encode" }}
+      <div class="de-resource">
+        <img src="{{ "images/logo.svg" | relURL }}" width="58" height="58" alt="LeaderWorkerSet">
+        <strong>{{ . }}</strong>
+        <code><span>my-inference</span><wbr>-0-&lt;rev&gt;-<wbr>{{ . }}</code>
+      </div>
+      {{ end }}
+    </div>
+    {{ end }}
+  </div>
+  <figcaption>Child LeaderWorkerSets {{ if $slices }}in three slices{{ else }}in slice 0{{ end }}, with one revision shown.</figcaption>
+</figure>

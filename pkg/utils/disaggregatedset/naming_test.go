@@ -177,6 +177,42 @@ func TestComputeRevisionV1Compatibility(t *testing.T) {
 	assert.Equal(t, "c51abc75", ComputeRevisionV1(roles))
 }
 
+func TestComputeRevisionV1PlacementPolicy(t *testing.T) {
+	roles := func(policy *leaderworkersetv1.PlacementPolicy) []disaggregatedsetv1.DisaggregatedRoleSpec {
+		prefill := roleSpec(testUtilsRolePrefill, "image:v1")
+		prefill.Spec.PlacementPolicy = policy
+		return []disaggregatedsetv1.DisaggregatedRoleSpec{prefill, roleSpec(testUtilsRoleDecode, "image:v1")}
+	}
+	exclusive := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Topology: topology}
+	}
+
+	// A role without exclusive placement keeps the pinned hash, so upgrading
+	// the controller replaces no LWS of an unversioned DisaggregatedSet.
+	for name, policy := range map[string]*leaderworkersetv1.PlacementPolicy{
+		"absent":        nil,
+		"type None":     {Type: leaderworkersetv1.PlacementNone},
+		"subgroup None": {Type: leaderworkersetv1.PlacementNone, SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementNone}},
+	} {
+		assert.Equal(t, "c51abc75", ComputeRevisionV1(roles(policy)), name)
+	}
+
+	// Setting, changing and clearing the placement each change the revision,
+	// so they roll out.
+	rack := ComputeRevisionV1(roles(exclusive("rack")))
+	assert.NotEqual(t, "c51abc75", rack)
+	assert.NotEqual(t, rack, ComputeRevisionV1(roles(exclusive("zone"))))
+	subGroupRack := ComputeRevisionV1(roles(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone,
+		SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Topology: "rack"}}))
+	assert.NotEqual(t, "c51abc75", subGroupRack)
+	assert.NotEqual(t, rack, subGroupRack)
+
+	// Levels that are not exclusive do not affect the revision.
+	withNoneSubGroup := exclusive("rack")
+	withNoneSubGroup.SubGroup = &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementNone}
+	assert.Equal(t, rack, ComputeRevisionV1(roles(withNoneSubGroup)))
+}
+
 func TestGetRoleConfigs(t *testing.T) {
 	disaggregatedSet := &disaggregatedsetv1.DisaggregatedSet{
 		Spec: disaggregatedsetv1.DisaggregatedSetSpec{

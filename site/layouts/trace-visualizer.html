@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="{{ .Site.Language.LanguageCode | default "en" }}">
+<head>
+  {{ partial "head.html" . }}
+  {{- $css := resources.Get "scss/_trace_player.scss" | toCSS | minify | fingerprint -}}
+  <link rel="stylesheet" href="{{ $css.RelPermalink }}" integrity="{{ $css.Data.Integrity }}">
+</head>
+<body class="td-page trace-player-page">
+  <header>{{ partial "navbar.html" . }}</header>
+  {{- $catalog := .Site.Data.trace_player -}}
+  {{- if not $catalog }}{{ errorf "Trace visualizer requires site/data/trace_player.json" }}{{ end -}}
+  {{- $initial := index $catalog 0 -}}
+  {{- $scenario := index $initial.scenarios 0 -}}
+  <div class="container-fluid td-outer">
+  <div class="td-main trace-player-shell">
+    <section class="trace-player-subheader" aria-labelledby="trace-player-title">
+      <h1 id="trace-player-title">{{ .Title }}</h1>
+      <div class="trace-player-tabs" role="group" aria-label="Trace libraries">
+        {{- range $catalog }}
+        <button type="button" data-trace-suite="{{ .id }}" aria-pressed="{{ eq .id $initial.id }}">{{ .title }}</button>
+        {{- end }}
+        <button type="button" data-trace-suite="import" aria-pressed="false">Import JSON</button>
+      </div>
+    <div class="trace-player-toolbar">
+      <div class="dropdown" data-trace-theme-control hidden>
+        <button type="button" class="dropdown-toggle" data-trace-theme value="" data-bs-toggle="dropdown" aria-haspopup="menu" aria-expanded="false">Follow site theme</button>
+        <div class="dropdown-menu dropdown-menu-end" role="menu" aria-label="Animation theme">
+          {{- range slice (slice "" "Follow site theme") (slice "lws" "LWS light") (slice "lws-dark" "LWS dark") (slice "mistral-light" "Mistral light") (slice "mistral-dark" "Mistral dark") (slice "llm-d-light" "llm-d light") (slice "llm-d-dark" "llm-d dark") }}
+          <button type="button" class="dropdown-item" data-trace-theme-option value="{{ index . 0 }}" role="menuitemradio" aria-checked="{{ eq (index . 0) "" }}">
+            {{ index . 1 }}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          </button>
+          {{- end }}
+        </div>
+      </div>
+      <div class="trace-player-exports" role="group" aria-label="Export">
+        <div class="dropdown">
+          <button type="button" class="dropdown-toggle" data-trace-export-menu data-bs-toggle="dropdown" aria-expanded="false" disabled>Export to</button>
+          <div class="dropdown-menu dropdown-menu-end">
+            <button type="button" class="dropdown-item" data-trace-export disabled>JSON</button>
+            <button type="button" class="dropdown-item" data-trace-media="gif" disabled>GIF</button>
+            <button type="button" class="dropdown-item" data-trace-media="video" title="MP4 when supported by your browser; otherwise WebM" disabled>MP4</button>
+            <button type="button" class="dropdown-item" data-trace-cancel hidden>Cancel export</button>
+          </div>
+        </div>
+        <output data-trace-export-status role="status" aria-live="polite" tabindex="0" hidden>
+          <span class="visually-hidden" data-trace-export-message></span>
+          <svg data-trace-export-progress viewBox="0 0 36 36" role="progressbar" aria-label="Export progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <circle class="trace-export-track" cx="18" cy="18" r="16"/>
+            <circle data-trace-export-ring cx="18" cy="18" r="16" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+          </svg>
+          <span data-trace-export-label aria-hidden="true"></span>
+          <svg data-trace-export-done viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          <svg data-trace-export-cancelled viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M7 17 17 7"/></svg>
+          <svg data-trace-export-error viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3v.1"/></svg>
+        </output>
+      </div>
+    </div>
+    <output data-trace-status role="status" aria-live="polite">Loading {{ $scenario.title }}…</output>
+    </section>
+    <div class="trace-player-layout">
+    <aside class="td-sidebar trace-player-sidebar">
+      <div class="td-sidebar__inner">
+      <nav id="td-section-nav" class="td-sidebar-nav collapse d-md-block" aria-label="Scenarios">
+        <h2 data-trace-list-title>Small Harness scenarios</h2>
+        <div data-trace-scenarios></div>
+      </nav>
+      </div>
+    </aside>
+    <main>
+    <div data-trace-import hidden>
+      <strong data-trace-import-name>Import a prepared drawing</strong>
+      <small id="trace-import-help">Prepared drawing JSON or .json.gz only, not raw kubectl or normalized trace JSON. Files stay in your browser; nothing is uploaded.</small>
+      <button type="button" data-trace-choose aria-describedby="trace-import-help">Choose JSON file</button>
+      <input data-trace-file type="file" accept=".json,.gz,application/json,application/gzip" aria-label="Prepared drawing file" hidden>
+    </div>
+    {{ partial "animation-player.html" (dict "page" . "id" "lws-trace" "data" $scenario.source "title" $scenario.title) }}
+    </main>
+    </div>
+  </div>
+  {{ partial "footer.html" . }}
+  </div>
+  {{ partial "scripts.html" . }}
+  <script type="application/json" id="trace-player-catalog">{{ $catalog | jsonify | safeJS }}</script>
+  {{- $export := resources.Get "js/trace-export.ts" | js.Build (dict "targetPath" "js/trace-export.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  {{- $worker := resources.Get "js/trace-gif-worker.ts" | js.Build (dict "targetPath" "js/trace-gif-worker.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  {{- $video := resources.Get "js/trace-video.ts" | js.Build (dict "targetPath" "js/trace-video.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  <script type="application/json" id="trace-export-assets">{{ dict "module" $export.RelPermalink "worker" $worker.RelPermalink "video" $video.RelPermalink | jsonify | safeJS }}</script>
+  {{- $app := resources.Get "js/trace-player.ts" | js.Build (dict "targetPath" "js/trace-player.js" "target" "es2022" "format" "esm" "minify" hugo.IsProduction) | fingerprint -}}
+  <script type="module" src="{{ $app.RelPermalink }}" integrity="{{ $app.Data.Integrity }}"></script>
+</body>
+</html>

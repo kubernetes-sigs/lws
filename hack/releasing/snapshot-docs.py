@@ -289,7 +289,7 @@ def generate(repo, manifest, output, offline=False):
                 shutil.copytree(static, staging / "static" / prefix)
             # Keep branding consistent with the current site shell, including
             # historical pages that reference their own versioned image paths.
-            for name in ("lws-ds-logos.svg", "ds-concept.svg", "ds-logo.svg"):
+            for name in ("lws-ds-logos.svg", "lws-concept.svg", "ds-concept.svg", "ds-logo.svg"):
                 branding = staging / "static/images" / name
                 if branding.is_file():
                     destination = staging / "static" / prefix / "images" / name

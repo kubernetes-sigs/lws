@@ -323,7 +323,10 @@ func TestReleaseCountsExistingReadyFirst(t *testing.T) {
 		"B": {"prefill": {Spec: 3, Ready: 1, Scheduled: 3}},
 	}, 1)
 	obj(s.Pods[0]["metadata"])["name"] = "z-ready"
-	require.NoError(t, catch(func() { l.Release("B", "prefill", 2, &s) }))
+	for _, p := range s.Pods[:2] {
+		obj(at(p, "metadata", "labels"))[SubroleLabel] = "fast"
+	}
+	require.NoError(t, catch(func() { largeRelease(l, s, "B", Targets{"prefill/fast": 2}) }))
 	require.Len(t, e.calls, 1)
 	require.Contains(t, e.calls[0].args, name(s.Pods[1]))
 	require.Equal(t, []string{"--kubeconfig", l.Options.Kubeconfig, "--context", l.Options.Context}, e.calls[0].args[:4], "ambient context used")

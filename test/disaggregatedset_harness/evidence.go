@@ -103,73 +103,63 @@ func (e *Evidence) Start(ctx context.Context, o Options) error {
 	o.defaults()
 	ctx, e.cancel = context.WithCancel(ctx)
 	e.done = make(chan struct{})
-	first := make(chan error, 1)
+	var previousStart, previousEnd time.Time
+	capture := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		began := o.Clock.Now()
+		id := e.CurrentCase()
+		call, cancel := context.WithTimeout(ctx, 8*time.Second)
+		args := o.kube("-n", Namespace, "get", DSResource+",lws,pods,dsrs,events", "-o", "json")
+		out, stderr, err := o.Executor.Run(call, o.Kubectl, args, nil)
+		cancel()
+		ended := o.Clock.Now()
+		row := Object{
+			"caseId":              id,
+			"startedAt":           unix(began),
+			"finishedAt":          unix(ended),
+			"durationSeconds":     ended.Sub(began).Seconds(),
+			"periodTargetSeconds": 1,
+			"eventsRequested":     true,
+			"eventsSource":        "same-snapshot-request",
+			"argv":                append([]string{o.Kubectl}, args...),
+			"stderr":              string(stderr),
+			"returncode":          0,
+		}
+		if !previousStart.IsZero() {
+			row["startGapSeconds"] = began.Sub(previousStart).Seconds()
+			row["previousIdleGapSeconds"] = began.Sub(previousEnd).Seconds()
+		}
+		if err == nil {
+			var items []Object
+			items, err = parseResourceList(out)
+			if err == nil {
+				row["state"] = stateOf(items)
+			}
+		}
+		if err != nil {
+			// Successful reads retain the parsed objects; raw output diagnoses failures.
+			row["stdout"] = string(out)
+			row["returncode"] = nil
+			row["error"] = err.Error()
+		}
+		e.Emit("snapshots.jsonl", row)
+		previousStart, previousEnd = began, ended
+		return err
+	}
+	if err := capture(); err != nil {
+		e.cancel()
+		close(e.done)
+		return fmt.Errorf("initial evidence acquisition failed: %w", err)
+	}
 	go func() {
 		defer close(e.done)
-		initial := true
-		var previousStart, previousEnd time.Time
-		for ctx.Err() == nil {
-			began := o.Clock.Now()
-			id := e.CurrentCase()
-			call, cancel := context.WithTimeout(ctx, 8*time.Second)
-			args := o.kube("-n", Namespace, "get", DSResource+",lws,pods,dsrs,events", "-o", "json")
-			out, stderr, err := o.Executor.Run(call, o.Kubectl, args, nil)
-			cancel()
-			ended := o.Clock.Now()
-			row := Object{
-				"caseId":              id,
-				"startedAt":           unix(began),
-				"finishedAt":          unix(ended),
-				"durationSeconds":     ended.Sub(began).Seconds(),
-				"periodTargetSeconds": 1,
-				"eventsRequested":     true,
-				"eventsSource":        "same-snapshot-request",
-				"argv":                append([]string{o.Kubectl}, args...),
-				"stderr":              string(stderr),
-				"returncode":          0,
-			}
-			if !previousStart.IsZero() {
-				row["startGapSeconds"] = began.Sub(previousStart).Seconds()
-				row["previousIdleGapSeconds"] = began.Sub(previousEnd).Seconds()
-			}
-			if err == nil {
-				var items []Object
-				items, err = parseResourceList(out)
-				if err == nil {
-					row["state"] = stateOf(items)
-				}
-			}
-			if err != nil {
-				// Successful reads already retain the parsed objects in state.
-				// Keep the raw response only when it is needed to diagnose failure.
-				row["stdout"] = string(out)
-				row["returncode"] = nil
-				row["error"] = err.Error()
-			}
-			e.Emit("snapshots.jsonl", row)
-			if initial {
-				first <- err
-				initial = false
-			}
-			previousStart, previousEnd = began, ended
-			if o.Clock.Sleep(ctx, max(time.Millisecond, time.Second-ended.Sub(began))) != nil {
-				return
-			}
+		for o.Clock.Sleep(ctx, max(time.Millisecond, time.Second-previousEnd.Sub(previousStart))) == nil {
+			_ = capture() // Later read failures stay in the recording; continue sampling.
 		}
 	}()
-	select {
-	case err := <-first:
-		if err != nil {
-			e.cancel()
-			<-e.done
-			return fmt.Errorf("initial evidence acquisition failed: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		e.cancel()
-		<-e.done
-		return ctx.Err()
-	}
+	return nil
 }
 
 // A successful process and syntactically valid JSON are not enough evidence:

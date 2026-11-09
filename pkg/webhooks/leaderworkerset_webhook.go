@@ -40,6 +40,8 @@ import (
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
+	accelerator "sigs.k8s.io/lws/pkg/utils/accelerators"
 )
 
 type LeaderWorkerSetWebhook struct {
@@ -135,16 +137,20 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(lws)
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), nil, &lws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
+	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
 	allErrs = append(allErrs, cdErrs...)
-	return warnings, allErrs.ToAggregate()
+	return append(warnings, placementPolicyWarnings(lws)...), allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
 	allErrs := r.generalValidate(newLws)
+	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), &oldLws.Spec, &newLws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
+	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
 	allErrs = append(allErrs, cdErrs...)
 	specPath := field.NewPath("spec")
@@ -173,7 +179,35 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 		allErrs = append(allErrs, field.Invalid(specPath.Child("podTerminationPolicy"), newLws.Spec.PodTerminationPolicy, "podTerminationPolicy is immutable"))
 	}
 
-	return warnings, allErrs.ToAggregate()
+	return append(warnings, placementPolicyWarnings(newLws)...), allErrs.ToAggregate()
+}
+
+func (r *LeaderWorkerSetWebhook) validateVolcanoTopology(oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
+	if r.SchedulerProvider != schedulerprovider.Volcano {
+		return nil
+	}
+	if oldLws != nil {
+		// Allow unrelated updates to objects that already have invalid annotations.
+		unchanged := true
+		for _, key := range []string{
+			schedulerprovider.VolcanoNetworkTopologyTierAnnotationKey,
+			schedulerprovider.VolcanoNetworkTopologyModeAnnotationKey,
+		} {
+			oldValue, oldSet := oldLws.Annotations[key]
+			newValue, newSet := lws.Annotations[key]
+			if oldSet != newSet || oldValue != newValue {
+				unchanged = false
+				break
+			}
+		}
+		if unchanged {
+			return nil
+		}
+	}
+	if _, err := schedulerprovider.NetworkTopologyFromAnnotations(lws); err != nil {
+		return field.ErrorList{field.Invalid(field.NewPath("metadata", "annotations"), field.OmitValueType{}, err.Error())}
+	}
+	return nil
 }
 
 func (r *LeaderWorkerSetWebhook) validateScheduling(ctx context.Context, oldLws, lws *v1.LeaderWorkerSet) field.ErrorList {
@@ -364,6 +398,8 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1
 			allErrs = append(allErrs, field.Invalid(metadataPath.Child("annotations", v1.SubGroupExclusiveKeyAnnotationKey), value, "cannot have subgroup-exclusive-topology without subGroupSize set"))
 		}
 	}
+	allErrs = append(allErrs, validatePlacementPolicy(specPath, lws)...)
+	allErrs = append(allErrs, validatePlacementPolicyAnnotations(specPath.Child("placementPolicy"), lws)...)
 	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
@@ -657,6 +693,98 @@ func ValidateSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) 
 	return allErrs
 }
 
+// validateTPUSubGroupPolicy rejects subgroup layouts whose pod labels and TPU
+// env injection describe different partitions, or that cannot admit a TPU
+// leader. See https://github.com/kubernetes-sigs/lws/issues/1284.
+//
+// A pod is injected only when its TPU container does not already set
+// TPU_WORKER_HOSTNAMES or TPU_WORKER_ID. LeaderExcluded with a TPU leader is
+// rejected when any pod is still injected: the leader has no subgroup-index
+// label, and workers are labeled without the leader while injection still
+// writes the leader into their hostname list. Otherwise subGroupSize 1 is
+// always one pod per subgroup. With a larger subgroup, leader-extra size
+// ((size-1) divisible, which implies size is not) breaks injection when both
+// pods request TPUs, and divisible size breaks it when only workers do.
+func validateTPUSubGroupPolicy(specPath *field.Path, spec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	policy := spec.LeaderWorkerTemplate.SubGroupPolicy
+	if policy == nil || policy.SubGroupSize == nil || *policy.SubGroupSize < 1 {
+		return nil
+	}
+	subGroupSize := *policy.SubGroupSize
+	size := ptr.Deref(spec.LeaderWorkerTemplate.Size, 1)
+	leaderSpec := leaderPodSpec(spec)
+	workerSpec := spec.LeaderWorkerTemplate.WorkerTemplate.Spec
+	leaderTPU := accelerator.PodRequestsTPUs(leaderSpec)
+	workerTPU := accelerator.PodRequestsTPUs(workerSpec)
+	leaderInjected := !tpuInjectionSkipped(leaderSpec)
+	workerInjected := !tpuInjectionSkipped(workerSpec)
+	leaderExcluded := policy.Type != nil && *policy.Type == v1.SubGroupPolicyTypeLeaderExcluded
+	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
+	// subGroupSize > 1 precedes the remainder, so subGroupSize 0 cannot reach it.
+	// For that range, (size-1) divisible already implies size is not.
+	partitionSized := subGroupSize > 1 && size >= subGroupSize
+
+	var allErrs field.ErrorList
+	switch {
+	case leaderTPU && leaderExcluded && (leaderInjected || workerInjected):
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupPolicyType"), *policy.Type,
+			"LeaderExcluded cannot be used when the leader requests google.com/tpu"))
+	case leaderTPU && workerTPU && partitionSized && (size-1)%subGroupSize == 0 && (leaderInjected || workerInjected):
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
+			"size must be divisible by subGroupSize when both leader and workers request google.com/tpu"))
+	case !leaderTPU && workerInjected && !leaderExcluded && partitionSized && size%subGroupSize == 0:
+		allErrs = append(allErrs, field.Invalid(subGroupSizePath, subGroupSize,
+			"the TPU env and subgroup label partitions diverge when size is divisible by subGroupSize and the leader requests no google.com/tpu while the workers do; use size = k*subGroupSize + 1 (optionally with subGroupPolicy.subGroupPolicyType: LeaderExcluded)"))
+	}
+	return allErrs
+}
+
+// ValidateTPUSubGroupOnWrite checks TPU subgroup partitions for a create
+// (oldSpec nil) or an update. A spec that already fails stays writable, so
+// annotation cleanup, replica changes, and finalizer removal still succeed.
+// A spec that passes cannot be updated into a failing one.
+func ValidateTPUSubGroupOnWrite(specPath *field.Path, oldSpec, newSpec *v1.LeaderWorkerSetSpec) field.ErrorList {
+	if oldSpec != nil && len(validateTPUSubGroupPolicy(specPath, oldSpec)) > 0 {
+		return nil
+	}
+	return validateTPUSubGroupPolicy(specPath, newSpec)
+}
+
+func leaderPodSpec(spec *v1.LeaderWorkerSetSpec) corev1.PodSpec {
+	if spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		return spec.LeaderWorkerTemplate.LeaderTemplate.Spec
+	}
+	return spec.LeaderWorkerTemplate.WorkerTemplate.Spec
+}
+
+// tpuInjectionSkipped reports whether addTPUVariablesSubGroup returns before
+// reading subgroup labels. A pod with no TPU container takes that path too.
+func tpuInjectionSkipped(spec corev1.PodSpec) bool {
+	container := firstContainerRequestingTPUs(spec.Containers)
+	if container == nil {
+		container = firstContainerRequestingTPUs(spec.InitContainers)
+	}
+	if container == nil {
+		return true
+	}
+	for _, env := range container.Env {
+		if env.Name == accelerator.TpuWorkerHostNames || env.Name == accelerator.TpuWorkerId {
+			return true
+		}
+	}
+	return false
+}
+
+func firstContainerRequestingTPUs(containers []corev1.Container) *corev1.Container {
+	for i := range containers {
+		if accelerator.ContainersRequestTPUs(containers[i]) {
+			return &containers[i]
+		}
+	}
+	return nil
+}
+
 func (r *LeaderWorkerSetWebhook) validateComputeDomain(oldLws, lws *v1.LeaderWorkerSet) (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
@@ -774,4 +902,118 @@ func ValidateReservedComputeDomainClaim(templatePath *field.Path, tpl *corev1.Po
 		}
 	}
 	return allErrs
+}
+
+// validatePlacementPolicy validates what the CRD schema cannot: that each
+// topology is a valid label key, that subgroup placement has subgroups to place,
+// and that the group and subgroup levels use different keys. With the same key,
+// each subgroup would need its own domain inside the single domain of its group,
+// which cannot schedule once a group has more than one subgroup, and is
+// redundant otherwise. The keys are compared after resolving each level from
+// the field or its annotation, so a level set through an annotation is checked
+// too. The check runs only when placementPolicy is set, so objects that use only
+// the annotations are validated as before.
+func validatePlacementPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	allErrs := field.ErrorList{}
+	policy := lws.Spec.PlacementPolicy
+	if policy == nil {
+		return allErrs
+	}
+	policyPath := specPath.Child("placementPolicy")
+	subGroupPath := policyPath.Child("subGroup")
+	allErrs = append(allErrs, validateTopologyKey(policy.Topology, policyPath.Child("topology"))...)
+	subGroupFromField := false
+	if policy.SubGroup != nil {
+		allErrs = append(allErrs, validateTopologyKey(policy.SubGroup.Topology, subGroupPath.Child("topology"))...)
+		subGroupFromField = policy.SubGroup.Type == v1.PlacementExclusiveTopology
+		if subGroupFromField && lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+			allErrs = append(allErrs, field.Invalid(subGroupPath, policy.SubGroup, "requires leaderWorkerTemplate.subGroupPolicy"))
+		}
+	}
+	groupKey, group := utils.ExclusiveTopologyKey(lws)
+	subGroupKey, subGroup := utils.SubGroupExclusiveTopologyKey(lws)
+	if group && subGroup && groupKey == subGroupKey {
+		path := policyPath.Child("topology")
+		if subGroupFromField {
+			path = subGroupPath.Child("topology")
+		}
+		allErrs = append(allErrs, field.Invalid(path, subGroupKey, "group and subgroup exclusive placement must use different topology keys"))
+	}
+	return allErrs
+}
+
+func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if topology == "" {
+		// The CRD schema requires topology when the type needs one.
+		return allErrs
+	}
+	for _, msg := range utilvalidation.IsQualifiedName(topology) {
+		allErrs = append(allErrs, field.Invalid(fldPath, topology, msg))
+	}
+	return allErrs
+}
+
+// validatePlacementPolicyAnnotations rejects an ExclusiveTopology placement
+// that disagrees with the exclusive-topology annotation of the same level. A
+// matching pair is accepted so a value can be moved from the annotation to the
+// field in two steps. A level whose type is None falls back to the annotation,
+// since the API server defaults the type whenever placementPolicy is set.
+func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
+	policy := lws.Spec.PlacementPolicy
+	if policy == nil {
+		return nil
+	}
+	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
+		v1.ExclusiveKeyAnnotationKey, policyPath.Child("topology"))
+	if policy.SubGroup != nil {
+		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
+			v1.SubGroupExclusiveKeyAnnotationKey, policyPath.Child("subGroup", "topology"))...)
+	}
+	return allErrs
+}
+
+func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
+	if placementType != v1.PlacementExclusiveTopology || annotationValue == "" || topology == annotationValue {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue))}
+}
+
+// kueueTopologyAnnotations are the pod template annotations that request Kueue
+// topology-aware scheduling.
+var kueueTopologyAnnotations = []string{
+	"kueue.x-k8s.io/podset-required-topology",
+	"kueue.x-k8s.io/podset-preferred-topology",
+	"kueue.x-k8s.io/podset-unconstrained-topology",
+}
+
+// placementPolicyWarnings warns about the deprecated exclusive-topology
+// annotations, and about exclusive placement on a template that also requests
+// Kueue topology-aware scheduling, which does not see the injected affinity.
+func placementPolicyWarnings(lws *v1.LeaderWorkerSet) admission.Warnings {
+	var warnings admission.Warnings
+	if _, found := lws.Annotations[v1.ExclusiveKeyAnnotationKey]; found {
+		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy instead", v1.ExclusiveKeyAnnotationKey))
+	}
+	if _, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {
+		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy.subGroup instead", v1.SubGroupExclusiveKeyAnnotationKey))
+	}
+	_, exclusive := utils.ExclusiveTopologyKey(lws)
+	_, subGroupExclusive := utils.SubGroupExclusiveTopologyKey(lws)
+	if !exclusive && !subGroupExclusive {
+		return warnings
+	}
+	templates := []*corev1.PodTemplateSpec{&lws.Spec.LeaderWorkerTemplate.WorkerTemplate}
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		templates = append(templates, lws.Spec.LeaderWorkerTemplate.LeaderTemplate)
+	}
+	for _, template := range templates {
+		for _, annotation := range kueueTopologyAnnotations {
+			if _, found := template.Annotations[annotation]; found {
+				return append(warnings, fmt.Sprintf("exclusive placement is combined with %s: Kueue topology-aware scheduling does not account for the affinity that exclusive placement injects, so a group can be assigned a domain it cannot schedule in", annotation))
+			}
+		}
+	}
+	return warnings
 }

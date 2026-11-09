@@ -19,6 +19,8 @@ set -o nounset
 set -o pipefail
 
 SCHEDULER_PROVIDER=${SCHEDULER_PROVIDER:-""}
+USE_FAKE_GPU_OPERATOR=${USE_FAKE_GPU_OPERATOR:-"false"}
+FAKE_GPU_OPERATOR_VERSION=${FAKE_GPU_OPERATOR_VERSION:-"0.0.72"}
 LWS_UPGRADE_FROM_VERSION=${LWS_UPGRADE_FROM_VERSION:-""}
 # LWS_UPGRADE_METHOD selects how the old release is installed and upgraded:
 # "manifests" (default, kustomize) or "helm".
@@ -34,9 +36,34 @@ HELM_CHART_REPO=${HELM_CHART_REPO:-"registry.k8s.io/lws/charts"}
 HELM_RELEASE_NAME=${HELM_RELEASE_NAME:-"lws"}
 LWS_NAMESPACE=${LWS_NAMESPACE:-"lws-system"}
 export CWD=$(pwd)
+# PERFORMANCE_TEST=true runs the scalability test in test/performance instead of
+# the e2e suites, on simulated KWOK nodes. See test/performance/README.md.
+PERFORMANCE_TEST=${PERFORMANCE_TEST:-"false"}
+PERFORMANCE_GENERATOR_CONFIG=${PERFORMANCE_GENERATOR_CONFIG:-"$CWD/test/performance/configs/baseline/generator.yaml"}
+# An empty PERFORMANCE_RANGESPEC skips the limit check.
+PERFORMANCE_RANGESPEC=${PERFORMANCE_RANGESPEC-"$CWD/test/performance/configs/baseline/rangespec.yaml"}
+KWOK_VERSION=${KWOK_VERSION:-"v0.8.0"}
+KWOK_NODES=${KWOK_NODES:-20}
+GO_CMD=${GO_CMD:-"go"}
 
 KUBECONFIG_PATH=""
 OLD_MANIFEST=""
+CLUSTER_CREATED=false
+
+if [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
+    if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || [ -n "$SCHEDULER_PROVIDER" ] || [ "${USE_CERT_MANAGER:-false}" == "true" ]; then
+        echo "Fake GPU tests cannot be combined with upgrade, scheduler, or certificate overrides." >&2
+        exit 1
+    fi
+    if [ "$USE_EXISTING_CLUSTER" == "true" ] && [ -z "${KUBECONFIG:-}" ]; then
+        echo "Fake GPU tests require an explicit, dedicated KUBECONFIG for an existing cluster." >&2
+        exit 1
+    fi
+    if [ "${KUBECONFIG:-}" == "$HOME/.kube/config" ] || [[ "${KUBECONFIG:-}" == *:* ]]; then
+        echo "Fake GPU tests require a single dedicated kubeconfig file." >&2
+        exit 1
+    fi
+fi
 
 if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
     OLD_CONTROLLER_IMAGE="registry.k8s.io/lws/lws:${LWS_UPGRADE_FROM_VERSION}"
@@ -53,7 +80,7 @@ function save_controller_logs {
 }
 
 function cleanup {
-    if [ $USE_EXISTING_CLUSTER == 'false' ]
+    if [ "$CLUSTER_CREATED" == "true" ]
     then
         if [ ! -d "$ARTIFACTS" ]; then
             mkdir -p "$ARTIFACTS"
@@ -110,18 +137,37 @@ function startup {
             mkdir -p "$ARTIFACTS"
         fi
 
-        if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || { [ "$SCHEDULER_PROVIDER" == "kubernetes" ] && [ -z "${KUBECONFIG:-}" ]; }; then
+        if [ -n "$LWS_UPGRADE_FROM_VERSION" ] || [ "$PERFORMANCE_TEST" == "true" ] || {
+            [ -z "${KUBECONFIG:-}" ] && { [ "$SCHEDULER_PROVIDER" == "kubernetes" ] || [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; }
+        }; then
             KUBECONFIG_PATH="$(mktemp)"
             export KUBECONFIG="$KUBECONFIG_PATH"
         fi
 
         local kind_args=()
         if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
-            kind_args+=(--kubeconfig "$KUBECONFIG" --config "${KIND_CONFIG:-$CWD/test/e2e/config/kind-was.yaml}")
+            kind_args+=(--config "${KIND_CONFIG:-$CWD/test/e2e/config/kind-was.yaml}")
+        elif [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
+            kind_args+=(--config "${KIND_CONFIG:-$CWD/test/e2e/config/fake-gpu/kind.yaml}")
         fi
         $KIND create cluster --name $KIND_CLUSTER_NAME --image $E2E_KIND_VERSION --wait 1m "${kind_args[@]}"
+        CLUSTER_CREATED=true
         $KUBECTL get nodes > $ARTIFACTS/kind-nodes.log || true
         $KUBECTL describe pods -n kube-system > $ARTIFACTS/kube-system-pods.log || true
+    fi
+}
+function deploy_fake_gpu_operator() {
+    if [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
+        if [ "$USE_EXISTING_CLUSTER" == "true" ]; then
+            # Existing clusters are caller-owned; never install or upgrade their backend.
+            $HELM status fake-gpu -n fake-gpu > /dev/null
+        else
+            $HELM install fake-gpu oci://ghcr.io/run-ai/fake-gpu-operator/fake-gpu-operator \
+                --version "$FAKE_GPU_OPERATOR_VERSION" \
+                --namespace fake-gpu --create-namespace \
+                -f "$CWD/test/e2e/config/fake-gpu/values.yaml" \
+                --wait --timeout 5m
+        fi
     fi
 }
 function deploy_cert_manager() {
@@ -331,6 +377,8 @@ EOF
         $KUSTOMIZE edit remove resource "../internalcert"
         $KUSTOMIZE build $CWD/test/e2e/config/certmanager | $KUBECTL apply --server-side -f -
       popd
+    elif [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
+      $KUSTOMIZE build "$CWD/test/e2e/config/fake-gpu" | $KUBECTL apply --server-side -f -
     else
       $KUSTOMIZE build $CWD/test/e2e/config | $KUBECTL apply --server-side -f -
     fi
@@ -338,20 +386,58 @@ EOF
         -n "$LWS_NAMESPACE" --timeout=5m
 }
 
+# Installs the KWOK controller and the simulated nodes. With the stage-fast
+# stages, pods bound to these nodes become Running and Ready without a kubelet.
+function deploy_kwok {
+    if [ "$PERFORMANCE_TEST" != "true" ]; then
+        return
+    fi
+    local release="https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}"
+    $KUBECTL apply -f "$release/kwok.yaml"
+    $KUBECTL apply -f "$release/stage-fast.yaml"
+    # stage-fast's pod-ready stage sets readiness gate conditions itself, which
+    # would skip the group-ready gate. pod-stages.yaml replaces it.
+    $KUBECTL delete stage pod-ready
+    $KUBECTL apply -f "$CWD/test/performance/kwok/pod-stages.yaml"
+    $KUBECTL -n kube-system rollout status deployment/kwok-controller --timeout=5m
+    for i in $(seq 0 $((KWOK_NODES - 1))); do
+        sed "s/INDEX/$i/g" "$CWD/test/performance/kwok/node.yaml.tmpl"
+        echo "---"
+    done | $KUBECTL apply -f -
+    $KUBECTL wait --for=condition=Ready node -l type=kwok --timeout=2m
+}
+
+function run_performance_test {
+    $KUBECTL rollout status deployment/lws-controller-manager -n "$LWS_NAMESPACE" --timeout=5m
+    local args=(--config "$PERFORMANCE_GENERATOR_CONFIG" --output-dir "$ARTIFACTS" \
+        --lws-namespace "$LWS_NAMESPACE" --kubectl "$KUBECTL")
+    if [ -n "$PERFORMANCE_RANGESPEC" ]; then
+        args+=(--rangespec "$PERFORMANCE_RANGESPEC")
+    fi
+    $GO_CMD run "$CWD/test/performance/runner" "${args[@]}"
+}
+
 function run_tests() {
+    if [ "$PERFORMANCE_TEST" == "true" ]; then
+        run_performance_test
+        return
+    fi
     if [ -n "$LWS_UPGRADE_FROM_VERSION" ]; then
         run_upgrade_phase after
         return
     fi
 
-    if [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
+    if [ "$USE_FAKE_GPU_OPERATOR" == "true" ]; then
+        $GINKGO --junit-report=junit.xml --json-report=fake-gpu.json \
+            --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=FakeGPU "$CWD/test/e2e"
+    elif [ "$SCHEDULER_PROVIDER" == "kubernetes" ]; then
         $GINKGO --junit-report=junit.xml --output-dir="$ARTIFACTS" -v --fail-on-empty --label-filter=WorkloadAwareScheduling "$CWD/test/e2e"
     elif [ -n "$SCHEDULER_PROVIDER" ]; then
         # Run gang scheduling tests
         $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --label-filter='!WorkloadAwareScheduling' --focus="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
     else
         # Run normal tests, skip gang scheduling tests
-        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
+        $GINKGO --junit-report=junit.xml --output-dir=$ARTIFACTS -v --skip-package=upgrade --label-filter='!FakeGPU' --skip="leaderWorkerSet e2e gang scheduling tests" $CWD/test/e2e/...
     fi
 }
 
@@ -359,7 +445,9 @@ trap cleanup EXIT
 startup
 pull_upgrade_images
 kind_load
+deploy_fake_gpu_operator
 deploy_cert_manager
 deploy_gang_scheduler
+deploy_kwok
 lws_deploy
 run_tests

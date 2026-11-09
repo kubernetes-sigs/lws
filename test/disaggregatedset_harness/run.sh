@@ -9,49 +9,22 @@ suite() {
   (cd "$REPOSITORY" && go run ./test/disaggregatedset_harness/cmd "$@")
 }
 SUITE_ARGS=("$@")
-INTERACTIVE=0
-LIST=0
-DRY_RUN=0
-VALIDATE=0
-HELP=0
-case "${1:-}" in list) LIST=1 ;; dry-run) DRY_RUN=1 ;; esac
-for arg in "$@"; do
-  case "$arg" in -*) ;; *) continue ;; esac
-  key="${arg%%=*}"; key="${key#-}"; key="${key#-}"
-  case "$key" in h|help) HELP=1; continue ;; esac
-  value=true
-  [[ "$arg" != *=* ]] || value="${arg#*=}"
-  # Match Go's boolean flag spellings and apply repeated flags in order.
-  case "$value" in
-    1|t|T|TRUE|true|True) value=1 ;;
-    0|f|F|FALSE|false|False) value=0 ;;
-    *) continue ;; # The Go validation below reports malformed values.
-  esac
-  case "$key" in
-    interactive) INTERACTIVE="$value" ;;
-    auto) INTERACTIVE=$((1 - value)) ;;
-    list) LIST="$value" ;;
-    dry-run) DRY_RUN="$value" ;;
-    validate) VALIDATE="$value" ;;
-  esac
-done
-LIGHTWEIGHT=$((HELP || LIST || DRY_RUN || VALIDATE))
-if (( ${#SUITE_ARGS[@]} == 0 )); then LIGHTWEIGHT=1; SUITE_ARGS=(--list); fi
-if (( LIGHTWEIGHT )); then
-  suite "${SUITE_ARGS[@]}"
-  exit 0
-fi
-suite "${SUITE_ARGS[@]}" --validate
-
 fail() { printf '\033[31;1mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 section() { printf '\n\033[36;1m━━ %s ━━\033[0m\n' "$*"; }
+# Use the driver's parser for validation and launch mode before runtime setup.
+MODE="$(suite launcher-mode "$@")"
+case "$MODE" in
+  readonly) suite "$@"; exit 0 ;;
+  automatic) ;;
+  interactive) [[ -t 0 ]] || fail 'Interactive mode needs a terminal. Use --auto for unattended runs.' ;;
+  *) fail "Unexpected launcher mode: $MODE" ;;
+esac
 HARNESS_MAX_PODS="${HARNESS_MAX_PODS:-160}"
 [[ "$HARNESS_MAX_PODS" =~ ^[1-9][0-9]{0,3}$ ]] && (( HARNESS_MAX_PODS <= 1000 )) || fail 'HARNESS_MAX_PODS must be an integer between 1 and 1000.'
 TOOLS=(docker kubectl git go jq tar)
 for tool in "${TOOLS[@]}"; do
   command -v "$tool" >/dev/null || fail "Missing $tool. Install it before running the harness."
 done
-if (( INTERACTIVE )) && [[ ! -t 0 ]]; then fail 'Interactive mode needs a terminal. Use --auto for unattended runs.'; fi
 KIND="${KIND:-$(command -v kind || true)}"
 [[ -n "$KIND" ]] || fail 'Install kind on PATH, or set KIND=/absolute/path/to/kind.'
 command -v "$KIND" >/dev/null || fail "Cannot execute kind: $KIND"

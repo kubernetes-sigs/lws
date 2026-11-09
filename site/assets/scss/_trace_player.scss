@@ -1,0 +1,118 @@
+.trace-player-page {
+  .trace-player-shell {max-width: 1920px; margin-inline: auto; padding: var(--lws-header-height, 5rem) 12px 0;}
+  .trace-player-subheader {
+    // Stay below Docsy's navbar (32), including its hanging logo and dropdowns.
+    position: sticky; top: var(--lws-header-height, 5rem); z-index: 30;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px;
+    padding-block: calc(var(--lws-logo-bottom, 6.55rem) - var(--lws-header-height, 5rem) + .5rem) 8px;
+    margin-bottom: 12px; border-bottom: 1px solid var(--bs-border-color); background: var(--bs-body-bg);
+  }
+  .trace-player-layout {display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 24px;}
+  main {width: 100%; max-width: 1200px; min-width: 0; padding-block: 0 2rem;}
+  h1 {font-size: 1.125rem; margin: 0;}
+  .trace-player-sidebar {padding: 0 12px 0 0; border-right: 0;}
+  .trace-player-sidebar[hidden] + main {grid-column: 1 / -1; max-width: none;}
+  .trace-player-sidebar nav {margin: 0;}
+  @media (min-width: 768px) {
+    .trace-player-sidebar {
+      --lws-sidebar-top: calc(var(--lws-header-height, 5rem) + var(--lws-subheader-height, 0px) + 12px);
+    }
+    .trace-player-sidebar .td-sidebar__inner {
+      max-height: unquote("max(0px, calc(100dvh - var(--lws-sidebar-top) - var(--lws-footer-height, 0px) - .5rem))");
+    }
+  }
+  .trace-player-sidebar h2 {font-size: 1rem; margin-bottom: 12px;}
+  [data-trace-scenarios] {display: grid; gap: 4px;}
+  [data-trace-scenarios] button {width: 100%; text-align: left; border: 0; background: none; padding: 8px 10px; font-size: .875rem;}
+  [data-trace-scenarios] small {display: block; margin-top: 4px; color: var(--bs-secondary-color);}
+  [data-trace-scenarios] button[aria-current="true"] {background: var(--bs-primary-bg-subtle); box-shadow: inset 3px 0 var(--bs-primary);}
+  .trace-player-tabs, .trace-player-toolbar, .trace-player-exports {display: flex; align-items: center; gap: 10px; flex-wrap: wrap;}
+  .trace-player-tabs {gap: 6px; font-size: .8125rem;}
+  .trace-player-toolbar {margin-left: auto; font-size: .8125rem;}
+  .trace-player-exports {margin-left: auto; min-height: 36px;}
+  .trace-player-tabs button, .trace-player-toolbar button, .trace-player-sidebar button, [data-trace-choose] {font: inherit; color: inherit; border-radius: 6px; cursor: pointer;}
+  .trace-player-tabs button, .trace-player-toolbar button, [data-trace-choose] {background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); padding: 6px 10px;}
+  .trace-player-tabs button[aria-pressed="true"] {background: var(--bs-primary); border-color: var(--bs-primary); color: #fff;}
+  .trace-player-toolbar .dropdown-item {
+    border: 0; border-radius: 0; padding: 6px 16px; background: none; font-size: .8125rem;
+    &:hover, &:focus-visible {background: var(--bs-tertiary-bg);}
+  }
+  .trace-player-toolbar .dropdown-menu {min-width: 8rem; max-height: 60vh; overflow-y: auto;}
+  [data-trace-theme] {display: flex; align-items: center; justify-content: space-between; min-width: 10rem; gap: 10px;}
+  [data-trace-theme-option] {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    svg {width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; visibility: hidden;}
+    &[aria-checked="true"] svg {visibility: visible;}
+  }
+  button:disabled {opacity: .5; cursor: default;}
+  button:focus-visible, select:focus-visible, input:focus-visible, [data-trace-export-status]:focus-visible {outline: 2px solid var(--bs-primary); outline-offset: 3px;}
+  [data-trace-import] {
+    display: grid; justify-items: center; gap: 12px; flex: none; width: 100%;
+    margin-block: auto; padding-block: 32px; text-align: center;
+    small {max-width: 44rem; color: var(--bs-secondary-color);}
+    &[data-loaded="true"] {
+      display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+      margin-block: 0; padding-block: 0 12px; font-size: .8125rem;
+      strong {max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+      small {display: none;}
+    }
+  }
+  [data-trace-status], [data-trace-export-status] {display: block; font-size: .8125rem;}
+  [data-trace-status]:not(.visually-hidden) {width: 100%;}
+  [data-trace-export-status] {
+    position: relative; display: grid; place-items: center; flex: none;
+    width: 36px; height: 36px; border-radius: 50%; color: var(--bs-primary);
+    svg {grid-area: 1 / 1; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;}
+    [data-trace-export-progress] {width: 36px; height: 36px; transform: rotate(-90deg);}
+    .trace-export-track {stroke: var(--bs-border-color);}
+    [data-trace-export-label] {grid-area: 1 / 1; font-size: 10px; font-weight: 600;}
+    > svg, [data-trace-export-label] {visibility: hidden;}
+    &[data-state="progress"] { [data-trace-export-progress], [data-trace-export-label] {visibility: visible;} }
+    &[data-state="done"] {color: var(--bs-success-text-emphasis); [data-trace-export-done] {visibility: visible;} }
+    &[data-state="cancelled"] {color: var(--bs-secondary-color); [data-trace-export-cancelled] {visibility: visible;} }
+    &[data-state="error"] {color: var(--bs-danger-text-emphasis); [data-trace-export-error] {visibility: visible;} }
+  }
+  .lws-animation {width: 100%; max-width: none; margin-block: 16px 0;}
+  [data-animation-player] {position: relative;}
+  .lws-animation[aria-busy="true"] [data-animation-player]::after {
+    content: "Loading…"; position: absolute; top: 8px; right: 8px;
+    padding: 3px 8px; border: 1px solid var(--bs-border-color); border-radius: 4px;
+    background: var(--bs-body-bg); color: var(--bs-body-color); font-size: .75rem; pointer-events: none;
+  }
+  [hidden] {display: none !important;}
+  // A desktop workspace, with only the scenario list scrolling. Short/narrow
+  // screens keep normal document flow so controls remain reachable at zoom.
+  @media (min-width: 1024px) and (min-height: 600px) {
+    .td-outer {height: 100dvh; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto;}
+    .trace-player-shell {display: flex; flex-direction: column; min-height: 0; padding-bottom: 12px;}
+    .trace-player-subheader {position: relative; top: auto; flex: none;}
+    .trace-player-layout {flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr);}
+    .trace-player-sidebar {min-height: 0;}
+    .trace-player-sidebar .td-sidebar__inner {position: static; height: 100%; max-height: none;}
+    main {display: flex; flex-direction: column; max-width: none; min-height: 0; padding-bottom: 0;}
+    .lws-animation {display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 0;}
+    .lws-animation__viewport {
+      display: flex; align-items: center; justify-content: center;
+      flex: 1; min-height: 0; container-type: size;
+    }
+    [data-animation-error] {flex: none;}
+    [data-animation-player]:not(:fullscreen) {
+      // Size the whole player, not just the SVG, so its border and controls
+      // follow the drawing without empty side panels. Include both borders.
+      flex: none;
+      width: unquote("min(100cqw, calc((100cqh - var(--animation-controls-height, 90px) - 2px) * var(--animation-width-ratio) + 2px))");
+    }
+  }
+  @media (max-width: 767.98px) {
+    > header {position: sticky; top: 0; z-index: 1030;}
+    .td-outer {min-height: calc(100dvh - var(--lws-header-height, 10rem));}
+    .trace-player-shell {padding-top: 0;}
+    .trace-player-subheader {padding-top: 12px;}
+    .trace-player-toolbar {margin-left: 0;}
+    .trace-player-layout {display: block;}
+    .trace-player-sidebar {padding: 0;}
+    .trace-player-sidebar nav {max-height: 45vh; overflow-y: auto;}
+    .trace-player-sidebar:has(.show, .collapsing) {margin-bottom: 16px;}
+    .trace-player-exports {margin-left: 0;}
+  }
+}

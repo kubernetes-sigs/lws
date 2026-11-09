@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {stripTypeScriptTypes} from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
+import {drawingTimeline, position} from '../assets/js/animation-svg.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../assets/js/animation-player.ts', import.meta.url), 'utf8'))
   .replace(/^import .*$/gm, '')
@@ -17,7 +18,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
   const observers = [], mutations = [], queries = [], responses = [data];
   const draws = [];
   class SvgDrawing {
-    draw(index, dark, positions) {draws.push(structuredClone({index, dark, positions}));}
+    draw(time, theme, dark) {draws.push(structuredClone({time, theme, dark}));}
   }
   const element = () => {
     let content = '';
@@ -36,8 +37,10 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
   const nodes = Object.fromEntries(names.map(name => [name, element()]));
   nodes.error.hidden = true;
   const root = {...element(), dataset: {animationSource: '/example.json'},
+    dispatchEvent() {},
     querySelector(selector) {queries.push(selector); return nodes[selector.match(/data-animation-([^\]]+)/)[1]];},
-    querySelectorAll: () => names.filter(name => !['error', 'summary', 'clock'].includes(name)).map(name => nodes[name]),
+    querySelectorAll: selector => selector === '[data-animation-speed-option]' ? []
+      : names.filter(name => !['error', 'summary', 'clock'].includes(name)).map(name => nodes[name]),
   };
   const document = {documentElement: {dataset: {bsTheme: 'light'}}, hidden: false,
     querySelectorAll: () => [], addEventListener() {}, fullscreenEnabled: false};
@@ -47,7 +50,8 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
     observe() {}
     fire(visible) {this.callback([{isIntersecting: visible}]);}
   }
-  const sandbox = {document, console, Error, SvgDrawing, performance: {now: () => 0},
+  const sandbox = {document, console, Error, SvgDrawing, drawingTimeline, position,
+    AbortController, Blob, TransformStream, DecompressionStream, CustomEvent, performance: {now: () => 0},
     matchMedia: () => ({matches: reducedMotion, addEventListener() {}}),
     ResizeObserver: class {observe() {}},
     MutationObserver: class {constructor(callback) {mutations.push(callback);} observe() {}},
@@ -56,7 +60,7 @@ function fixture(data = drawing(), {intersection = true, reducedMotion = true} =
       fetches++;
       const response = responses.length > 1 ? responses.shift() : responses[0];
       if (response instanceof Error) throw response;
-      return {ok: true, json: async () => structuredClone(response)};
+      return new Response(JSON.stringify(response));
     },
     ...(intersection ? {IntersectionObserver: Observer} : {}),
   };
@@ -107,10 +111,10 @@ test('motion entry, advancement, exit and backward seeks repaint without leaving
   f.seek(.4); assert.equal(f.draws.length, 1);
   f.seek(.5); assert.equal(f.draws.length, 2);
   f.seek(1); assert.equal(f.draws.length, 3);
-  assert.deepEqual(f.draws.at(-1).positions, [{track: 0, x: 20, y: 20}]);
+  assert.equal(f.draws.at(-1).time, 1);
   f.seek(1); assert.equal(f.draws.length, 3, 'A paused motion at the same position is cached');
   f.seek(1.6); assert.equal(f.draws.length, 4, 'Leaving a motion clears its last position');
-  assert.deepEqual(f.draws.at(-1).positions, []);
+  assert.equal(f.draws.at(-1).time, 1.6);
   f.seek(1.8); assert.equal(f.draws.length, 4);
   f.seek(.6); assert.equal(f.draws.length, 5);
   f.theme('dark'); assert.equal(f.draws.length, 6);

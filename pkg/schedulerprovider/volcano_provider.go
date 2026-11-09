@@ -19,6 +19,7 @@ package schedulerprovider
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,8 +34,10 @@ import (
 )
 
 const (
-	Volcano                 ProviderType = "volcano"
-	VolcanoAnnotationPrefix string       = "volcano.sh/"
+	Volcano                                 ProviderType = "volcano"
+	VolcanoAnnotationPrefix                 string       = "volcano.sh/"
+	VolcanoNetworkTopologyModeAnnotationKey              = VolcanoAnnotationPrefix + "network-topology-mode"
+	VolcanoNetworkTopologyTierAnnotationKey              = VolcanoAnnotationPrefix + "network-topology-highest-tier-allowed"
 )
 
 type VolcanoProvider struct {
@@ -66,12 +69,26 @@ func (v *VolcanoProvider) ReconcileScheduling(ctx context.Context, lws *leaderwo
 			return NewReconcileError(ReasonUnsupportedProviderCapability, fmt.Errorf("the Volcano provider supports only replica gang policy in the typed API"))
 		}
 	}
+	if _, err := NetworkTopologyFromAnnotations(lws); err != nil {
+		return NewReconcileError(ReasonInvalidSchedulingConfiguration, err)
+	}
 	return nil
 }
 
 func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderPod *corev1.Pod) error {
 	var pg volcanov1beta1.PodGroup
 	pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+	if pgName == "" {
+		if lws.Spec.Scheduling != nil ||
+			leaderPod.Spec.SchedulerName == string(Volcano) ||
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.SchedulerName == string(Volcano) {
+			return fmt.Errorf("pod %s/%s is missing annotation %q required for Volcano gang scheduling", leaderPod.Namespace, leaderPod.Name, volcanov1beta1.KubeGroupNameAnnotationKey)
+		}
+		// Pods created before the provider was enabled did not receive the
+		// annotation from the CREATE webhook. Leave those groups on their
+		// existing scheduler without adding a PodGroup.
+		return nil
+	}
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
 	// With spec.scheduling, Ordinal PodGroups are owned by the LWS since an
@@ -121,6 +138,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		return err
 	}
 
+	networkTopology, err := NetworkTopologyFromAnnotations(lws)
+	if err != nil {
+		return err
+	}
 	minResources := utils.CalculatePGMinResources(lws)
 	pg = volcanov1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -135,8 +156,9 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		},
 		Spec: volcanov1beta1.PodGroupSpec{
 			// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
-			MinMember:    *lws.Spec.LeaderWorkerTemplate.Size,
-			MinResources: &minResources,
+			MinMember:       *lws.Spec.LeaderWorkerTemplate.Size,
+			MinResources:    &minResources,
+			NetworkTopology: networkTopology,
 		},
 	}
 
@@ -156,7 +178,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	if ownedByLWS {
 		controllerOwner = lws
 	}
-	err := ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())
+	err = ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())
 	if err != nil {
 		return err
 	}
@@ -175,6 +197,34 @@ func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
 	pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey] = GetPodGroupName(lwsName, groupIndex, pod.Labels[leaderworkerset.RevisionKey])
 
 	return nil
+}
+
+// NetworkTopologyFromAnnotations parses the Volcano topology annotations shared
+// by admission validation and PodGroup creation. It returns nil when neither is set.
+func NetworkTopologyFromAnnotations(lws *leaderworkerset.LeaderWorkerSet) (*volcanov1beta1.NetworkTopologySpec, error) {
+	tierValue, hasTier := lws.Annotations[VolcanoNetworkTopologyTierAnnotationKey]
+	modeValue, hasMode := lws.Annotations[VolcanoNetworkTopologyModeAnnotationKey]
+	if !hasTier {
+		if hasMode {
+			return nil, fmt.Errorf("LeaderWorkerSet %s/%s: %s requires %s", lws.Namespace, lws.Name, VolcanoNetworkTopologyModeAnnotationKey, VolcanoNetworkTopologyTierAnnotationKey)
+		}
+		return nil, nil
+	}
+	tier, err := strconv.Atoi(tierValue)
+	if err != nil || tier < 0 {
+		return nil, fmt.Errorf("LeaderWorkerSet %s/%s: %s must be a non-negative integer, got %q", lws.Namespace, lws.Name, VolcanoNetworkTopologyTierAnnotationKey, tierValue)
+	}
+	mode := volcanov1beta1.HardNetworkTopologyMode
+	if hasMode {
+		mode = volcanov1beta1.NetworkTopologyMode(modeValue)
+		if mode != volcanov1beta1.HardNetworkTopologyMode && mode != volcanov1beta1.SoftNetworkTopologyMode {
+			return nil, fmt.Errorf("LeaderWorkerSet %s/%s: %s must be hard or soft, got %q", lws.Namespace, lws.Name, VolcanoNetworkTopologyModeAnnotationKey, modeValue)
+		}
+	}
+	return &volcanov1beta1.NetworkTopologySpec{
+		Mode:               mode,
+		HighestTierAllowed: &tier,
+	}, nil
 }
 
 func inheritVolcanoAnnotations(lws *leaderworkerset.LeaderWorkerSet) map[string]string {

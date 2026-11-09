@@ -17,9 +17,22 @@ const seekTo = (seek, time) => seek.evaluate((input, value) => {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }, time);
 const value = seek => seek.evaluate(input => Number(input.value));
+async function assertSpeedMenuFits(figure, label) {
+  const toggle = figure.locator('[data-animation-speed]');
+  await toggle.click();
+  const option = figure.locator('[data-animation-speed-option]').last();
+  const fits = await option.evaluate(node => {
+    const menu = node.closest('.dropdown-menu').getBoundingClientRect(), rect = node.getBoundingClientRect();
+    return menu.x >= 0 && menu.right <= innerWidth && menu.y >= 0 && menu.bottom <= innerHeight &&
+      node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+  });
+  assert.ok(fits, `${label}: complete speed menu fits the screen and is not clipped by the player`);
+  await toggle.click();
+}
 let examples = 0;
 try {
-  for (const slug of ['rollout-strategy', 'llm-d-integration', 'scaling-during-rollout']) {
+  const scalingPage = prefix === '/main' || prefix === '' ? 'role-scaler' : 'scaling-during-rollout';
+  for (const slug of ['rollout-strategy', 'llm-d-integration', scalingPage]) {
     downloads.length = 0;
     const response = await page.goto(`${origin}${prefix}/docs/concepts/disaggregatedset/${slug}/`);
     assert.equal(response.status(), 200);
@@ -83,7 +96,23 @@ try {
         const name = (await figure.getAttribute('data-animation-source')).split('/').at(-1).replace('.json', '');
         await surface.screenshot({ path: `${process.env.LWS_SCREENSHOT_DIR}/${name}-svg-dark.png` });
       }
-      await figure.locator('[data-animation-speed]').selectOption('4');
+      if (examples === 1) {
+        const speed = figure.locator('[data-animation-speed]'), options = figure.locator('[data-animation-speed-option]');
+        await speed.focus();await speed.press('ArrowDown');
+        assert.equal(await options.first().evaluate(node => node === document.activeElement), true, 'Keyboard opens the speed menu');
+        await page.keyboard.press('ArrowDown');
+        assert.equal(await options.nth(1).evaluate(node => node === document.activeElement), true, 'Arrow keys move between speeds');
+        await page.keyboard.press('Escape');
+        assert.equal(await speed.getAttribute('aria-expanded'), 'false');
+        assert.equal(await speed.evaluate(node => node === document.activeElement), true, 'Escape restores focus to the speed button');
+      }
+      const speeds = await figures.locator('[data-animation-speed]').evaluateAll(nodes => nodes.map(node => node.value));
+      await figure.locator('[data-animation-speed]').click();
+      const option = figure.locator('[data-animation-speed-option][value="4"]');
+      await option.click();assert.equal(await option.getAttribute('aria-checked'), 'true');
+      assert.equal(await figure.locator('[data-animation-speed]').evaluate(node => node.value), '4');
+      const changed = await figures.locator('[data-animation-speed]').evaluateAll(nodes => nodes.map(node => node.value));
+      assert.equal(changed.filter((speed, index) => speed !== speeds[index]).length, 1, 'Changing speed affects only this player');
       await play.click();
       await page.waitForTimeout(300);
       assert.ok(await value(seek) > .5, 'Playback and speed advance presentation time');
@@ -155,6 +184,7 @@ try {
     await page.waitForFunction(button => button.getAttribute('aria-label') === 'Exit fullscreen', await fullscreen.elementHandle());
     assert.equal(await fullscreen.getAttribute('aria-label'), 'Exit fullscreen');
     assert.ok(await player.evaluate(node => node.scrollHeight <= innerHeight + 1), 'Fullscreen fits drawing and controls');
+    await assertSpeedMenuFits(automatic, 'Fullscreen');
     await fullscreen.click();
     await page.waitForFunction(() => !document.fullscreenElement);
     await page.waitForFunction(button => button.getAttribute('aria-label') === 'Enter fullscreen', await fullscreen.elementHandle());
@@ -166,6 +196,7 @@ try {
   const first = page.locator('[data-animation-source]').first();
   await first.scrollIntoViewIfNeeded();
   assert.ok(await first.locator('[data-animation-play]').isVisible());
+  await assertSpeedMenuFits(first, 'Mobile');
   assert.deepEqual(errors, []);
   console.log(`Verified ${examples} SVG examples: all captions/states, themes, controls, autoplay, offscreen/manual pause, loop, fullscreen, reduced motion, and 320px layout.`);
 } finally {

@@ -42,6 +42,32 @@ footer {
     }
   }
 
+  // Embedded SVGs follow the selected theme, including Light on a dark OS.
+  :root[data-bs-theme="light"] { color-scheme: light; }
+
+  // Keep documentation tables within the page as the viewport narrows.
+  .td-content table:not(.td-initial) {
+    display: table;
+    width: 100%;
+    max-width: 100%;
+    font-size: clamp(.8125rem, calc(.65rem + .65vw), 1rem);
+
+    th, td {
+      padding: .45em clamp(.25rem, .7vw, .5rem);
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    th { overflow-wrap: normal; }
+    th:first-child { width: 30%; }
+
+    :not(pre) > code {
+      font-size: 1em;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+  }
+
   // Center the overview's combined mark in every documentation version.
   .td-content img[src$="/lws-ds-logos.svg"] {
     display: block;
@@ -101,6 +127,12 @@ footer {
   }
 
   .td-sidebar-nav {
+    // Use one unobtrusive native scrollbar for docs and the unlisted player.
+    scrollbar-width: thin;
+    scrollbar-color: var(--bs-secondary-color) transparent;
+    scrollbar-gutter: stable;
+    overscroll-behavior-y: contain;
+
     .td-sidebar-link {
       line-height: 1.25;
       text-wrap: balance;
@@ -196,6 +228,9 @@ footer {
       flex-shrink: 0;
     }
 
+    // Preserve the artwork's nested SVG viewports instead of Docsy's icon sizing.
+    .navbar-brand svg {margin: 0; height: revert;}
+
     @include media-breakpoint-up(md) {
       &.td-navbar--docs .navbar-brand {
         // The sidebar reserves clearance for the taller badge below the header.
@@ -203,10 +238,10 @@ footer {
         height: 5rem;
       }
 
-      &.td-navbar--docs img.navbar-logo { width: 12.5rem; }
+      &.td-navbar--docs svg.navbar-logo { width: 12.5rem; }
     }
 
-    img.navbar-logo {
+    svg.navbar-logo {
       display: block;
       width: 9.375rem;
       height: auto;
@@ -276,7 +311,7 @@ footer {
 
       .navbar-brand { margin-inline: auto; }
 
-      img.navbar-logo {
+      svg.navbar-logo {
         width: 11rem;
       }
 
@@ -451,6 +486,7 @@ footer {
 
 @import "code_theme";
 @import "animation_player";
+@import "ds_explorer";
 
 .lws-theme-control { display: flex; align-items: center; }
 .lws-theme-control .td-light-dark-menu { position: relative !important; }
