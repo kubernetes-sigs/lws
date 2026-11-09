@@ -38,21 +38,11 @@ spec:
       operations: [CREATE, UPDATE]
       resources: [computedomains, computedomains/*]
   validations:
-  # Compare both directions to catch additions and removals, including empty
-  # values. ControllerRevision data can contain unrelated non-map payload fields.
-  - expression: |-
-      variables.isManager || variables.nativeCreate || (
-      variables.newEntries.all(a, !has(a.meta.labels) || type(a.meta.labels) != map || a.meta.labels.all(k, !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.oldEntries.exists(b, b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map && k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k]))) &&
-      variables.oldEntries.all(a, !has(a.meta.labels) || type(a.meta.labels) != map || a.meta.labels.all(k, !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.newEntries.exists(b, b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map && k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k])))
-      )
+  - expression: variables.isManager || variables.nativeCreate || variables.protectedLabelsUnchanged
     message: LWS/DisaggregatedSet controller-owned labels may only be written by their
       approved controllers, including in templates.
     reason: Forbidden
-  - expression: |-
-      variables.isManager || variables.nativeCreate || variables.isBindingAnnotationWriter || (
-      variables.newEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.oldEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k]))) &&
-      variables.oldEntries.all(a, (a.id == 'object' && variables.isReplicaSetWriter) || !has(a.meta.annotations) || type(a.meta.annotations) != map || a.meta.annotations.all(k, k in variables.userAnnotationKeys || !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) || variables.newEntries.exists(b, b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map && k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k])))
-      )
+  - expression: variables.isManager || variables.nativeCreate || variables.isBindingAnnotationWriter || variables.protectedAnnotationsUnchanged
     message: LWS/DisaggregatedSet controller-owned annotations may only be written
       by their approved controllers, including in templates.
     reason: Forbidden
@@ -122,3 +112,52 @@ spec:
     expression: variables.entries[0]
   - name: oldEntries
     expression: variables.entries[1]
+  # Compare both directions to catch additions and removals, including empty values.
+  - name: protectedLabelsUnchanged
+    expression: |-
+      variables.newEntries.all(a,
+        !has(a.meta.labels) || type(a.meta.labels) != map ||
+        a.meta.labels.all(k,
+          !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) ||
+          variables.oldEntries.exists(b,
+            b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map &&
+            k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k]
+          )
+        )
+      ) &&
+      variables.oldEntries.all(a,
+        !has(a.meta.labels) || type(a.meta.labels) != map ||
+        a.meta.labels.all(k,
+          !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) ||
+          variables.newEntries.exists(b,
+            b.id == a.id && has(b.meta.labels) && type(b.meta.labels) == map &&
+            k in b.meta.labels && a.meta.labels[k] == b.meta.labels[k]
+          )
+        )
+      )
+  - name: protectedAnnotationsUnchanged
+    expression: |-
+      variables.newEntries.all(a,
+        (a.id == 'object' && variables.isReplicaSetWriter) ||
+        !has(a.meta.annotations) || type(a.meta.annotations) != map ||
+        a.meta.annotations.all(k,
+          k in variables.userAnnotationKeys ||
+          !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) ||
+          variables.oldEntries.exists(b,
+            b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map &&
+            k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k]
+          )
+        )
+      ) &&
+      variables.oldEntries.all(a,
+        (a.id == 'object' && variables.isReplicaSetWriter) ||
+        !has(a.meta.annotations) || type(a.meta.annotations) != map ||
+        a.meta.annotations.all(k,
+          k in variables.userAnnotationKeys ||
+          !variables.protectedPrefixes.exists(prefix, k.startsWith(prefix)) ||
+          variables.newEntries.exists(b,
+            b.id == a.id && has(b.meta.annotations) && type(b.meta.annotations) == map &&
+            k in b.meta.annotations && a.meta.annotations[k] == b.meta.annotations[k]
+          )
+        )
+      )
