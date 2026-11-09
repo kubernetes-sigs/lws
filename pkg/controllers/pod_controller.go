@@ -127,11 +127,34 @@ func mergeResult(r1, r2 ctrl.Result) ctrl.Result {
 }
 
 func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
-	result, err := r.reconcilePodRequest(ctx, req)
-	if err != nil || req.DeletedPod != nil {
+	var pod corev1.Pod
+	if req.DeletedPod != nil {
+		// A leader delete event arrives after its finalizers have been released.
+		// Replaying recovery from that snapshot could reset the budget or release
+		// worker finalizers for a replacement group with the same name/revision.
+		// Deleted workers still need restart-policy handling in reconcilePodRequest.
+		if podutils.LeaderPod(*req.DeletedPod) {
+			return ctrl.Result{}, nil
+		}
+		return r.reconcilePodRequest(ctx, *req.DeletedPod.DeepCopy())
+	}
+	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	result, err := r.reconcilePodRequest(ctx, *pod.DeepCopy())
+	if err != nil {
 		return result, err
 	}
-	return result, r.syncWorkerDeletionFinalizer(ctx, req)
+	// Decide on the finalizer from the same snapshot that was reconciled, so
+	// a deletion observed only by a later read is never released unhandled.
+	if err := r.syncWorkerDeletionFinalizer(ctx, req, &pod); err != nil {
+		if apierrors.IsConflict(err) {
+			// The Pod changed after the snapshot; reconcile it again.
+			return mergeResult(result, ctrl.Result{Requeue: true}), nil
+		}
+		return result, err
+	}
+	return result, nil
 }
 
 // recreatesGroupOnWorkerFailure reports whether a worker failure under the
@@ -140,31 +163,32 @@ func recreatesGroupOnWorkerFailure(policy leaderworkerset.RestartPolicyType) boo
 	return policy == leaderworkerset.RecreateGroupOnPodRestart || policy == leaderworkerset.RecreateGroupAfterStart
 }
 
-// syncWorkerDeletionFinalizer maintains WorkerDeletionFinalizer on worker Pods
-// of groups that are recreated on a worker failure. It runs after the Pod was
-// reconciled, so a terminating worker has had its restart policy handled and
-// its finalizer can be released. Pod admission adds the finalizer to new
-// workers; adding it here covers workers admitted without it, such as those
-// created before an upgrade, and costs one write per such worker.
-func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req podReconcileRequest) error {
-	var pod corev1.Pod
-	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
-		return client.IgnoreNotFound(err)
-	}
+// syncWorkerDeletionFinalizer maintains WorkerDeletionFinalizer on a worker
+// Pod of a group that is recreated on a worker failure. pod is the snapshot
+// that reconcilePodRequest has just handled, so a terminating worker has had
+// its restart policy applied and its finalizer can be released. Pod admission
+// adds the finalizer to new workers; adding it here covers workers admitted
+// without it, such as those created before an upgrade.
+//
+// Patches use optimistic locking: a merge patch replaces the whole finalizer
+// list, so a patch from a stale snapshot could drop a finalizer added since,
+// such as GroupRestartBudgetCleanupFinalizer. A conflict is returned to the
+// caller, which reconciles the Pod again.
+func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req podReconcileRequest, pod *corev1.Pod) error {
 	if req.UID != "" && pod.UID != req.UID {
 		return nil
 	}
-	if podutils.LeaderPod(pod) {
+	if podutils.LeaderPod(*pod) {
 		return nil
 	}
-	hasFinalizer := controllerutil.ContainsFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
+	hasFinalizer := controllerutil.ContainsFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
 	if pod.DeletionTimestamp != nil {
 		if !hasFinalizer {
 			return nil
 		}
-		patch := client.MergeFrom(pod.DeepCopy())
-		controllerutil.RemoveFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
-		return client.IgnoreNotFound(r.Patch(ctx, &pod, patch))
+		patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.RemoveFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+		return client.IgnoreNotFound(r.Patch(ctx, pod, patch))
 	}
 	if hasFinalizer {
 		return nil
@@ -176,8 +200,15 @@ func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req pod
 	if lws.DeletionTimestamp != nil {
 		return nil
 	}
+	// Routine events of workers that never need the finalizer, such as those of
+	// a None group, should not pay for a revision lookup. A worker of an old
+	// revision with a Recreate* policy is skipped once the live policy no
+	// longer recreates groups; the rollout replaces it.
+	if !recreatesGroupOnWorkerFailure(lws.Spec.LeaderWorkerTemplate.RestartPolicy) {
+		return nil
+	}
 	// The restart policy is part of the group's revision, as in reconcilePodRequest.
-	revision, err := revisionutils.GetRevision(ctx, r.Client, &lws, revisionutils.GetRevisionKey(&pod))
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &lws, revisionutils.GetRevisionKey(pod))
 	if err != nil {
 		return err
 	}
@@ -190,25 +221,14 @@ func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req pod
 	if !recreatesGroupOnWorkerFailure(groupLws.Spec.LeaderWorkerTemplate.RestartPolicy) {
 		return nil
 	}
-	patch := client.MergeFrom(pod.DeepCopy())
-	controllerutil.AddFinalizer(&pod, leaderworkerset.WorkerDeletionFinalizer)
-	return client.IgnoreNotFound(r.Patch(ctx, &pod, patch))
+	patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	controllerutil.AddFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+	return client.IgnoreNotFound(r.Patch(ctx, pod, patch))
 }
 
-func (r *PodReconciler) reconcilePodRequest(ctx context.Context, req podReconcileRequest) (ctrl.Result, error) {
-	var pod corev1.Pod
-	if req.DeletedPod != nil {
-		// A leader delete event arrives after its finalizers have been released.
-		// Replaying recovery from that snapshot could reset the budget or release
-		// worker finalizers for a replacement group with the same name/revision.
-		// Deleted workers still need restart-policy handling below.
-		if podutils.LeaderPod(*req.DeletedPod) {
-			return ctrl.Result{}, nil
-		}
-		pod = *req.DeletedPod.DeepCopy()
-	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
+// reconcilePodRequest reconciles one snapshot of a Pod: a live Pod read by
+// reconcilePod, or the last state of a deleted worker.
+func (r *PodReconciler) reconcilePodRequest(ctx context.Context, pod corev1.Pod) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(&pod))
 	ctx = ctrl.LoggerInto(ctx, log)
 
