@@ -3353,6 +3353,9 @@ func TestHandleRestartPolicyMetricsStaleLeader(t *testing.T) {
 		lws  *leaderworkerset.LeaderWorkerSet
 		// leaderAge is how long ago the leader pod was created.
 		leaderAge time.Duration
+		// exhausted starts the leader as an earlier reconcile left it before
+		// deleting it: marked exhausted and held by the budget finalizer.
+		exhausted bool
 		want      podCtrlCounters
 	}{
 		{
@@ -3366,6 +3369,12 @@ func TestHandleRestartPolicyMetricsStaleLeader(t *testing.T) {
 			leaderAge: 2 * time.Second,
 			want:      podCtrlCounters{backoffs: 1},
 		},
+		{
+			name:      "the exhausted leader is deleted again",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-stale-exhausted").Size(1).MaxGroupRestarts(0).Obj(),
+			exhausted: true,
+			want:      podCtrlCounters{budgetExhausted: 1},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3375,6 +3384,10 @@ func TestHandleRestartPolicyMetricsStaleLeader(t *testing.T) {
 			leader.UID = "leader"
 			// Keeps the deleted leader terminating, like graceful pod deletion.
 			leader.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+			if tc.exhausted {
+				leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+				leader.Finalizers = append(leader.Finalizers, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+			}
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws, leader).Build()
 			stale := &corev1.Pod{}
 			if err := c.Get(ctx, client.ObjectKeyFromObject(leader), stale); err != nil {

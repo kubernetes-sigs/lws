@@ -79,7 +79,9 @@ type PodReconciler struct {
 // countedLeaders remembers the leader pods each metric has counted. A
 // reconcile working from a lagging cache can act on a leader again, for
 // example delete a leader that is already terminating: the event repeats, the
-// count must not. Entries only need to outlive the cache lag.
+// count must not. Entries only need to outlive the cache lag. Each one follows
+// a write to the leader pod, so the client rate limit caps how fast they are
+// added: 4096 entries last at least 7s at the default QPS and burst of 500.
 type countedLeaders struct {
 	mu   sync.Mutex
 	seen *lru.Cache
@@ -91,7 +93,7 @@ func (c *countedLeaders) first(metric string, uid types.UID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.seen == nil {
-		c.seen = lru.New(1024)
+		c.seen = lru.New(4096)
 	}
 	key := metric + "/" + string(uid)
 	if _, found := c.seen.Get(key); found {
@@ -905,7 +907,9 @@ func (r *PodReconciler) terminateExhaustedGroup(ctx context.Context, lws *leader
 	}
 	r.Record.Eventf(lws, leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded", Delete,
 		fmt.Sprintf("Restart budget exhausted; terminated group %s and stopped automatic recovery", leader.Labels[leaderworkerset.GroupIndexLabelKey]))
-	metrics.GroupRestartBudgetExhausted(lws.Namespace, lws.Name)
+	if r.counted.first("exhausted", leader.UID) {
+		metrics.GroupRestartBudgetExhausted(lws.Namespace, lws.Name)
+	}
 	return true, nil
 }
 

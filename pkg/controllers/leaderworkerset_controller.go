@@ -160,7 +160,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	lws := &leaderworkerset.LeaderWorkerSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, lws); err != nil {
 		if apierrors.IsNotFound(err) {
-			// The LeaderWorkerSet is gone: drop its metric series.
+			// The LeaderWorkerSet is gone: drop its metric series. A pod
+			// controller increment from a lagging cache can still recreate one
+			// afterwards; that series stays until the manager restarts.
 			metrics.ClearLeaderWorkerSet(req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
