@@ -276,7 +276,9 @@ The active role/sub-role layout must match the recorded baseline; an
 incompatible baseline blocks even if a younger revision is compatible.
 An ambiguous initial choice or conflicting recorded baselines also blocks.
 Scaling a required role/sub-role to zero while peers remain positive blocks.
-Finish such layout changes at 100; scaling the whole set to zero is allowed.</p>
+Finish such layout changes at 100; scaling the whole set to zero is allowed.
+Once all groups have drained, the baseline is retired. Later scale-up uses
+only the current templates, even when CanaryPercent is below 100.</p>
 </td>
 </tr>
 </tbody>
