@@ -286,6 +286,18 @@ func TestMetadataProtection(t *testing.T) {
 			must(t, actor(name).Create(ctx, p))
 		}
 	})
+	t.Run("shared_controller_identity_cannot_inject_metadata", func(t *testing.T) {
+		shared := actor("system:kube-controller-manager")
+		for _, kind := range []string{"Pod", "ReplicaSet", "ControllerRevision"} {
+			obj := workload(kind, "shared-"+strings.ToLower(kind))
+			obj.SetLabels(map[string]string{labelKey: "model"})
+			assertDenied(t, shared.Create(ctx, obj))
+			obj.SetLabels(nil)
+			obj.SetAnnotations(map[string]string{"disaggregatedset.x-k8s.io/name": "model"})
+			assertDenied(t, shared.Create(ctx, obj))
+		}
+		must(t, shared.Create(ctx, newPod("shared-ordinary-pod")))
+	})
 	t.Run("native_exceptions_are_scoped", func(t *testing.T) {
 		deploymentController := actor("system:serviceaccount:kube-system:deployment-controller")
 		obj := workload("ReplicaSet", "native-rs")

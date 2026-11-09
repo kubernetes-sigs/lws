@@ -94,7 +94,11 @@ future keys and metadata inside workload templates. Public configuration annotat
 the DisaggregatedSet prefix. Ordinary scaling remains editable.
 
 Native-controller identities can be adjusted with the `metadataProtection`
-values below. Disable enforcement with `--set metadataProtection.enabled=false`.
+values below. Native controllers must use separate credentials
+(`--use-service-account-credentials=true`). The shared `system:kube-controller-manager`
+identity is excluded by default: allowing it also trusts Pods copied from Job,
+CronJob, DaemonSet and ReplicationController templates that this policy does not inspect.
+Disable enforcement with `--set metadataProtection.enabled=false`.
 `bindingAnnotationUsernames` trusts the default Kubernetes and Volcano schedulers
 to write protected annotations through Pod bindings, since Volcano copies Pod
 annotations into its binding requests. Binding admission has no previous Pod to

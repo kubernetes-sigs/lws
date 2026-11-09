@@ -24,16 +24,14 @@ serviceAccount:
 # or server-side apply field-manager names.
 metadataProtection:
   enabled: true
+  # Require --use-service-account-credentials=true for native controllers.
   podControllerUsernames:
     - system:serviceaccount:kube-system:statefulset-controller
     - system:serviceaccount:kube-system:replicaset-controller
-    - system:kube-controller-manager
   deploymentControllerUsernames:
     - system:serviceaccount:kube-system:deployment-controller
-    - system:kube-controller-manager
   statefulSetControllerUsernames:
     - system:serviceaccount:kube-system:statefulset-controller
-    - system:kube-controller-manager
   # Trusted to write reserved annotations through Binding only, not Pod updates.
   bindingAnnotationUsernames:
     - system:kube-scheduler

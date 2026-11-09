@@ -65,13 +65,13 @@ spec:
        "leaderworkerset.sigs.k8s.io/auto-compute-domain",
        "leaderworkerset.sigs.k8s.io/compute-domain-containers",
        "disaggregatedset.x-k8s.io/auto-compute-domain"]
-  # Authentication identities of native controllers, not Pod service accounts.
-  - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:serviceaccount:kube-system:replicaset-controller",
-      "system:kube-controller-manager"]'
+  # Require separate native-controller credentials; a shared identity also
+  # represents Job, DaemonSet and other controllers whose templates are not checked.
+  - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:serviceaccount:kube-system:replicaset-controller"]'
     name: podControllerUsernames
-  - expression: '["system:serviceaccount:kube-system:deployment-controller", "system:kube-controller-manager"]'
+  - expression: '["system:serviceaccount:kube-system:deployment-controller"]'
     name: deploymentControllerUsernames
-  - expression: '["system:serviceaccount:kube-system:statefulset-controller", "system:kube-controller-manager"]'
+  - expression: '["system:serviceaccount:kube-system:statefulset-controller"]'
     name: statefulSetControllerUsernames
   - expression: '["system:kube-scheduler", "system:serviceaccount:volcano-system:volcano-scheduler"]'
     name: bindingAnnotationUsernames

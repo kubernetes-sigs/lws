@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -43,6 +44,9 @@ func TestPolicyPackaging(t *testing.T) {
 				found := false
 				for _, v := range variables {
 					variable := v.(map[string]any)
+					if strings.Contains(variable["expression"].(string), "system:kube-controller-manager") {
+						t.Fatal("shared controller identity must not be trusted by default")
+					}
 					if variable["name"] == "bindingAnnotationUsernames" {
 						found = variable["expression"] == `["custom-scheduler"]`
 					}
