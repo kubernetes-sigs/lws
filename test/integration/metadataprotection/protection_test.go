@@ -277,6 +277,18 @@ func TestMetadataProtection(t *testing.T) {
 			if p.Spec.NodeName != "test-node" || p.Annotations[key] != "2" {
 				t.Fatalf("binding did not preserve Pod annotations: %#v", p)
 			}
+			// Most schedulers bind without sending any metadata. Use another Pod:
+			// the successful binding above cannot be performed twice on one Pod.
+			p = newPod(fmt.Sprintf("plain-binding-%t", legacy))
+			p.Labels = map[string]string{labelKey: "model"}
+			p.Annotations = map[string]string{key: "2"}
+			must(t, allowed.Create(ctx, p))
+			binding = &corev1.Binding{ObjectMeta: metav1.ObjectMeta{Name: p.Name, Namespace: ns}, Target: corev1.ObjectReference{Kind: "Node", Name: "test-node"}}
+			must(t, bind(denied))
+			must(t, admin.Get(ctx, client.ObjectKeyFromObject(p), p))
+			if p.Spec.NodeName != "test-node" || p.Annotations[key] != "2" || p.Labels[labelKey] != "model" {
+				t.Fatalf("metadata-free binding did not preserve Pod metadata: %#v", p)
+			}
 		}
 	})
 	t.Run("native_controller_create_requests_still_allowed", func(t *testing.T) {
