@@ -1395,6 +1395,7 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	tests := []struct {
 		name           string
 		annotations    map[string]string
+		annotationsOn  string
 		groupPolicy    *v1.SubGroupPlacementPolicy
 		subGroupPolicy *v1.SubGroupPlacementPolicy
 		errSubstr      string
@@ -1402,7 +1403,41 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	}{
 		{name: "matching group annotation", annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"}, groupPolicy: rack},
 		{name: "matching subgroup annotation", annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"}, subGroupPolicy: rack},
+		{name: "matching group annotation on the worker template", annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"}, annotationsOn: "worker", groupPolicy: rack},
+		{name: "matching subgroup annotation on the worker template", annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"}, annotationsOn: "worker", subGroupPolicy: rack},
+		{
+			name:          "group annotation on the worker template conflicts with the field",
+			annotations:   map[string]string{v1.ExclusiveKeyAnnotationKey: "zone"},
+			annotationsOn: "worker",
+			groupPolicy:   rack,
+			errSubstr:     "spec.placementPolicy.topology",
+			errContains:   "conflicts with annotation leaderworkerset.sigs.k8s.io/exclusive-topology=zone on the worker template",
+		},
+		{
+			name:           "subgroup annotation on the worker template conflicts with the field",
+			annotations:    map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "zone"},
+			annotationsOn:  "worker",
+			subGroupPolicy: rack,
+			errSubstr:      "spec.placementPolicy.subGroup.topology",
+			errContains:    "conflicts with annotation leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology=zone on the worker template",
+		},
+		{
+			name:          "group annotation on the leader template conflicts with the field",
+			annotations:   map[string]string{v1.ExclusiveKeyAnnotationKey: "zone"},
+			annotationsOn: "leader",
+			groupPolicy:   rack,
+			errSubstr:     "spec.placementPolicy.topology",
+			errContains:   "conflicts with annotation leaderworkerset.sigs.k8s.io/exclusive-topology=zone on the leader template",
+		},
 		{name: "group ExclusiveSlice without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"}},
+		{
+			name:          "group ExclusiveSlice with the annotation on the worker template is rejected",
+			annotations:   map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			annotationsOn: "worker",
+			groupPolicy:   &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			errSubstr:     "spec.placementPolicy.topology",
+			errContains:   "requires removing annotation",
+		},
 		{
 			name:        "group ExclusiveSlice with the annotation is rejected",
 			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
@@ -1440,7 +1475,16 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	r := &LeaderWorkerSetWebhook{}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Annotation(tc.annotations).Obj()
+			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Obj()
+			switch tc.annotationsOn {
+			case "worker":
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = tc.annotations
+			case "leader":
+				lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
+				lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations = tc.annotations
+			default:
+				lws.Annotations = tc.annotations
+			}
 			lws.Spec.PlacementPolicy = testPlacementPolicy(tc.groupPolicy, tc.subGroupPolicy)
 			_, err := r.ValidateCreate(context.Background(), lws)
 			if tc.errSubstr == "" {
@@ -1463,9 +1507,11 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 func TestPlacementPolicyWarnings(t *testing.T) {
 	policy := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
 	const (
-		groupDeprecated    = "annotation leaderworkerset.sigs.k8s.io/exclusive-topology is deprecated, use spec.placementPolicy instead"
-		subGroupDeprecated = "annotation leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology is deprecated, use spec.placementPolicy.subGroup instead"
-		kueueCombined      = "exclusive placement is combined with kueue.x-k8s.io/podset-required-topology: Kueue topology-aware scheduling does not account for the affinity that exclusive placement injects, so a group can be assigned a domain it cannot schedule in"
+		groupDeprecated            = "annotation leaderworkerset.sigs.k8s.io/exclusive-topology=rack is deprecated, use spec.placementPolicy instead"
+		groupTemplateDeprecated    = "annotation leaderworkerset.sigs.k8s.io/exclusive-topology=rack on the worker template is deprecated, use spec.placementPolicy instead"
+		subGroupDeprecated         = "annotation leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology=rack is deprecated, use spec.placementPolicy.subGroup instead"
+		subGroupTemplateDeprecated = "annotation leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology=rack on the worker template is deprecated, use spec.placementPolicy.subGroup instead"
+		kueueCombined              = "exclusive placement is combined with kueue.x-k8s.io/podset-required-topology: Kueue topology-aware scheduling does not account for the affinity that exclusive placement injects, so a group can be assigned a domain it cannot schedule in"
 	)
 	kueue := map[string]string{"kueue.x-k8s.io/podset-required-topology": "rack"}
 	tests := []struct {
@@ -1493,6 +1539,16 @@ func TestPlacementPolicyWarnings(t *testing.T) {
 			name:        "subgroup-exclusive-topology annotation",
 			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
 			want:        admission.Warnings{subGroupDeprecated},
+		},
+		{
+			name:                "exclusive-topology annotation on the worker template",
+			templateAnnotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
+			want:                admission.Warnings{groupTemplateDeprecated},
+		},
+		{
+			name:                "subgroup-exclusive-topology annotation on the worker template",
+			templateAnnotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
+			want:                admission.Warnings{subGroupTemplateDeprecated},
 		},
 		{
 			name:                "placementPolicy with Kueue topology annotation",
