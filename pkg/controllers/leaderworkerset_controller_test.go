@@ -1307,6 +1307,31 @@ func TestRollingUpdateParametersTemplateUpdateReclaimsSurgeWhenAllowed(t *testin
 	}
 }
 
+func TestRollingUpdateParametersUsesFencepostAfterPercentageScaleDown(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Replica(3).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromString("25%"),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	sts := lwsStatusRollingUpdateSts(lws, 3, 3, "3")
+	objects := make([]client.Object, 0, 3)
+	for i := range 3 {
+		objects = append(objects, lwsStatusLeaderPod(lws, i, "old", true))
+	}
+	r, _ := lwsStatusNewReconciler(t, objects...)
+
+	partition, replicas, err := r.rollingUpdateParameters(t.Context(), lws, sts, "new", false)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, partition)
+	require.EqualValues(t, 3, replicas)
+}
+
 func TestDSOrdinalScaleDownDoesNotWaitForStartup(t *testing.T) {
 	for _, size := range []int{1, 2} {
 		for _, tc := range []struct {

@@ -685,6 +685,12 @@ func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context,
 	if err != nil {
 		return 0, 0, err
 	}
+	// A positive percentage can round down to zero after the scale subresource
+	// shrinks an LWS. Match the Deployment fencepost rule so the stored rollout
+	// strategy still makes progress when surge also resolves to zero.
+	if lwsReplicas > 0 && maxSurge == 0 && maxUnavailable == 0 {
+		maxUnavailable = 1
+	}
 	// No need to burst more than the replicas.
 	if maxSurge > int(lwsReplicas) {
 		maxSurge = int(lwsReplicas)
