@@ -38,6 +38,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/utils"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
@@ -575,17 +576,17 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.Disagg
 }
 
 // rolePlacementPolicy returns the path of the first exclusive placement in a role's
-// spec.placementPolicy, at the group or subgroup level.
+// spec.placementPolicy, at the group or subgroup level, for either exclusive type.
 func rolePlacementPolicy(role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) (*field.Path, bool) {
 	policy := role.Spec.PlacementPolicy
 	if policy == nil {
 		return nil, false
 	}
 	policyPath := rolePath.Child("spec", "placementPolicy")
-	if policy.Type == leaderworkerset.PlacementExclusiveTopology {
+	if utils.IsExclusivePlacement(policy.Type) {
 		return policyPath.Child("type"), true
 	}
-	if policy.SubGroup != nil && policy.SubGroup.Type == leaderworkerset.PlacementExclusiveTopology {
+	if policy.SubGroup != nil && utils.IsExclusivePlacement(policy.SubGroup.Type) {
 		return policyPath.Child("subGroup", "type"), true
 	}
 	return nil, false

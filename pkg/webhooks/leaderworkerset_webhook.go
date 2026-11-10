@@ -925,13 +925,13 @@ func validatePlacementPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) fiel
 	subGroupFromField := false
 	if policy.SubGroup != nil {
 		allErrs = append(allErrs, validateTopologyKey(policy.SubGroup.Topology, subGroupPath.Child("topology"))...)
-		subGroupFromField = policy.SubGroup.Type == v1.PlacementExclusiveTopology
+		subGroupFromField = utils.IsExclusivePlacement(policy.SubGroup.Type)
 		if subGroupFromField && lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 			allErrs = append(allErrs, field.Invalid(subGroupPath, policy.SubGroup, "requires leaderWorkerTemplate.subGroupPolicy"))
 		}
 	}
-	groupKey, group := utils.ExclusiveTopologyKey(lws)
-	subGroupKey, subGroup := utils.SubGroupExclusiveTopologyKey(lws)
+	groupKey, _, group := utils.ExclusivePlacement(lws)
+	subGroupKey, _, subGroup := utils.SubGroupExclusivePlacement(lws)
 	if group && subGroup && groupKey == subGroupKey {
 		path := policyPath.Child("topology")
 		if subGroupFromField {
@@ -954,30 +954,72 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 	return allErrs
 }
 
-// validatePlacementPolicyAnnotations rejects an ExclusiveTopology placement
-// that disagrees with the exclusive-topology annotation of the same level. A
-// matching pair is accepted so a value can be moved from the annotation to the
-// field in two steps. A level whose type is None falls back to the annotation,
-// since the API server defaults the type whenever placementPolicy is set.
+// validatePlacementPolicyAnnotations rejects an exclusive placement that
+// disagrees with the exclusive-topology annotation of the same level, wherever
+// the annotation takes effect from: the LWS metadata or the pod templates. A
+// matching ExclusiveTopology pair is accepted so a value can be moved from the
+// annotation to the field in two steps. A level whose type is None falls back
+// to the annotation, since the API server defaults the type whenever
+// placementPolicy is set. An ExclusiveSlice field is rejected while the
+// annotation of the same level is set at all: the annotation is globally
+// scoped, so keeping it would silently change which pods the domain is
+// exclusive against.
 func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	policy := lws.Spec.PlacementPolicy
 	if policy == nil {
 		return nil
 	}
-	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
-		v1.ExclusiveKeyAnnotationKey, policyPath.Child("topology"))
+	sources := exclusiveAnnotationSources(lws)
+	var allErrs field.ErrorList
+	for _, where := range sources {
+		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.Type, policy.Topology, where.Annotations[v1.ExclusiveKeyAnnotationKey],
+			v1.ExclusiveKeyAnnotationKey, where.Name, policyPath.Child("topology"))...)
+	}
 	if policy.SubGroup != nil {
-		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
-			v1.SubGroupExclusiveKeyAnnotationKey, policyPath.Child("subGroup", "topology"))...)
+		for _, where := range sources {
+			allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, where.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
+				v1.SubGroupExclusiveKeyAnnotationKey, where.Name, policyPath.Child("subGroup", "topology"))...)
+		}
 	}
 	return allErrs
 }
 
-func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
-	if placementType != v1.PlacementExclusiveTopology || annotationValue == "" || topology == annotationValue {
+// annotationSource is one place a deprecated exclusive-topology annotation can
+// live on. Name locates it in error messages; it is empty for the LWS metadata
+// so existing messages stay unchanged.
+type annotationSource struct {
+	Name        string
+	Annotations map[string]string
+}
+
+// exclusiveAnnotationSources returns every place a deprecated
+// exclusive-topology annotation takes effect from: the LWS metadata and the pod
+// templates. The effective leader template is the leader template, or the
+// worker template when no leader template is set, and workers always use the
+// worker template, so either template can carry the annotation to a pod; the
+// pod webhook then reads it off the pod and injects the placement affinities.
+func exclusiveAnnotationSources(lws *v1.LeaderWorkerSet) []annotationSource {
+	template := lws.Spec.LeaderWorkerTemplate
+	sources := []annotationSource{{Annotations: lws.Annotations}}
+	if template.LeaderTemplate != nil {
+		sources = append(sources, annotationSource{Name: "leader template", Annotations: template.LeaderTemplate.Annotations})
+	}
+	sources = append(sources, annotationSource{Name: "worker template", Annotations: template.WorkerTemplate.Annotations})
+	return sources
+}
+
+func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation, source string, fldPath *field.Path) field.ErrorList {
+	if placementType == v1.PlacementExclusiveSlice && annotationValue != "" {
+		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
+	}
+	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {
 		return nil
 	}
-	return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue))}
+	message := fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue)
+	if source != "" {
+		message += " on the " + source
+	}
+	return field.ErrorList{field.Invalid(fldPath, topology, message)}
 }
 
 // kueueTopologyAnnotations are the pod template annotations that request Kueue
@@ -993,14 +1035,24 @@ var kueueTopologyAnnotations = []string{
 // Kueue topology-aware scheduling, which does not see the injected affinity.
 func placementPolicyWarnings(lws *v1.LeaderWorkerSet) admission.Warnings {
 	var warnings admission.Warnings
-	if _, found := lws.Annotations[v1.ExclusiveKeyAnnotationKey]; found {
-		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy instead", v1.ExclusiveKeyAnnotationKey))
+	deprecated := [][2]string{
+		{v1.ExclusiveKeyAnnotationKey, "spec.placementPolicy"},
+		{v1.SubGroupExclusiveKeyAnnotationKey, "spec.placementPolicy.subGroup"},
 	}
-	if _, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {
-		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy.subGroup instead", v1.SubGroupExclusiveKeyAnnotationKey))
+	for _, where := range exclusiveAnnotationSources(lws) {
+		for _, dep := range deprecated {
+			annotation, field := dep[0], dep[1]
+			if value, found := where.Annotations[annotation]; found {
+				location := ""
+				if where.Name != "" {
+					location = " on the " + where.Name
+				}
+				warnings = append(warnings, fmt.Sprintf("annotation %s=%s%s is deprecated, use %s instead", annotation, value, location, field))
+			}
+		}
 	}
-	_, exclusive := utils.ExclusiveTopologyKey(lws)
-	_, subGroupExclusive := utils.SubGroupExclusiveTopologyKey(lws)
+	_, _, exclusive := utils.ExclusivePlacement(lws)
+	_, _, subGroupExclusive := utils.SubGroupExclusivePlacement(lws)
 	if !exclusive && !subGroupExclusive {
 		return warnings
 	}

@@ -207,11 +207,27 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	if lws.Spec.NetworkConfig != nil && *lws.Spec.NetworkConfig.SubdomainPolicy == leaderworkerset.SubdomainUniquePerReplica {
 		pod.Spec.Subdomain = pod.Name
 	}
-	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+	// Mirror the leader template: a missing scope resolves as
+	// ExclusiveTopology, so only the Slice scope is recorded.
+	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		if scope == leaderworkerset.PlacementExclusiveSlice {
+			pod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
+		}
+		// Mirror the leader template: a missing enforcement resolves as
+		// Required, so only Preferred is recorded.
+		if utils.ExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			pod.Annotations[leaderworkerset.ExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+		}
 	}
-	if subGroupTopologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+	if subGroupTopologyKey, subGroupScope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = subGroupTopologyKey
+		if subGroupScope == leaderworkerset.PlacementExclusiveSlice {
+			pod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(subGroupScope)
+		}
+		if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			pod.Annotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+		}
 	}
 	// Set the controller owner reference for garbage collection and reconciliation.
 	if err := ctrl.SetControllerReference(&leaderSts, pod, scheme.Scheme); err != nil {

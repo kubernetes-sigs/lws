@@ -154,7 +154,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			}
 		}
 		if epKey, foundEpKey := pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; foundEpKey {
-			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey)
+			SetExclusiveAffinities(pod, groupUniqueKey, epKey, leaderworkerset.GroupUniqueHashLabelKey,
+				exclusivePlacementScope(pod, leaderworkerset.ExclusiveScopeAnnotationKey),
+				exclusivePlacementEnforcement(pod, leaderworkerset.ExclusiveEnforcementAnnotationKey))
 		}
 		_, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		subGroupPolicyType := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey]
@@ -169,7 +171,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, "0")
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey,
+					exclusivePlacementScope(pod, leaderworkerset.SubGroupExclusiveScopeAnnotationKey),
+					exclusivePlacementEnforcement(pod, leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey))
 			}
 		}
 	} else {
@@ -195,7 +199,9 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
 			if subEpKey, foundSubEpKey := pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; foundSubEpKey {
-				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey)
+				SetExclusiveAffinities(pod, subGroupUniqueKey, subEpKey, leaderworkerset.SubGroupUniqueHashLabelKey,
+					exclusivePlacementScope(pod, leaderworkerset.SubGroupExclusiveScopeAnnotationKey),
+					exclusivePlacementEnforcement(pod, leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey))
 			}
 		}
 	}
@@ -266,8 +272,38 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 	return fmt.Sprintf("%s-%s", lwsName, key)
 }
 
-// SetExclusiveAffinities set the pod affinity/anti-affinity
-func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
+// exclusivePlacementScope reads the placement scope of one exclusive level
+// from the pod annotations. Only the Slice scope is recorded, since it is the
+// only value that changes the injected affinity; a missing scope keeps the
+// global (ExclusiveTopology) behavior.
+func exclusivePlacementScope(pod *corev1.Pod, scopeAnnotation string) leaderworkerset.PlacementType {
+	if scope := pod.Annotations[scopeAnnotation]; scope != "" {
+		return leaderworkerset.PlacementType(scope)
+	}
+	return leaderworkerset.PlacementExclusiveTopology
+}
+
+// exclusivePlacementEnforcement reads the enforcement of one exclusive level
+// from the pod annotations. Only Preferred is recorded, so a missing
+// annotation keeps the required behavior.
+func exclusivePlacementEnforcement(pod *corev1.Pod, annotation string) leaderworkerset.PlacementEnforcement {
+	if enforcement := leaderworkerset.PlacementEnforcement(pod.Annotations[annotation]); enforcement == leaderworkerset.PlacementPreferred {
+		return leaderworkerset.PlacementPreferred
+	}
+	return leaderworkerset.PlacementRequired
+}
+
+// SetExclusiveAffinities set the pod affinity/anti-affinity. The scope decides
+// how widely the anti-affinity repels: ExclusiveTopology keeps every other
+// group out of the domain, matching the deprecated annotations and the physical
+// exclusivity hardware-sliced accelerators need; ExclusiveSlice keeps only the
+// groups of this LeaderWorkerSet out, scoped by the set name label, so groups of
+// other LeaderWorkerSets may share the domain. The enforcement decides what
+// happens when no free domain remains: Required keeps the anti-affinity
+// required, so the group stays Pending; Preferred makes it a scheduling
+// preference, so the scheduler co-locates the groups instead. The group's own
+// pods are always co-located by the required affinity, which does not soften.
+func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, scope leaderworkerset.PlacementType, enforcement leaderworkerset.PlacementEnforcement) {
 	if exclusiveAffinityApplied(*pod, topologyKey) {
 		return
 	}
@@ -294,22 +330,47 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			TopologyKey: topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
+	// An ExclusiveSlice scope limits the repelled pods to the groups of this
+	// LeaderWorkerSet, so groups of other LeaderWorkerSets may share the domain.
+	antiAffinityExpressions := []metav1.LabelSelectorRequirement{
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpExists,
+		},
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{groupUniqueKey},
+		},
+	}
+	if scope == leaderworkerset.PlacementExclusiveSlice {
+		if lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]; lwsName != "" {
+			antiAffinityExpressions = append(antiAffinityExpressions, metav1.LabelSelectorRequirement{
+				Key:      leaderworkerset.SetNameLabelKey,
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{lwsName},
+			})
+		}
+	}
+	antiAffinityTerm := corev1.PodAffinityTerm{
+		LabelSelector: &metav1.LabelSelector{MatchExpressions: antiAffinityExpressions},
+		TopologyKey:   topologyKey,
+	}
+	if enforcement == leaderworkerset.PlacementPreferred {
+		pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+			pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+			corev1.WeightedPodAffinityTerm{Weight: preferredEnforcementWeight, PodAffinityTerm: antiAffinityTerm})
+		return
+	}
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
-		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpExists,
-				},
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
-		})
+		antiAffinityTerm)
 }
+
+// preferredEnforcementWeight is the weight of the anti-affinity term a
+// Preferred enforcement injects. It dominates the default scheduler scores, so
+// the scheduler only co-locates the groups of the workload once no free domain
+// remains.
+const preferredEnforcementWeight int32 = 100
 
 // exclusiveAffinityApplied return true if the exclusive placement terms have been applied
 func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {

@@ -70,6 +70,8 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		groupUniqueKey string
 		topologyKey    string
 		podAffinityKey string
+		scope          leaderworkerset.PlacementType
+		enforcement    leaderworkerset.PlacementEnforcement
 		expectedPod    *corev1.Pod
 	}{
 		{
@@ -82,6 +84,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
+			scope:          leaderworkerset.PlacementExclusiveTopology,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -156,11 +159,173 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				},
 			},
 		},
+		{
+			// ExclusiveSlice scopes the anti-affinity to the pods of this
+			// LeaderWorkerSet via the set name label.
+			name: "ExclusiveSlice scopes the anti-affinity to this LeaderWorkerSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+			},
+			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
+			scope:          leaderworkerset.PlacementExclusiveSlice,
+			expectedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "In",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "Exists",
+									},
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "NotIn",
+										Values:   []string{"test-key"},
+									},
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/name",
+										Operator: "In",
+										Values:   []string{"test-lws"},
+									},
+								}},
+							}},
+						},
+					},
+				},
+			},
+		},
+		{
+			// Without the set name label there is nothing to scope with, so
+			// the term stays global rather than dropping the exclusivity.
+			name: "ExclusiveSlice without the set name label stays global",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+			},
+			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
+			scope:          leaderworkerset.PlacementExclusiveSlice,
+			expectedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "In",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "Exists",
+									},
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "NotIn",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "Preferred enforcement moves the anti-affinity to a preference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+			},
+			groupUniqueKey: "test-key",
+			topologyKey:    "topologyKey",
+			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
+			scope:          leaderworkerset.PlacementExclusiveSlice,
+			enforcement:    leaderworkerset.PlacementPreferred,
+			expectedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "In",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+								Weight: 100,
+								PodAffinityTerm: corev1.PodAffinityTerm{
+									TopologyKey: "topologyKey",
+									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+										{
+											Key:      "leaderworkerset.sigs.k8s.io/group-key",
+											Operator: "Exists",
+										},
+										{
+											Key:      "leaderworkerset.sigs.k8s.io/group-key",
+											Operator: "NotIn",
+											Values:   []string{"test-key"},
+										},
+									}},
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			SetExclusiveAffinities(tc.pod, tc.groupUniqueKey, tc.topologyKey, tc.podAffinityKey)
+			SetExclusiveAffinities(tc.pod, tc.groupUniqueKey, tc.topologyKey, tc.podAffinityKey, tc.scope, tc.enforcement)
 			if diff := cmp.Diff(tc.pod, tc.expectedPod); diff != "" {
 				t.Errorf("unexpected set exclusive affinities operation: %s", diff)
 			}

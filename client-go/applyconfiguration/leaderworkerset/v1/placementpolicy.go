@@ -33,6 +33,13 @@ type PlacementPolicyApplyConfiguration struct {
 	// group, for example a rack, a block or a zone. Required when type is
 	// ExclusiveTopology.
 	Topology *string `json:"topology,omitempty"`
+	// enforcement selects how the exclusive placement is enforced. Required
+	// keeps the injected anti-affinity required, so a group without a free
+	// domain stays Pending; Preferred makes it a scheduling preference, so
+	// the scheduler spreads the groups across domains but may co-locate them
+	// once it runs out, trading the isolation guarantee for capacity.
+	// Defaults to Required.
+	Enforcement *leaderworkersetv1.PlacementEnforcement `json:"enforcement,omitempty"`
 	// subGroup defines the topology placement of each subgroup within a group.
 	// It requires leaderWorkerTemplate.subGroupPolicy.
 	SubGroup *SubGroupPlacementPolicyApplyConfiguration `json:"subGroup,omitempty"`
@@ -57,6 +64,14 @@ func (b *PlacementPolicyApplyConfiguration) WithType(value leaderworkersetv1.Pla
 // If called multiple times, the Topology field is set to the value of the last call.
 func (b *PlacementPolicyApplyConfiguration) WithTopology(value string) *PlacementPolicyApplyConfiguration {
 	b.Topology = &value
+	return b
+}
+
+// WithEnforcement sets the Enforcement field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Enforcement field is set to the value of the last call.
+func (b *PlacementPolicyApplyConfiguration) WithEnforcement(value leaderworkersetv1.PlacementEnforcement) *PlacementPolicyApplyConfiguration {
+	b.Enforcement = &value
 	return b
 }
 

@@ -42,6 +42,7 @@ type LeaderWorkerSetSpecApplyConfiguration struct {
 	// group.
 	// On scale down, the leader pod as well as the workers statefulset will be deleted.
 	// Default to 1.
+	//
 	Replicas *int32 `json:"replicas,omitempty"`
 	// leaderWorkerTemplate defines the template for leader/worker pods
 	LeaderWorkerTemplate *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerTemplate,omitempty"`

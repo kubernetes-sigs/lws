@@ -1705,15 +1705,29 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
 	// Exclusive placement keys are copied from the leader pod so workers of an
-	// old-revision group keep the placement their leader was created with.
+	// old-revision group keep the placement their leader was created with. The
+	// scope travels with the key: it decides how widely the pod webhook scopes
+	// the injected anti-affinity.
 	if topologyKey := leaderPod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		if scope := leaderPod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey]; scope != "" {
+			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = scope
+		}
+		if enforcement := leaderPod.Annotations[leaderworkerset.ExclusiveEnforcementAnnotationKey]; enforcement != "" {
+			podAnnotations[leaderworkerset.ExclusiveEnforcementAnnotationKey] = enforcement
+		}
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(ptr.Deref(currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type, leaderworkerset.SubGroupPolicyTypeLeaderWorker))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if topologyKey := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; topologyKey != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
+			if scope := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey]; scope != "" {
+				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = scope
+			}
+			if enforcement := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey]; enforcement != "" {
+				podAnnotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey] = enforcement
+			}
 		}
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)

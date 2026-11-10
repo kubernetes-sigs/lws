@@ -32,6 +32,9 @@ type SubGroupPlacementPolicyApplyConfiguration struct {
 	// topology is the node label key that defines the topology domain of a
 	// subgroup. Required when type is ExclusiveTopology.
 	Topology *string `json:"topology,omitempty"`
+	// enforcement selects how the exclusive placement is enforced, as at the
+	// group level. Defaults to Required.
+	Enforcement *leaderworkersetv1.PlacementEnforcement `json:"enforcement,omitempty"`
 }
 
 // SubGroupPlacementPolicyApplyConfiguration constructs a declarative configuration of the SubGroupPlacementPolicy type for use with
@@ -53,5 +56,13 @@ func (b *SubGroupPlacementPolicyApplyConfiguration) WithType(value leaderworkers
 // If called multiple times, the Topology field is set to the value of the last call.
 func (b *SubGroupPlacementPolicyApplyConfiguration) WithTopology(value string) *SubGroupPlacementPolicyApplyConfiguration {
 	b.Topology = &value
+	return b
+}
+
+// WithEnforcement sets the Enforcement field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Enforcement field is set to the value of the last call.
+func (b *SubGroupPlacementPolicyApplyConfiguration) WithEnforcement(value leaderworkersetv1.PlacementEnforcement) *SubGroupPlacementPolicyApplyConfiguration {
+	b.Enforcement = &value
 	return b
 }

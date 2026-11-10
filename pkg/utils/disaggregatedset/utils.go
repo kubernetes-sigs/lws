@@ -34,6 +34,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/utils"
 )
 
 const NumRequiredRoles = 1
@@ -158,25 +159,36 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 
 // normalizedPlacementPolicy returns the exclusive placement that policy sets, or
 // nil when it sets none at either level, so an absent policy and type None hash
-// the same. Topology keys of levels that are not exclusive are dropped.
+// the same. The actual type and topology of exclusive levels are preserved, so
+// switching between the two exclusive scopes rolls out. Only a Preferred
+// enforcement is recorded, since it is the only value that changes the
+// scheduling behavior, so Required keeps hashing as the absent field and
+// existing revisions stay valid. Topology keys of levels that are not
+// exclusive are dropped.
 func normalizedPlacementPolicy(policy *leaderworkersetv1.PlacementPolicy) *leaderworkersetv1.PlacementPolicy {
 	if policy == nil {
 		return nil
 	}
-	group := policy.Type == leaderworkersetv1.PlacementExclusiveTopology
-	subGroup := policy.SubGroup != nil && policy.SubGroup.Type == leaderworkersetv1.PlacementExclusiveTopology
+	group := utils.IsExclusivePlacement(policy.Type)
+	subGroup := policy.SubGroup != nil && utils.IsExclusivePlacement(policy.SubGroup.Type)
 	if !group && !subGroup {
 		return nil
 	}
 	normalized := &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone}
 	if group {
-		normalized.Type = leaderworkersetv1.PlacementExclusiveTopology
+		normalized.Type = policy.Type
 		normalized.Topology = policy.Topology
+		if policy.Enforcement == leaderworkersetv1.PlacementPreferred {
+			normalized.Enforcement = leaderworkersetv1.PlacementPreferred
+		}
 	}
 	if subGroup {
 		normalized.SubGroup = &leaderworkersetv1.SubGroupPlacementPolicy{
-			Type:     leaderworkersetv1.PlacementExclusiveTopology,
+			Type:     policy.SubGroup.Type,
 			Topology: policy.SubGroup.Topology,
+		}
+		if policy.SubGroup.Enforcement == leaderworkersetv1.PlacementPreferred {
+			normalized.SubGroup.Enforcement = leaderworkersetv1.PlacementPreferred
 		}
 	}
 	return normalized
