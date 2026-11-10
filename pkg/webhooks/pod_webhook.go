@@ -18,6 +18,7 @@ package webhooks
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -268,7 +269,7 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
 func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
-	if exclusiveAffinityApplied(*pod, topologyKey) {
+	if exclusiveAffinityApplied(*pod, groupUniqueKey, topologyKey, podAffinityKey) {
 		return
 	}
 	if pod.Spec.Affinity == nil {
@@ -281,51 +282,93 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
 
+	affinityTerms, antiAffinityTerms := exclusiveAffinityTerms(groupUniqueKey, podAffinityKey)
 	// Pod affinity ensures the pods of this set land on the same topology domain.
 	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: affinityTerms},
+			TopologyKey:   topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
 	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
 		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpExists,
-				},
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: antiAffinityTerms},
+			TopologyKey:   topologyKey,
 		})
 }
 
-// exclusiveAffinityApplied return true if the exclusive placement terms have been applied
-func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
+// exclusiveAffinityTerms returns the label selector expressions the exclusive
+// placement of one level injects, in the order they are appended.
+func exclusiveAffinityTerms(groupUniqueKey, podAffinityKey string) (affinity, antiAffinity []metav1.LabelSelectorRequirement) {
+	affinity = []metav1.LabelSelectorRequirement{
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpIn,
+			Values:   []string{groupUniqueKey},
+		},
+	}
+	antiAffinity = []metav1.LabelSelectorRequirement{
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpExists,
+		},
+		{
+			Key:      podAffinityKey,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{groupUniqueKey},
+		},
+	}
+	return affinity, antiAffinity
+}
+
+// selectorHasAllRequirements reports whether every requirement is present in
+// the selector expressions. The injected term may carry extra expressions, so a
+// superset still counts as applied.
+func selectorHasAllRequirements(expressions, want []metav1.LabelSelectorRequirement) bool {
+	for _, wantRequirement := range want {
+		found := false
+		for _, expression := range expressions {
+			if expression.Key == wantRequirement.Key &&
+				expression.Operator == wantRequirement.Operator &&
+				slices.Equal(expression.Values, wantRequirement.Values) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// exclusiveAffinityApplied return true if the exclusive placement terms have
+// been applied. The terms are matched by what they select, not only by the
+// topology key they use: a pod whose template already carries its own required
+// affinity and anti-affinity on the same topology key is not the placement this
+// webhook injects, and treating it as one would skip the injection and silently
+// drop the exclusivity guarantee.
+func exclusiveAffinityApplied(pod corev1.Pod, groupUniqueKey, topologyKey, podAffinityKey string) bool {
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil || pod.Spec.Affinity.PodAntiAffinity == nil {
 		return false
 	}
+	wantAffinity, wantAntiAffinity := exclusiveAffinityTerms(groupUniqueKey, podAffinityKey)
 	hasAffinity := false
-	hasAntiAffinity := false
 	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAffinityTerm.TopologyKey == topologyKey {
+		if podAffinityTerm.TopologyKey == topologyKey && podAffinityTerm.LabelSelector != nil &&
+			len(podAffinityTerm.LabelSelector.MatchLabels) == 0 &&
+			selectorHasAllRequirements(podAffinityTerm.LabelSelector.MatchExpressions, wantAffinity) {
 			hasAffinity = true
+			break
 		}
 	}
+	hasAntiAffinity := false
 	for _, term := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if term.TopologyKey == topologyKey {
+		if term.TopologyKey == topologyKey && term.LabelSelector != nil &&
+			len(term.LabelSelector.MatchLabels) == 0 &&
+			selectorHasAllRequirements(term.LabelSelector.MatchExpressions, wantAntiAffinity) {
 			hasAntiAffinity = true
+			break
 		}
 	}
 	return hasAffinity && hasAntiAffinity
