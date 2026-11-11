@@ -371,10 +371,6 @@ func (r *LeaderWorkerSetReconciler) isHashRolloutConverged(ctx context.Context, 
 	return len(leaderPodList.Items) == 0 || currentRevisionPods >= int(desiredReplicas), nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, revisionKey string) error {
-	return r.applyLeaderDeployment(ctx, lws, nil, revisionKey)
-}
-
 func (r *LeaderWorkerSetReconciler) applyLeaderDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, rolloutBaseline *int32, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -397,7 +393,7 @@ func (r *LeaderWorkerSetReconciler) applyLeaderDeployment(ctx context.Context, l
 }
 
 // constructLeaderDeploymentApplyConfiguration is the hash-identity analog of
-// constructLeaderStatefulSetApplyConfiguration. Rollout pacing (maxSurge and
+// constructLeaderStatefulSetApplyConfigurationWithBaseline. Rollout pacing (maxSurge and
 // maxUnavailable) maps onto the Deployment strategy; when an active rollout
 // scales above its pre-rollout baseline, maxUnavailable is widened so the
 // Deployment enforces the availability floor max(0, baseline - maxUnavailable).
