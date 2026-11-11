@@ -793,16 +793,6 @@ func (r *LeaderWorkerSetReconciler) supersedingRolloutBaseline(ctx context.Conte
 	return currentRolloutBaseline(sts, lwsReplicas)
 }
 
-// rollingUpdateParameters computes the leader StatefulSet partition and replica
-// count for an Ordinal reconciliation pass.
-func (r *LeaderWorkerSetReconciler) rollingUpdateParameters(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, sts *appsv1.StatefulSet, revisionKey string, leaderWorkerSetUpdated bool) (stsPartition int32, replicas int32, err error) {
-	plan, err := r.planRollingUpdate(ctx, lws, sts, revisionKey, leaderWorkerSetUpdated)
-	if err != nil {
-		return 0, 0, err
-	}
-	return plan.partition, plan.replicas, nil
-}
-
 // planRollingUpdate paces Ordinal rolling updates against the pre-rollout
 // non-surge availability floor max(0, min(baseline, spec.replicas) - maxUnavailable)
 // (see rolloutFloor) so Pending scale-up additions do not consume existing
@@ -1052,10 +1042,6 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	}, nil
 }
 
-func (r *LeaderWorkerSetReconciler) SSAWithStatefulset(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) error {
-	return r.applyLeaderStatefulSet(ctx, lws, partition, replicas, nil, revisionKey)
-}
-
 func (r *LeaderWorkerSetReconciler) applyLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, rolloutBaseline *int32, revisionKey string) error {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -1218,7 +1204,7 @@ const workerTemplateProbeName = "lws-worker-template-probe"
 
 // needsWorkerTemplateProbe reports whether the leader workload apply leaves
 // the worker template unvalidated: with a dedicated leaderTemplate set (or
-// under hash identity) SSAWithStatefulset/SSAWithDeployment render only the
+// under hash identity) applyLeaderStatefulSet/applyLeaderDeployment render only the
 // leader template, while PodReconciler submits the workerTemplate separately
 // when it creates each group's worker StatefulSet. An invalid workerTemplate
 // would pass the leader apply, replace healthy groups with leader pods that
@@ -1511,15 +1497,6 @@ func leaderPodAtTargetRevision(pod *corev1.Pod, sts *appsv1.StatefulSet, revisio
 		return pod.Labels[appsv1.ControllerRevisionHashLabelKey] == sts.Status.UpdateRevision
 	}
 	return true
-}
-
-func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, stsReplicas int32, revisionKey string) ([]replicaState, error) {
-	return r.getReplicaStatesForStatefulSet(ctx, lws, nil, stsReplicas, revisionKey)
-}
-
-func (r *LeaderWorkerSetReconciler) getReplicaStatesForStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, leaderSts *appsv1.StatefulSet, stsReplicas int32, revisionKey string) ([]replicaState, error) {
-	states, _, _, err := r.getReplicaStatesAndLeaders(ctx, lws, leaderSts, stsReplicas, revisionKey)
-	return states, err
 }
 
 func (r *LeaderWorkerSetReconciler) getReplicaStatesAndLeaders(
@@ -2176,12 +2153,6 @@ func allUpdatedAndReadyFrom(states []replicaState, from, to int32) bool {
 	return true
 }
 
-func rollingUpdatePartition(states []replicaState, stsReplicas int32, rollingStep int32, currentPartition int32) int32 {
-	floor := utils.NonZeroValue(stsReplicas - rollingStep)
-	activeStates := states[:min(len(states), int(stsReplicas))]
-	return rollingUpdatePartitionWithFloor(activeStates, floor, min(currentPartition, stsReplicas), 0)
-}
-
 func calculateLWSUnreadyReplicas(states []replicaState, lwsReplicas int32) int32 {
 	var unreadyCount int32
 	for idx := int32(0); idx < lwsReplicas; idx++ {
@@ -2246,18 +2217,6 @@ func preserveFloorDuringSurgeTrim(states []replicaState, rawTarget, stsReplicas,
 		target++
 	}
 	return target
-}
-
-func calculateContinuousReadyReplicas(states []replicaState) int32 {
-	// Count ready replicas at tail (from last index down)
-	var continuousReadyCount int32
-	for idx := len(states) - 1; idx >= 0; idx-- {
-		if !states[idx].ready || !states[idx].updated {
-			break
-		}
-		continuousReadyCount++
-	}
-	return continuousReadyCount
 }
 
 func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.StatefulSet, error) {
@@ -2417,11 +2376,10 @@ func leaderMetadata(lws *leaderworkerset.LeaderWorkerSet, revisionKey string) (m
 	return labels, annotations
 }
 
-// constructLeaderStatefulSetApplyConfiguration constructs the applied configuration for the leader StatefulSet
-func constructLeaderStatefulSetApplyConfiguration(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	return constructLeaderStatefulSetApplyConfigurationWithBaseline(lws, partition, replicas, nil, revisionKey)
-}
-
+// constructLeaderStatefulSetApplyConfigurationWithBaseline constructs the
+// applied configuration for the leader StatefulSet. A non-nil rolloutBaseline
+// marks an active rollout: it is recorded in rolloutBaselineAnnotationKey, and
+// maxUnavailable covers the replicas above it.
 func constructLeaderStatefulSetApplyConfigurationWithBaseline(lws *leaderworkerset.LeaderWorkerSet, partition, replicas int32, rolloutBaseline *int32, revisionKey string) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	podTemplateApplyConfiguration, err := buildLeaderPodTemplateApplyConfiguration(lws, revisionKey)
 	if err != nil {
