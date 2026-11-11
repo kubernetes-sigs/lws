@@ -3465,3 +3465,269 @@ func TestPlainScaleDownWithIncompleteGroupsConverges(t *testing.T) {
 		}
 	}
 }
+
+// consistentGroupFixture returns an LWS of size 2, its leader StatefulSet, and
+// the objects of group 0, which is Ready and updated on rev-1. buildSize is the
+// group size that the objects of group 0 are built with.
+func consistentGroupFixture(buildSize int) (*leaderworkerset.LeaderWorkerSet, *appsv1.StatefulSet, *corev1.Pod, *appsv1.StatefulSet, []*corev1.Pod) {
+	lws := combinedRolloutLWS(1, intstr.FromInt32(1), 0)
+	lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](2)
+	lws.UID = "lws-uid"
+	leaderSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 1,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-1",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 1,
+			Replicas:           1,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-1",
+		},
+	}
+	objs := makeOwnedGroupObjects(lws, leaderSts, 0, buildSize, "rev-1", "sts-rev-1", true, true, true)
+	leader := objs[0].(*corev1.Pod)
+	workerSts := objs[1].(*appsv1.StatefulSet)
+	var workers []*corev1.Pod
+	for _, obj := range objs[2:] {
+		workers = append(workers, obj.(*corev1.Pod))
+	}
+	return lws, leaderSts, leader, workerSts, workers
+}
+
+// markTerminating marks obj as terminating. The finalizer keeps the object in
+// the fake client.
+func markTerminating(obj client.Object) {
+	now := metav1.Now()
+	obj.SetDeletionTimestamp(&now)
+	obj.SetFinalizers([]string{metav1.FinalizerDeleteDependents})
+}
+
+// TestReplicaStatesWithholdCreditFromInconsistentGroups verifies the conditions
+// that keep a group from counting as Ready or updated in the replica states.
+// The availability floor rests on these states: a group that counts as Ready
+// too early lets the rollout take down one more group. Each case changes one
+// thing in a group that is otherwise Ready and updated.
+func TestReplicaStatesWithholdCreditFromInconsistentGroups(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// buildSize is the group size of the fixture. It defaults to 2, the
+		// size of the LWS.
+		buildSize   int
+		mutate      func(leader *corev1.Pod, workerSts *appsv1.StatefulSet, workers []*corev1.Pod)
+		wantReady   *bool
+		wantUpdated *bool
+	}{
+		{
+			name:        "consistent group",
+			wantReady:   ptr.To(true),
+			wantUpdated: ptr.To(true),
+		},
+		{
+			// The worker StatefulSet has two Ready workers, and the revision
+			// needs one.
+			name:      "worker StatefulSet replica count differs from the group size",
+			buildSize: 3,
+			wantReady: ptr.To(false),
+		},
+		{
+			name: "worker StatefulSet has not observed its latest generation",
+			mutate: func(_ *corev1.Pod, workerSts *appsv1.StatefulSet, _ []*corev1.Pod) {
+				workerSts.Generation = 2
+			},
+			wantReady: ptr.To(false),
+		},
+		{
+			name: "worker StatefulSet is being deleted",
+			mutate: func(_ *corev1.Pod, workerSts *appsv1.StatefulSet, _ []*corev1.Pod) {
+				markTerminating(workerSts)
+			},
+			wantReady: ptr.To(false),
+		},
+		{
+			name: "worker pod is terminating",
+			mutate: func(_ *corev1.Pod, _ *appsv1.StatefulSet, workers []*corev1.Pod) {
+				markTerminating(workers[0])
+			},
+			wantReady: ptr.To(false),
+		},
+		{
+			// The LWS revision matches, but the StatefulSet controller still
+			// has to replace the pod.
+			name: "leader pod is on another StatefulSet revision",
+			mutate: func(leader *corev1.Pod, _ *appsv1.StatefulSet, _ []*corev1.Pod) {
+				leader.Labels[appsv1.ControllerRevisionHashLabelKey] = "sts-rev-0"
+			},
+			wantUpdated: ptr.To(false),
+		},
+		{
+			name: "leader pod belongs to another leader StatefulSet",
+			mutate: func(leader *corev1.Pod, _ *appsv1.StatefulSet, _ []*corev1.Pod) {
+				leader.OwnerReferences[0].UID = "previous-leader-sts-uid"
+			},
+			wantReady:   ptr.To(false),
+			wantUpdated: ptr.To(false),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buildSize := 2
+			if tc.buildSize != 0 {
+				buildSize = tc.buildSize
+			}
+			lws, leaderSts, leader, workerSts, workers := consistentGroupFixture(buildSize)
+			if tc.mutate != nil {
+				tc.mutate(leader, workerSts, workers)
+			}
+			objs := []client.Object{lws, leaderSts, leader, workerSts}
+			for _, worker := range workers {
+				objs = append(objs, worker)
+			}
+			_, r := newCombinedTestClient(t, objs...)
+
+			states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(context.Background(), lws, leaderSts, 1, "rev-1")
+			if err != nil {
+				t.Fatalf("getReplicaStatesAndLeaders() error = %v", err)
+			}
+			if hasUncertain || len(states) != 1 {
+				t.Fatalf("(states, hasUncertain) = (%v, %t), want one state and no uncertain delete", states, hasUncertain)
+			}
+			if tc.wantReady != nil && states[0].ready != *tc.wantReady {
+				t.Errorf("ready = %t, want %t", states[0].ready, *tc.wantReady)
+			}
+			if tc.wantUpdated != nil && states[0].updated != *tc.wantUpdated {
+				t.Errorf("updated = %t, want %t", states[0].updated, *tc.wantUpdated)
+			}
+		})
+	}
+}
+
+// TestStatusDoesNotCountTerminatingGroupsAsReady verifies that
+// status.readyReplicas leaves out a group that is on its way out while its pods
+// still report Ready: the leader pod is terminating, the controller deleted the
+// leader pod and the cache has not observed that yet, or the worker StatefulSet
+// is being deleted.
+func TestStatusDoesNotCountTerminatingGroupsAsReady(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(leader *corev1.Pod, workerSts *appsv1.StatefulSet)
+		// pendingDelete issues a leader delete through the tracker. The client
+		// accepts the delete and keeps the pod, as a cache that lags does.
+		pendingDelete bool
+		wantReady     int32
+	}{
+		{
+			name:      "Ready group",
+			wantReady: 1,
+		},
+		{
+			name: "leader pod is terminating",
+			mutate: func(leader *corev1.Pod, _ *appsv1.StatefulSet) {
+				markTerminating(leader)
+			},
+			wantReady: 0,
+		},
+		{
+			name:          "leader pod has a pending delete from the controller",
+			pendingDelete: true,
+			wantReady:     0,
+		},
+		{
+			name: "worker StatefulSet is being deleted",
+			mutate: func(_ *corev1.Pod, workerSts *appsv1.StatefulSet) {
+				markTerminating(workerSts)
+			},
+			wantReady: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lws, leaderSts, leader, workerSts, workers := consistentGroupFixture(2)
+			if tc.mutate != nil {
+				tc.mutate(leader, workerSts)
+			}
+			objs := []client.Object{lws, leaderSts, leader, workerSts}
+			for _, worker := range workers {
+				objs = append(objs, worker)
+			}
+			_, r := newCombinedTestClientWithInterceptor(t, interceptor.Funcs{
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					return nil
+				},
+			}, objs...)
+			if tc.pendingDelete {
+				if _, err := r.pendingDeletes.deleteLeaderPod(ctx, r.Client, lws, leader); err != nil {
+					t.Fatalf("deleteLeaderPod() error = %v", err)
+				}
+			}
+
+			if _, _, err := r.updateConditions(ctx, lws, "rev-1", 1); err != nil {
+				t.Fatalf("updateConditions() error = %v", err)
+			}
+			if lws.Status.ReadyReplicas != tc.wantReady {
+				t.Errorf("status.readyReplicas = %d, want %d", lws.Status.ReadyReplicas, tc.wantReady)
+			}
+		})
+	}
+}
+
+// TestUserSuppliedBaselineAnnotationIsNotPropagated verifies that a
+// rollout-baseline-replicas annotation on the LeaderWorkerSet does not reach
+// the leader workload. The annotations of the LWS are copied to the leader
+// StatefulSet and Deployment, and the controller reads the baseline of an
+// active rollout from that annotation.
+func TestUserSuppliedBaselineAnnotationIsNotPropagated(t *testing.T) {
+	const otherKey = "example.com/team"
+	newLWS := func(groupIdentity leaderworkerset.GroupIdentityType) *leaderworkerset.LeaderWorkerSet {
+		lws := combinedRolloutLWS(4, intstr.FromInt32(1), 0)
+		lws.Spec.GroupIdentity = groupIdentity
+		lws.Annotations = map[string]string{rolloutBaselineAnnotationKey: "1", otherKey: "a"}
+		return lws
+	}
+	// annotations returns the annotations of the leader workload for the given
+	// rollout baseline.
+	workloads := map[string]func(baseline *int32) (map[string]string, error){
+		"leader StatefulSet": func(baseline *int32) (map[string]string, error) {
+			config, err := constructLeaderStatefulSetApplyConfigurationWithBaseline(newLWS(leaderworkerset.GroupIdentityOrdinal), 0, 4, baseline, "rev-1")
+			if err != nil {
+				return nil, err
+			}
+			return config.Annotations, nil
+		},
+		"leader Deployment": func(baseline *int32) (map[string]string, error) {
+			config, err := constructLeaderDeploymentApplyConfiguration(newLWS(leaderworkerset.GroupIdentityHash), baseline, "rev-1")
+			if err != nil {
+				return nil, err
+			}
+			return config.Annotations, nil
+		},
+	}
+	for name, annotations := range workloads {
+		t.Run(name, func(t *testing.T) {
+			got, err := annotations(nil)
+			if err != nil {
+				t.Fatalf("constructing the apply configuration: %v", err)
+			}
+			if value, found := got[rolloutBaselineAnnotationKey]; found {
+				t.Errorf("no rollout is active, but %s = %q", rolloutBaselineAnnotationKey, value)
+			}
+			if got[otherKey] != "a" {
+				t.Errorf("%s = %q, want the annotation of the LWS", otherKey, got[otherKey])
+			}
+
+			got, err = annotations(ptr.To[int32](3))
+			if err != nil {
+				t.Fatalf("constructing the apply configuration: %v", err)
+			}
+			if got[rolloutBaselineAnnotationKey] != "3" {
+				t.Errorf("%s = %q, want the baseline of the controller, 3", rolloutBaselineAnnotationKey, got[rolloutBaselineAnnotationKey])
+			}
+		})
+	}
+}
