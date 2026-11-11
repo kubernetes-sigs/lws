@@ -1639,7 +1639,7 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 				{
 					// Scale 1 -> 2 and update worker template while new ordinal 1 stays Pending;
-					// simulate pre-1.35 StatefulSetController observing generations without deleting ordinal 0.
+					// simulate a StatefulSetController without native maxUnavailable that observes generations without deleting ordinal 0.
 					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
 						gomega.Eventually(func(g gomega.Gomega) {
 							var current leaderworkerset.LeaderWorkerSet

@@ -223,8 +223,9 @@ func ackLeaderStatefulSet(t *testing.T, ctx context.Context, c client.Client, ke
 // TestCombinedRolloutIssue717PendingScaleUpDoesNotBlockReplacement verifies the
 // exact #717 scenario: scaling 1 -> 2 together with a template update under
 // maxUnavailable=1, maxSurge=0 replaces ordinal 0 even while ordinal 1 stays
-// Pending, including on pre-1.35 clusters where StatefulSetController stops its
-// descending update loop at Pending ordinal 1.
+// Pending, including on clusters without native StatefulSet maxUnavailable,
+// where StatefulSetController stops its descending update loop at Pending
+// ordinal 1.
 func TestCombinedRolloutIssue717PendingScaleUpDoesNotBlockReplacement(t *testing.T) {
 	ctx := context.Background()
 	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
@@ -321,7 +322,8 @@ func TestCombinedRolloutIssue717PendingScaleUpDoesNotBlockReplacement(t *testing
 		t.Fatalf("expected test-sample-0 to still exist before sts observes partition=0: %v", err)
 	}
 
-	// Simulate pre-1.35 StatefulSetController observing partition=0 (Generation 3)
+	// Simulate a StatefulSetController without native maxUnavailable that
+	// observes partition=0 (Generation 3)
 	// while stopping its descending update loop at Pending test-sample-1.
 	sts.Generation = 3
 	if err := c.Update(ctx, sts); err != nil {

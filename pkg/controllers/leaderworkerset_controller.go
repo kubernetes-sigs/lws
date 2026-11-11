@@ -1077,8 +1077,11 @@ func (r *LeaderWorkerSetReconciler) applyLeaderStatefulSet(ctx context.Context, 
 }
 
 // deleteStaleOrdinalLeaders unblocks Ordinal rolling updates on clusters where
-// Kubernetes StatefulSetController's descending update loop stops at Pending
-// higher ordinals (e.g. MaxUnavailableStatefulSet disabled prior to K8s 1.35).
+// Kubernetes StatefulSetController's descending update loop stops at an unready
+// higher ordinal. That is its behavior with MaxUnavailableStatefulSet disabled,
+// which is the default in Kubernetes 1.34, in 1.35.4 and later 1.35 patches,
+// and in 1.36. The unready ordinal can be a Pending scale-up addition or a
+// leader that is being replaced, so this applies to every rolling update.
 // Once the leader StatefulSet has observed both the target revision and the
 // lowered partition, stale non-terminating leader pods in [partition, replicas)
 // that sit below an unready higher ordinal are foreground-deleted with UID and
