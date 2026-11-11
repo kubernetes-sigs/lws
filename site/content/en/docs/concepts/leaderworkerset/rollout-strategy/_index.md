@@ -93,4 +93,18 @@ When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `baselin
 
 ## MaxUnavailable Feature Gate
 
-`MaxUnavailable` for StatefulSets graduated to Beta in Kubernetes [1.35](https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/#maxunavailable-for-statefulsets), meaning it is enabled by default in supported Kubernetes clusters. This feature gate applies to `Ordinal` mode (which uses a leader `StatefulSet`) and to worker StatefulSets; in `Hash` mode, leader rollout availability is managed by the leader `Deployment`.
+In `Ordinal` mode, the controller sets `maxUnavailable` on the leader `StatefulSet`. The StatefulSet controller applies that field only when the Kubernetes [`MaxUnavailableStatefulSet`](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods) feature gate is enabled. The default of the gate depends on the Kubernetes version:
+
+| Kubernetes version | `MaxUnavailableStatefulSet` default |
+| :--- | :--- |
+| 1.34 | Disabled (Alpha) |
+| 1.35.0 through 1.35.3 | Enabled (Beta) |
+| 1.35.4 and later 1.35 patches, 1.36 | Disabled (Beta, see [kubernetes#137904](https://github.com/kubernetes/kubernetes/pull/137904)) |
+| 1.37 and later | Enabled (Beta) |
+
+LeaderWorkerSet does not need the feature gate. A rolling update replaces up to `maxUnavailable` groups at a time with the gate enabled or disabled:
+
+- **Gate enabled**: the StatefulSet controller replaces the outdated leaders.
+- **Gate disabled**: the StatefulSet controller replaces one leader at a time and waits at a leader that is not `Ready`. The LeaderWorkerSet controller then deletes the next outdated leader pods itself, as far as `maxUnavailable` and the availability floor allow. It records a `GroupsUpdating` event on the LeaderWorkerSet for each leader pod that it deletes.
+
+The controller does not set `maxUnavailable` on worker StatefulSets. In `Hash` mode, the leader `Deployment` manages rollout availability and the feature gate has no effect.
