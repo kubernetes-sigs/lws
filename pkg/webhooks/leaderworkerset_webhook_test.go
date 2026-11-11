@@ -1504,6 +1504,56 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	}
 }
 
+func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	annotations := func(keys ...string) map[string]string {
+		m := map[string]string{}
+		for _, k := range keys {
+			m[k] = "ExclusiveSlice"
+		}
+		return m
+	}
+
+	t.Run("template annotations are rejected on create", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = annotations(v1.ExclusiveScopeAnnotationKey)
+		_, err := r.ValidateCreate(context.Background(), lws)
+		if err == nil || !strings.Contains(err.Error(), "leaderworkerset.sigs.k8s.io/exclusive-scope") || !strings.Contains(err.Error(), "cannot be set") {
+			t.Fatalf("expected the worker template exclusive-scope annotation to be rejected, got %v", err)
+		}
+
+		lws = wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{}
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations = annotations(v1.ExclusiveEnforcementAnnotationKey, v1.SubGroupExclusiveScopeAnnotationKey)
+		_, err = r.ValidateCreate(context.Background(), lws)
+		if err == nil || !strings.Contains(err.Error(), "leaderworkerset.sigs.k8s.io/exclusive-enforcement") || !strings.Contains(err.Error(), "leaderworkerset.sigs.k8s.io/subgroup-exclusive-scope") {
+			t.Fatalf("expected the leader template placement annotations to be rejected, got %v", err)
+		}
+	})
+
+	t.Run("the guarantee cannot be relaxed through a template annotation", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
+		lws.Spec.PlacementPolicy = &v1.PlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{
+			v1.ExclusiveScopeAnnotationKey:       "ExclusiveSlice",
+			v1.ExclusiveEnforcementAnnotationKey: "Preferred",
+		}
+		_, err := r.ValidateCreate(context.Background(), lws)
+		if err == nil || !strings.Contains(err.Error(), "exclusive-scope") {
+			t.Fatalf("expected a relaxed scope to be rejected, got %v", err)
+		}
+	})
+
+	t.Run("a value unchanged from the old template stays updatable", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveScopeAnnotationKey: "ExclusiveSlice"}
+		old := lws.DeepCopy()
+		if _, err := r.ValidateUpdate(context.Background(), old, lws); err != nil {
+			t.Fatalf("expected an unchanged annotation to be accepted, got %v", err)
+		}
+	})
+}
+
 func TestPlacementPolicyWarnings(t *testing.T) {
 	policy := &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
 	const (

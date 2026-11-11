@@ -142,6 +142,9 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
 	allErrs = append(allErrs, cdErrs...)
+	templatePath := field.NewPath("spec", "leaderWorkerTemplate")
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate, nil)...)
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate, nil)...)
 	return append(warnings, placementPolicyWarnings(lws)...), allErrs.ToAggregate()
 }
 
@@ -153,6 +156,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
 	allErrs = append(allErrs, cdErrs...)
+	placementTemplatePath := field.NewPath("spec", "leaderWorkerTemplate")
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(placementTemplatePath.Child("leaderTemplate"), newLws.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLws.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(placementTemplatePath.Child("workerTemplate"), &newLws.Spec.LeaderWorkerTemplate.WorkerTemplate, &oldLws.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
 	specPath := field.NewPath("spec")
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
 	newSubGroupPolicy := newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
@@ -863,11 +869,36 @@ func ValidateTemplateComputeDomainContainers(templatePath *field.Path, tpl *core
 // that already carry it remain updatable. Exported for DisaggregatedSet webhook
 // reuse.
 func ValidateTemplateInternalComputeDomainAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl,
+		[]string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey})
+}
+
+// ValidateTemplateInternalPlacementAnnotations rejects the controller-managed
+// exclusive-scope and exclusive-enforcement annotations on a user
+// PodTemplateSpec. The pod webhook derives the placement scope and enforcement
+// from them, so a user-set value could relax the guarantee spec.placementPolicy
+// asks for, silently: the workload reports Ready while the domain is exclusive
+// against a wider set of pods, or not exclusive at all, than the one
+// configured. A value unchanged from oldTpl is allowed so objects that already
+// carry it remain updatable. Exported for DisaggregatedSet webhook reuse.
+func ValidateTemplateInternalPlacementAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl, []string{
+		v1.ExclusiveScopeAnnotationKey,
+		v1.ExclusiveEnforcementAnnotationKey,
+		v1.SubGroupExclusiveScopeAnnotationKey,
+		v1.SubGroupExclusiveEnforcementAnnotationKey,
+	})
+}
+
+// validateTemplateInternalAnnotations rejects the controller-managed
+// annotation keys on a user PodTemplateSpec, allowing a value unchanged from
+// oldTpl so objects that already carry it remain updatable.
+func validateTemplateInternalAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec, keys []string) field.ErrorList {
 	if tpl == nil {
 		return nil
 	}
 	var allErrs field.ErrorList
-	for _, key := range []string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey} {
+	for _, key := range keys {
 		val, exists := tpl.Annotations[key]
 		if !exists {
 			continue

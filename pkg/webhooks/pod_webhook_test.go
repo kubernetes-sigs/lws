@@ -331,6 +331,26 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a Preferred enforcement is not injected twice", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
+			},
+		}
+		for range 2 {
+			SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey,
+				leaderworkerset.PlacementExclusiveSlice, leaderworkerset.PlacementPreferred)
+		}
+		weighted := pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		if len(weighted) != 1 {
+			t.Errorf("preferred anti-affinity terms = %d, want 1", len(weighted))
+		}
+		required := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+		if len(required) != 1 {
+			t.Errorf("required affinity terms = %d, want 1", len(required))
+		}
+	})
 }
 
 func TestExclusiveAffinityApplied(t *testing.T) {

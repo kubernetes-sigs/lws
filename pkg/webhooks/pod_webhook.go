@@ -389,6 +389,14 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 			hasAntiAffinity = true
 		}
 	}
+	// A Preferred enforcement places the anti-affinity in the weighted list,
+	// so the pair is recognized there too, or every invocation of the webhook
+	// would append it again.
+	for _, term := range pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+		if term.PodAffinityTerm.TopologyKey == topologyKey {
+			hasAntiAffinity = true
+		}
+	}
 	return hasAffinity && hasAntiAffinity
 }
 
