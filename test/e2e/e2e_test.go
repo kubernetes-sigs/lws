@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -203,6 +204,65 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		// Wait for leaderWorkerSet to be ready again.
 		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 	})
+
+	// One update halves the request of each group and doubles the replicas on a
+	// fixed capacity pool (#717). The desired state fits, but the added group
+	// stays Pending until the old group releases its capacity. The rollout must
+	// replace the old group while the added group is Pending.
+	ginkgo.DescribeTable("Completes a combined template update and scale-up on fixed capacity",
+		func(groupIdentity v1.GroupIdentityType) {
+			resourceName := corev1.ResourceName("example.com/" + ns.Name)
+			ginkgo.By("advertising eight test-specific resource units on one node")
+			advertiseTestCapacity(resourceName, 8)
+			unitsPerPod := func(units int64) corev1.ResourceRequirements {
+				quantity := *resource.NewQuantity(units, resource.DecimalSI)
+				return corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{resourceName: quantity},
+					Limits:   corev1.ResourceList{resourceName: quantity},
+				}
+			}
+
+			// One group of two pods requests the whole pool.
+			lws = wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).Obj()
+			lws.Spec.GroupIdentity = groupIdentity
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Resources = unitsPerPod(4)
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Resources = unitsPerPod(4)
+			testing.MustCreateLws(ctx, k8sClient, lws)
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+
+			ginkgo.By("halving the request of each group and doubling the replicas in one update")
+			gomega.Eventually(func() error {
+				var current v1.LeaderWorkerSet
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current); err != nil {
+					return err
+				}
+				current.Spec.Replicas = ptr.To[int32](2)
+				current.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Resources = unitsPerPod(2)
+				current.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Resources = unitsPerPod(2)
+				return k8sClient.Update(ctx, &current)
+			}, timeout, interval).Should(gomega.Succeed())
+
+			ginkgo.By("waiting for both groups to be Ready on the new template")
+			gomega.Eventually(func(g gomega.Gomega) {
+				var current v1.LeaderWorkerSet
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+				g.Expect(current.Status.ReadyReplicas).To(gomega.Equal(int32(2)))
+				g.Expect(current.Status.UpdatedReplicas).To(gomega.Equal(int32(2)))
+
+				pods := &corev1.PodList{}
+				g.Expect(k8sClient.List(ctx, pods, client.InNamespace(lws.Namespace), client.MatchingLabels{v1.SetNameLabelKey: lws.Name})).To(gomega.Succeed())
+				g.Expect(pods.Items).To(gomega.HaveLen(4))
+				for _, pod := range pods.Items {
+					g.Expect(podutils.PodRunningAndReady(pod)).To(gomega.BeTrue(), "pod %s is not Ready", pod.Name)
+					limit := pod.Spec.Containers[0].Resources.Limits[resourceName]
+					g.Expect(limit.Value()).To(gomega.Equal(int64(2)), "pod %s is on the old template", pod.Name)
+				}
+			}, timeout, interval).Should(gomega.Succeed())
+			testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+		},
+		ginkgo.Entry("with groupIdentity Ordinal", v1.GroupIdentityOrdinal),
+		ginkgo.Entry("with groupIdentity Hash", v1.GroupIdentityHash),
+	)
 
 	ginkgo.It("Can deploy lws with subgroupsize set", func() {
 		leaderPodSpec := wrappers.MakeLeaderPodSpecWithTPUResource()
@@ -936,4 +996,45 @@ func getMetricsOutput(namespace string) string {
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to retrieve logs from curl-metrics job")
 	gomega.Expect(metricsOutput).To(gomega.ContainSubstring("HTTP/1.1 200 OK"))
 	return metricsOutput
+}
+
+// advertiseTestCapacity advertises units of a test-specific extended resource
+// on one Ready, schedulable, untainted node, and removes them after the test.
+// Pods that request the resource then share a fixed capacity pool.
+func advertiseTestCapacity(resourceName corev1.ResourceName, units int64) {
+	nodes := &corev1.NodeList{}
+	gomega.Expect(k8sClient.List(ctx, nodes)).To(gomega.Succeed())
+	var nodeKey client.ObjectKey
+	for _, node := range nodes.Items {
+		tainted := slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool {
+			return taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute
+		})
+		ready := slices.ContainsFunc(node.Status.Conditions, func(condition corev1.NodeCondition) bool {
+			return condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue
+		})
+		if !node.Spec.Unschedulable && !tainted && ready {
+			nodeKey = client.ObjectKeyFromObject(&node)
+			break
+		}
+	}
+	gomega.Expect(nodeKey.Name).NotTo(gomega.BeEmpty(), "capacity tests need a Ready, schedulable, untainted node")
+
+	updateCapacity := func(remove bool) {
+		gomega.Eventually(func(g gomega.Gomega) {
+			node := &corev1.Node{}
+			g.Expect(k8sClient.Get(ctx, nodeKey, node)).To(gomega.Succeed())
+			original := node.DeepCopy()
+			if remove {
+				delete(node.Status.Capacity, resourceName)
+				delete(node.Status.Allocatable, resourceName)
+			} else {
+				quantity := *resource.NewQuantity(units, resource.DecimalSI)
+				node.Status.Capacity[resourceName] = quantity
+				node.Status.Allocatable[resourceName] = quantity
+			}
+			g.Expect(k8sClient.Status().Patch(ctx, node, client.MergeFrom(original))).To(gomega.Succeed())
+		}, timeout, interval).Should(gomega.Succeed())
+	}
+	updateCapacity(false)
+	ginkgo.DeferCleanup(updateCapacity, true)
 }
