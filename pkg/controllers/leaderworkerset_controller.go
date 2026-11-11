@@ -954,6 +954,19 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		return rollingUpdatePlan{}, err
 	}
 	stsObserved := sts.Status.ObservedGeneration == 0 || sts.Status.ObservedGeneration >= sts.Generation
+	// A rollout is active when a baseline is recorded or the partition is above
+	// the user partition. Replica states cannot tell this: a group with no
+	// leader pod or no worker StatefulSet is not updated, but it is not on an
+	// older revision. Without an active rollout, Cases 4 and 5 apply no floor
+	// guard and record no baseline, so a plain scale-down retires the excess
+	// ordinals as requested.
+	rolloutActive := hasRolloutBaseline || partition > userPartition
+	activeBaseline := func() *int32 {
+		if rolloutActive {
+			return ptr.To(baseline)
+		}
+		return nil
+	}
 
 	// Case 4: Desired replicas shrank during an active rolling update. Apply the
 	// replica reduction first (even if StatefulSet status has not yet observed
@@ -970,24 +983,19 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		// The floor is a rollout guarantee. A plain scale-down with no active
 		// rollout retires excess ordinals as requested, even while some of the
 		// remaining groups are unready.
-		rolloutActive := hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas)
 		if hasUncertain {
 			targetReplicas = max(targetReplicas, stsReplicas)
 		} else if rolloutActive {
 			targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
 		}
 		recordSurgeDeletionEvent(targetReplicas)
-		var nextBaseline *int32
-		if !stsObserved || hasUncertain || rolloutActive {
-			nextBaseline = ptr.To(baseline)
-		}
 		return rollingUpdatePlan{
 			// Do not lower partition below the planned replicas. The floor
 			// guard can keep Ready ordinals above the burst limit, and they
 			// must stay on their revision.
 			partition: min(partition, max(burstReplicas, targetReplicas)),
 			replicas:  targetReplicas,
-			baseline:  nextBaseline,
+			baseline:  activeBaseline(),
 			floor:     floor,
 			requeue:   hasUncertain,
 		}, nil
@@ -1000,7 +1008,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		return rollingUpdatePlan{
 			partition: partition,
 			replicas:  stsReplicas,
-			baseline:  ptr.To(baseline),
+			baseline:  activeBaseline(),
 			floor:     floor,
 		}, nil
 	}
@@ -1014,7 +1022,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		return rollingUpdatePlan{
 			partition: partition,
 			replicas:  stsReplicas,
-			baseline:  ptr.To(baseline),
+			baseline:  activeBaseline(),
 			floor:     floor,
 			requeue:   true,
 		}, nil
@@ -1025,7 +1033,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
 	// Surplus ordinals of a completed rollout are retired as computed. The
 	// floor guard only delays that while a rollout is active.
-	if hasRolloutBaseline || rolloutBaselineActive(states, partition, userPartition, lwsReplicas) {
+	if rolloutActive {
 		targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
 	}
 	recordSurgeDeletionEvent(targetReplicas)
@@ -1033,7 +1041,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	nextPartition := rollingUpdatePartitionWithFloor(activeStates, floor, min(partition, targetReplicas), userPartition)
 
 	var nextBaseline *int32
-	if rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) {
+	if rolloutActive && rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) {
 		nextBaseline = ptr.To(baseline)
 	}
 	return rollingUpdatePlan{

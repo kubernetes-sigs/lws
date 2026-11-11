@@ -3384,3 +3384,82 @@ func TestPlainScaleDownWithDegradedGroupsConverges(t *testing.T) {
 		}
 	})
 }
+
+// TestPlainScaleDownWithIncompleteGroupsConverges verifies that a scale-down
+// with no active rollout retires the excess ordinals and records no baseline
+// when remaining groups are incomplete: the leader pod is missing, or the
+// worker StatefulSet does not exist yet (startupPolicy LeaderReady with a
+// leader that is not Ready). Such a group is not updated, but it is not on an
+// older revision. A baseline recorded for it would stay until the group
+// recovers and would apply the rollout floor guard to later scale-downs.
+func TestPlainScaleDownWithIncompleteGroupsConverges(t *testing.T) {
+	ctx := context.Background()
+	groups := []struct {
+		name string
+		size int32
+		// incomplete returns the objects of an incomplete group.
+		incomplete func(lws *leaderworkerset.LeaderWorkerSet, ord int) []client.Object
+	}{
+		{
+			name:       "leader pod is missing",
+			size:       1,
+			incomplete: func(*leaderworkerset.LeaderWorkerSet, int) []client.Object { return nil },
+		},
+		{
+			name: "worker StatefulSet does not exist",
+			size: 2,
+			incomplete: func(lws *leaderworkerset.LeaderWorkerSet, ord int) []client.Object {
+				return []client.Object{lwsStatusLeaderPod(lws, ord, "rev-1", false)}
+			},
+		},
+	}
+	// Each plan scales to 3 replicas. Ordinals 0 and 1 are incomplete and the
+	// other ordinals are Ready.
+	plans := []struct {
+		name                     string
+		maxUnavailable, maxSurge int32
+		stsReplicas              int32
+		replicasAnnotation       string
+		unobserved               bool
+		wantReplicas             int32
+	}{
+		{name: "scale-down pass", maxUnavailable: 1, stsReplicas: 5, replicasAnnotation: "5", wantReplicas: 3},
+		{name: "surplus ordinal after scale-down", maxUnavailable: 1, stsReplicas: 4, replicasAnnotation: "3", wantReplicas: 3},
+		// Two desired groups are not Ready, which is more than maxSurge, so the
+		// surge replica stays. It must not start a rollout baseline.
+		{name: "kept surge replica", maxSurge: 1, stsReplicas: 4, replicasAnnotation: "3", wantReplicas: 4},
+		{name: "unobserved StatefulSet generation", maxUnavailable: 1, stsReplicas: 5, replicasAnnotation: "5", unobserved: true, wantReplicas: 3},
+	}
+	for _, group := range groups {
+		for _, tc := range plans {
+			t.Run(group.name+"/"+tc.name, func(t *testing.T) {
+				lws := combinedRolloutLWS(3, intstr.FromInt32(tc.maxUnavailable), tc.maxSurge)
+				lws.Spec.LeaderWorkerTemplate.Size = ptr.To(group.size)
+				sts := combinedRolloutSts(lws, tc.stsReplicas, 0, map[string]string{leaderworkerset.ReplicasAnnotationKey: tc.replicasAnnotation})
+				if tc.unobserved {
+					sts.Generation = 2
+					sts.Status.ObservedGeneration = 1
+				}
+				var objs []client.Object
+				for ord := range int(tc.stsReplicas) {
+					if ord < 2 {
+						objs = append(objs, group.incomplete(lws, ord)...)
+						continue
+					}
+					objs = append(objs, lwsStatusLeaderPod(lws, ord, "rev-1", true))
+					if group.size > 1 {
+						objs = append(objs, lwsStatusWorkerSts(lws, ord, "rev-1", true))
+					}
+				}
+				r, _ := lwsStatusNewReconciler(t, objs...)
+				plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-1", false)
+				if err != nil {
+					t.Fatalf("planRollingUpdate() error = %v", err)
+				}
+				if plan.replicas != tc.wantReplicas || plan.baseline != nil {
+					t.Fatalf("(replicas, baseline) = (%d, %d), want (%d, nil)", plan.replicas, ptr.Deref(plan.baseline, -1), tc.wantReplicas)
+				}
+			})
+		}
+	}
+}
