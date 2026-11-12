@@ -152,7 +152,8 @@ tests:
         runAsUser: 65532
         fsGroup: 65532
         seccompProfile:
-          type: RuntimeDefault
+          type: Localhost
+          localhostProfile: profiles/audit.json
     asserts:
       - equal:
           path: spec.template.spec.securityContext
@@ -161,7 +162,8 @@ tests:
             runAsUser: 65532
             fsGroup: 65532
             seccompProfile:
-              type: RuntimeDefault
+              type: Localhost
+              localhostProfile: profiles/audit.json
 
   # securityContext (manager container)
 
