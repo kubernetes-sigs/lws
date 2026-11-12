@@ -134,13 +134,15 @@ tests:
 
   # podSecurityContext
 
-  - it: runs the pod as non-root by default
+  - it: runs the pod as non-root with the RuntimeDefault seccomp profile by default
     template: templates/manager/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.securityContext
           value:
             runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
 
   - it: replaces the pod securityContext
     template: templates/manager/deployment.yaml
