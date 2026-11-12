@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	volcanov1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
@@ -156,7 +157,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		},
 		Spec: volcanov1beta1.PodGroupSpec{
 			// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
-			MinMember:       *lws.Spec.LeaderWorkerTemplate.Size,
+			MinMember:       ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1),
 			MinResources:    &minResources,
 			NetworkTopology: networkTopology,
 		},
