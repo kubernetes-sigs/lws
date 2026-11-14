@@ -319,75 +319,105 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 	}
 }
 
-func TestCanarySubRolesScaleSurvivingOldGroups(t *testing.T) {
+func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
-		t.Run(string(identity), func(t *testing.T) {
-			t.Parallel()
+		for _, subRoles := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/subRoles=%t", identity, subRoles), func(t *testing.T) {
+				t.Parallel()
 
-			f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "b")
-			old := f.withRevision("old", "a", "a", "a", "b", "b", "b")
-			old.lws.Annotations[canaryStableAnnotation] = "true"
-			require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
-			f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}}
-			setCanaryPercent(f.ds, 25)
-			require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
-			initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
-			executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
-			// Keep counts small: every group has a leader and two workers.
-			for _, phase := range []struct {
-				percent           int32
-				desired, old, new [2]int
-			}{
-				{25, [2]int{8, 8}, [2]int{6, 6}, [2]int{2, 2}},
-				{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
-				{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
-				{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
-				{0, [2]int{12, 8}, [2]int{12, 8}, [2]int{0, 0}},
-				{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
-				{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
-			} {
-				setCanaryPercent(f.ds, phase.percent)
-				desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
-				settled := false
-				last := [2]string{}
-				for range 80 {
-					_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
-					require.NoError(t, err)
-					require.Empty(t, executor.canaryMessage)
-					settled = true
-					for index, fixture := range []*subRoleFixture{old, f} {
-						fixture.native()
-						fixture.sync()
-						observed := fixture.observe()
-						counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
-						require.NoError(t, err)
-						actual := map[string]int{"a": 0, "b": 0}
-						groups := activeSubRoleGroups(observed)
-						for _, group := range groups {
-							child, coherent := groupSubRole(group)
-							settled = settled && coherent
-							actual[child]++
+				f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "b")
+				old := f.withRevision("old", "a", "a", "a", "b", "b", "b")
+				old.lws.Annotations[canaryStableAnnotation] = "true"
+				require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
+				f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}}
+				if !subRoles {
+					f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{staticRole("model")}
+					// Reuse the native workload simulator, without subrole annotations
+					// or assignments. Readiness comes from real Pod observations.
+					for _, fixture := range []*subRoleFixture{old, f} {
+						delete(fixture.lws.Annotations, subRoleReplicasAnnotation)
+						delete(fixture.lws.Annotations, disaggv1.InitialSubRoleReplicasAnnotationKey)
+						require.NoError(t, f.manager.client.Update(t.Context(), fixture.lws))
+						for _, group := range fixture.observe().Groups {
 							for _, pod := range group.Pods {
-								if podutils.PodRunningAndReady(*pod) {
-									continue
-								}
-								pod.Status.Phase = corev1.PodRunning
-								pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-								require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+								delete(pod.Labels, disaggv1.SubRoleLabelKey)
+								require.NoError(t, f.manager.client.Update(t.Context(), pod))
 							}
 						}
-						want := [2][2]int{phase.old, phase.new}[index]
-						last[index] = fmt.Sprintf("%s: issued=%v assigned=%v", fixture.lws.Name, counts, actual)
-						settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual) && len(groups) == want[0]+want[1]
-					}
-					if settled {
-						break
 					}
 				}
-				require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
-			}
-			require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
-		})
+				setCanaryPercent(f.ds, 25)
+				require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
+				initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
+				executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
+				// Keep counts small: every group has a leader and two workers.
+				for _, phase := range []struct {
+					percent           int32
+					desired, old, new [2]int
+				}{
+					{25, [2]int{8, 8}, [2]int{6, 6}, [2]int{2, 2}},
+					{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
+					{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
+					{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
+					{0, [2]int{12, 8}, [2]int{12, 8}, [2]int{0, 0}},
+					{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
+					{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
+				} {
+					setCanaryPercent(f.ds, phase.percent)
+					desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
+					if !subRoles {
+						delete(desired, "model/a")
+						delete(desired, "model/b")
+					}
+					settled := false
+					last := [2]string{}
+					for range 80 {
+						_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
+						require.NoError(t, err)
+						require.Empty(t, executor.canaryMessage)
+						settled = true
+						for index, fixture := range []*subRoleFixture{old, f} {
+							fixture.native()
+							if subRoles {
+								fixture.sync()
+							}
+							observed := fixture.observe()
+							actual := map[string]int{"a": 0, "b": 0}
+							groups := activeSubRoleGroups(observed)
+							for _, group := range groups {
+								if subRoles {
+									child, coherent := groupSubRole(group)
+									settled = settled && coherent
+									actual[child]++
+								}
+								for _, pod := range group.Pods {
+									if podutils.PodRunningAndReady(*pod) {
+										continue
+									}
+									settled = false
+									pod.Status.Phase = corev1.PodRunning
+									pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+									require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+								}
+							}
+							want := [2][2]int{phase.old, phase.new}[index]
+							last[index] = fmt.Sprintf("%s: issued=%d groups=%d", fixture.lws.Name, getLWSReplicas(observed.LWS), len(groups))
+							settled = settled && int(getLWSReplicas(observed.LWS)) == want[0]+want[1] && len(groups) == want[0]+want[1]
+							if subRoles {
+								counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
+								require.NoError(t, err)
+								settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual)
+							}
+						}
+						if settled {
+							break
+						}
+					}
+					require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
+				}
+				require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
+			})
+		}
 	}
 }
 
