@@ -274,6 +274,47 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 	}
 }
 
+func TestCanaryExistingRolesCanReachAndLeaveZero(t *testing.T) {
+	for _, tc := range []struct {
+		name                                             string
+		initial, old, current, desired, wantOld, wantNew [2]int32
+	}{
+		{"initially zero", [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}, [2]int32{4, 2}, [2]int32{3, 1}, [2]int32{1, 1}},
+		{"interrupted drain", [2]int32{4, 8}, [2]int32{0, 6}, [2]int32{1, 2}, [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}},
+		{"scale one role to zero", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet(tc.desired, [2]int{1, 1}, [2]int{1, 1})
+			setCanaryPercent(ds, 25)
+			objects := revisionLWSObjects("old", tc.old, tc.old, tc.initial, time.Unix(1, 0))
+			for _, object := range objects {
+				object.(*leaderv1.LeaderWorkerSet).Annotations[canaryStableAnnotation] = "true"
+			}
+			objects = append(objects, revisionLWSObjects("new", tc.current, tc.current, tc.desired, time.Unix(2, 0))...)
+			c := newTestClient(objects...)
+			executor := newTestExecutor(c)
+			for range 40 {
+				reconcileExistingForTest(t, executor, ds, "new")
+				require.Empty(t, executor.canaryBlocked, "existing templates can be scaled from zero")
+				list := &leaderv1.LeaderWorkerSetList{}
+				require.NoError(t, c.List(t.Context(), list))
+				for i := range list.Items {
+					lws := &list.Items[i]
+					lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
+					require.NoError(t, c.Status().Update(t.Context(), lws))
+				}
+			}
+			assertRevisionReplicas(t, c, "old", tc.wantOld)
+			assertRevisionReplicas(t, c, "new", tc.wantNew)
+			statuses, _, err := executor.LWSManager.collectRoleStatuses(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil))
+			require.NoError(t, err)
+			for i, status := range statuses {
+				require.Equal(t, tc.desired[i], status.AvailableReplicas)
+			}
+		})
+	}
+}
+
 func TestCanarySubRolesScaleSurvivingOldGroups(t *testing.T) {
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {

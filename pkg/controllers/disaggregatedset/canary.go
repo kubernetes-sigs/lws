@@ -129,7 +129,23 @@ func (inputs rolloutInputs) stateForRevision(old disaggutils.RevisionRolesList, 
 			state.Config[i].MinOldReplicas = state.Config[i].CanaryOldReplicas
 		}
 	}
+	if inputs.proportionalCanary {
+		canaryRoleLayout(&state)
+	}
 	return state
+}
+
+// A role explicitly scaled to zero is no longer required for either revision
+// to serve. Its historical initial count must not prevent its last group draining.
+func canaryRoleLayout(state *RolloutState) {
+	for i, desired := range state.Target.DesiredReplicas {
+		if desired == 0 {
+			state.ActiveOld.RequiredRoles[i] = false
+			for j := range state.ParkedOld {
+				state.ParkedOld[j].RequiredRoles[i] = false
+			}
+		}
+	}
 }
 
 // Restore A when demand grows or the percentage falls. Older canaries drain
@@ -155,7 +171,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		executor.canaryBlocked = "Cannot identify the stable canary revision unambiguously; complete this rollout at canaryPercent 100 before starting another canary"
 		return true, nil
 	}
-	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired, inputs.readiness) {
+	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
 		executor.canaryBlocked = "Canary requires a surviving stable revision with the same active roles and sub-roles; finish the layout change with canaryPercent 100 before starting a canary"
 		return true, nil
 	}
@@ -222,6 +238,7 @@ func canaryRestorationState(old disaggutils.RevisionRolesList, target, stable, c
 	canaries := slices.DeleteFunc(append(slices.Clone(old), target), func(r disaggutils.RevisionRoles) bool { return r.Revision == stable.Revision })
 	state := rolloutStateForRevision(inputs.allRoleNames, canaries, candidate, stable, inputs.targetReplicas, inputs.config, inputs.readiness)
 	state.ScaleUpDuringRollout, state.ScaleDownDuringRollout, state.ProportionalCanary = true, true, true
+	canaryRoleLayout(&state)
 	for i := range state.Config {
 		canaryQuota := inputs.targetReplicas[i] - inputs.config[i].CanaryOldReplicas
 		parked := 0
@@ -271,16 +288,23 @@ func (executor *RollingUpdateExecutor) applyCanaryRestoration(ctx context.Contex
 	return nil
 }
 
-func compatibleCanaryRevision(revision disaggutils.RevisionRoles, names []string, desired map[string]int, readiness rolloutReadiness) bool {
+func compatibleCanaryRevision(revision disaggutils.RevisionRoles, names []string, desired map[string]int) bool {
 	for _, lws := range revision.Roles {
 		if !lws.DeletionTimestamp.IsZero() {
 			return false
 		}
 	}
 	for _, name := range names {
-		observed := readiness.role(revision, name)
-		if (observed.initial > 0) != (desired[name] > 0) || desired[name] > 0 && observed.spec == 0 {
+		parent, child := roleParts(name)
+		lws := revision.Roles[parent]
+		if _, present := desired[name]; !present || lws == nil || (child != "") != (lws.Annotations[subRoleReplicasAnnotation] != "") {
 			return false
+		}
+		if child != "" {
+			counts, err := subRoleCounts(lws, subRoleReplicasAnnotation)
+			if _, present := counts[child]; err != nil || !present {
+				return false
+			}
 		}
 	}
 	return true

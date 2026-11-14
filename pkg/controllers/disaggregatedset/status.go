@@ -273,6 +273,15 @@ func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.Disaggrega
 			current.observe(leaf, 0, desiredReplicasByRole[leaf] > 0)
 		}
 	}
+	if _, canary := canaryPercent(ds); canary {
+		for name, desired := range desiredReplicasByRole {
+			if desired == 0 {
+				for _, observed := range capacity {
+					delete(observed.required, name)
+				}
+			}
+		}
+	}
 }
 
 // observeWorkload counts an unpartitioned workload. Like the planner, a role is
