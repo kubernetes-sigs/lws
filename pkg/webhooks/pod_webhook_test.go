@@ -121,22 +121,16 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			},
 		},
 		{
-			name: "Pod with Exclusive Annotation, Affinity, and AntiAffinity",
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
-				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
-						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
+			name: "Pod with the injected placement already applied",
+			pod: func() *corev1.Pod {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
 					},
-				},
-			},
+				}
+				SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey)
+				return pod
+			}(),
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
@@ -147,10 +141,32 @@ func TestSetExclusiveAffinities(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
 						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "In",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
 						},
 						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+								TopologyKey: "topologyKey",
+								LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "Exists",
+									},
+									{
+										Key:      "leaderworkerset.sigs.k8s.io/group-key",
+										Operator: "NotIn",
+										Values:   []string{"test-key"},
+									},
+								}},
+							}},
 						},
 					},
 				},
@@ -169,99 +185,135 @@ func TestSetExclusiveAffinities(t *testing.T) {
 }
 
 func TestExclusiveAffinityApplied(t *testing.T) {
+	const (
+		groupKey    = "test-key"
+		topologyKey = "topologyKey"
+	)
+	podWith := func(affinity *corev1.Affinity) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"leaderworkerset.sigs.k8s.io/exclusive-topology": topologyKey,
+				},
+			},
+			Spec: corev1.PodSpec{Affinity: affinity},
+		}
+	}
+	terms := func(topologyKey string, expressions ...metav1.LabelSelectorRequirement) []corev1.PodAffinityTerm {
+		return []corev1.PodAffinityTerm{{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: expressions},
+			TopologyKey:   topologyKey,
+		}}
+	}
+	groupAffinity := terms(topologyKey, metav1.LabelSelectorRequirement{
+		Key:      leaderworkerset.GroupUniqueHashLabelKey,
+		Operator: metav1.LabelSelectorOpIn,
+		Values:   []string{groupKey},
+	})
+	groupAntiAffinity := terms(topologyKey,
+		metav1.LabelSelectorRequirement{
+			Key:      leaderworkerset.GroupUniqueHashLabelKey,
+			Operator: metav1.LabelSelectorOpExists,
+		},
+		metav1.LabelSelectorRequirement{
+			Key:      leaderworkerset.GroupUniqueHashLabelKey,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{groupKey},
+		},
+	)
+	foreignAffinity := terms(topologyKey, metav1.LabelSelectorRequirement{
+		Key:      "tier",
+		Operator: metav1.LabelSelectorOpIn,
+		Values:   []string{"cache"},
+	})
+	foreignAntiAffinity := terms(topologyKey, metav1.LabelSelectorRequirement{
+		Key:      "tier",
+		Operator: metav1.LabelSelectorOpExists,
+	})
+
 	tests := []struct {
 		name                              string
 		pod                               corev1.Pod
 		expectedAppliedExclusivePlacement bool
-		topologyKey                       string
 	}{
 		{
-			name: "Has annotiation, Pod Affinity and Pod AntiAffinity",
-			pod: corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
-					},
-				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
-						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
-					},
-				},
-			},
+			name: "the injected placement is applied",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity:     &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAffinity},
+				PodAntiAffinity: &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAntiAffinity},
+			}),
 			expectedAppliedExclusivePlacement: true,
-			topologyKey:                       "topologyKey",
 		},
 		{
-			name: "Has annotiation, Pod Affinity, doesn't have Pod AntiAffinity",
-			pod: corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
-					},
+			name: "the anti-affinity carries the group expressions plus a scope expression",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: groupAffinity,
 				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
+				PodAntiAffinity: &corev1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: terms(topologyKey,
+						metav1.LabelSelectorRequirement{
+							Key:      leaderworkerset.GroupUniqueHashLabelKey,
+							Operator: metav1.LabelSelectorOpExists,
 						},
-					},
+						metav1.LabelSelectorRequirement{
+							Key:      leaderworkerset.GroupUniqueHashLabelKey,
+							Operator: metav1.LabelSelectorOpNotIn,
+							Values:   []string{groupKey},
+						},
+						metav1.LabelSelectorRequirement{
+							Key:      leaderworkerset.SetNameLabelKey,
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   []string{"test"},
+						},
+					),
 				},
-			},
-			expectedAppliedExclusivePlacement: false,
-			topologyKey:                       "topologyKey",
+			}),
+			expectedAppliedExclusivePlacement: true,
 		},
 		{
-			name: "Has annotiation, Pod AntiAffinity, doesn't have Pod Affinity",
-			pod: corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
-					},
-				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
-					},
-				},
-			},
+			name: "has pod affinity only",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity: &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAffinity},
+			}),
 			expectedAppliedExclusivePlacement: false,
-			topologyKey:                       "topologyKey",
 		},
 		{
-			name: "Has annotiation, Pod Affinity and Pod AntiAffinity, Topology Key doesn't match",
-			pod: corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey",
-					},
-				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						PodAffinity: &corev1.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey1"}},
-						},
-						PodAntiAffinity: &corev1.PodAntiAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
-						},
-					},
-				},
-			},
+			name: "has pod anti-affinity only",
+			pod: podWith(&corev1.Affinity{
+				PodAntiAffinity: &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAntiAffinity},
+			}),
 			expectedAppliedExclusivePlacement: false,
-			topologyKey:                       "topologyKey",
+		},
+		{
+			name: "topology key does not match",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity:     &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: terms("topologyKey1", groupAffinity[0].LabelSelector.MatchExpressions...)},
+				PodAntiAffinity: &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAntiAffinity},
+			}),
+			expectedAppliedExclusivePlacement: false,
+		},
+		{
+			name: "both terms exist but select another workload",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity:     &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: foreignAffinity},
+				PodAntiAffinity: &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: foreignAntiAffinity},
+			}),
+			expectedAppliedExclusivePlacement: false,
+		},
+		{
+			name: "the anti-affinity selects another workload",
+			pod: podWith(&corev1.Affinity{
+				PodAffinity:     &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: groupAffinity},
+				PodAntiAffinity: &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: foreignAntiAffinity},
+			}),
+			expectedAppliedExclusivePlacement: false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			appliedExclusivePlacement := exclusiveAffinityApplied(tc.pod, tc.topologyKey)
+			appliedExclusivePlacement := exclusiveAffinityApplied(tc.pod, groupKey, topologyKey, leaderworkerset.GroupUniqueHashLabelKey)
 			if appliedExclusivePlacement != tc.expectedAppliedExclusivePlacement {
 				t.Errorf("Expected value %t, got %t", tc.expectedAppliedExclusivePlacement, appliedExclusivePlacement)
 			}
