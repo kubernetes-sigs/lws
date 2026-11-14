@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -178,6 +179,13 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			return fmt.Errorf("parsing pod ordinal for pod %s", pod.Name)
 		}
 		pod.Labels[leaderworkerset.WorkerIndexLabelKey] = fmt.Sprint(workerIndex)
+		// Hold a deleted worker until the pod controller has handled the
+		// deletion, so a group is recreated even if the worker is removed while
+		// no controller is running.
+		switch leaderworkerset.RestartPolicyType(pod.Annotations[leaderworkerset.RestartPolicyAnnotationKey]) {
+		case leaderworkerset.RecreateGroupOnPodRestart, leaderworkerset.RecreateGroupAfterStart:
+			controllerutil.AddFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+		}
 		subGroupSize, foundSubGroupSize := pod.Annotations[leaderworkerset.SubGroupSizeAnnotationKey]
 		if foundSubGroupSize && pod.Labels[leaderworkerset.SubGroupIndexLabelKey] == "" {
 			subGroupSizeInt, err := strconv.Atoi(subGroupSize)

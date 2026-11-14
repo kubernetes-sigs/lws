@@ -132,14 +132,103 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		// A leader delete event arrives after its finalizers have been released.
 		// Replaying recovery from that snapshot could reset the budget or release
 		// worker finalizers for a replacement group with the same name/revision.
-		// Deleted workers still need restart-policy handling below.
+		// Deleted workers still need restart-policy handling in reconcilePodRequest.
 		if podutils.LeaderPod(*req.DeletedPod) {
 			return ctrl.Result{}, nil
 		}
-		pod = *req.DeletedPod.DeepCopy()
-	} else if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
+		return r.reconcilePodRequest(ctx, *req.DeletedPod.DeepCopy())
+	}
+	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	result, err := r.reconcilePodRequest(ctx, *pod.DeepCopy())
+	if err != nil {
+		return result, err
+	}
+	// Decide on the finalizer from the same snapshot that was reconciled, so
+	// a deletion observed only by a later read is never released unhandled.
+	if err := r.syncWorkerDeletionFinalizer(ctx, req, &pod); err != nil {
+		if apierrors.IsConflict(err) {
+			// The Pod changed after the snapshot; reconcile it again.
+			return mergeResult(result, ctrl.Result{Requeue: true}), nil
+		}
+		return result, err
+	}
+	return result, nil
+}
+
+// recreatesGroupOnWorkerFailure reports whether a worker failure under the
+// given restart policy recreates the whole group.
+func recreatesGroupOnWorkerFailure(policy leaderworkerset.RestartPolicyType) bool {
+	return policy == leaderworkerset.RecreateGroupOnPodRestart || policy == leaderworkerset.RecreateGroupAfterStart
+}
+
+// syncWorkerDeletionFinalizer maintains WorkerDeletionFinalizer on a worker
+// Pod of a group that is recreated on a worker failure. pod is the snapshot
+// that reconcilePodRequest has just handled, so a terminating worker has had
+// its restart policy applied and its finalizer can be released. Pod admission
+// adds the finalizer to new workers; adding it here covers workers admitted
+// without it, such as those created before an upgrade.
+//
+// Patches use optimistic locking: a merge patch replaces the whole finalizer
+// list, so a patch from a stale snapshot could drop a finalizer added since,
+// such as GroupRestartBudgetCleanupFinalizer. A conflict is returned to the
+// caller, which reconciles the Pod again.
+func (r *PodReconciler) syncWorkerDeletionFinalizer(ctx context.Context, req podReconcileRequest, pod *corev1.Pod) error {
+	if req.UID != "" && pod.UID != req.UID {
+		return nil
+	}
+	if podutils.LeaderPod(*pod) {
+		return nil
+	}
+	hasFinalizer := controllerutil.ContainsFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+	if pod.DeletionTimestamp != nil {
+		if !hasFinalizer {
+			return nil
+		}
+		patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.RemoveFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+		return client.IgnoreNotFound(r.Patch(ctx, pod, patch))
+	}
+	if hasFinalizer {
+		return nil
+	}
+	var lws leaderworkerset.LeaderWorkerSet
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Labels[leaderworkerset.SetNameLabelKey], Namespace: pod.Namespace}, &lws); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if lws.DeletionTimestamp != nil {
+		return nil
+	}
+	// Routine events of workers that never need the finalizer, such as those of
+	// a None group, should not pay for a revision lookup. A worker of an old
+	// revision with a Recreate* policy is skipped once the live policy no
+	// longer recreates groups; the rollout replaces it.
+	if !recreatesGroupOnWorkerFailure(lws.Spec.LeaderWorkerTemplate.RestartPolicy) {
+		return nil
+	}
+	// The restart policy is part of the group's revision, as in reconcilePodRequest.
+	revision, err := revisionutils.GetRevision(ctx, r.Client, &lws, revisionutils.GetRevisionKey(pod))
+	if err != nil {
+		return err
+	}
+	groupLws := &lws
+	if revision != nil {
+		if groupLws, err = revisionutils.ApplyRevision(&lws, revision); err != nil {
+			return err
+		}
+	}
+	if !recreatesGroupOnWorkerFailure(groupLws.Spec.LeaderWorkerTemplate.RestartPolicy) {
+		return nil
+	}
+	patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	controllerutil.AddFinalizer(pod, leaderworkerset.WorkerDeletionFinalizer)
+	return client.IgnoreNotFound(r.Patch(ctx, pod, patch))
+}
+
+// reconcilePodRequest reconciles one snapshot of a Pod: a live Pod read by
+// reconcilePod, or the last state of a deleted worker.
+func (r *PodReconciler) reconcilePodRequest(ctx context.Context, pod corev1.Pod) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(&pod))
 	ctx = ctrl.LoggerInto(ctx, log)
 
@@ -1704,6 +1793,9 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
+	if policy := currentLws.Spec.LeaderWorkerTemplate.RestartPolicy; recreatesGroupOnWorkerFailure(policy) {
+		podAnnotations[leaderworkerset.RestartPolicyAnnotationKey] = string(policy)
+	}
 	// Exclusive placement keys are copied from the leader pod so workers of an
 	// old-revision group keep the placement their leader was created with.
 	if topologyKey := leaderPod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {

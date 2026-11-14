@@ -117,6 +117,55 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("worker pods of a RecreateGroupOnPodRestart group get the worker-deletion finalizer", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:    "test",
+							leaderworkerset.GroupIndexLabelKey: "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:          "2",
+							leaderworkerset.RestartPolicyAnnotationKey: string(leaderworkerset.RecreateGroupOnPodRestart),
+						},
+					},
+					Spec: wrappers.MakeWorkerPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if diff := cmp.Diff([]string{leaderworkerset.WorkerDeletionFinalizer}, got.Finalizers); diff != "" {
+					return errors.New("pod finalizers mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
+		ginkgo.Entry("worker pods without a restart policy annotation get no finalizer", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:    "test",
+							leaderworkerset.GroupIndexLabelKey: "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey: "2",
+						},
+					},
+					Spec: wrappers.MakeWorkerPodSpec(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if len(got.Finalizers) != 0 {
+					return fmt.Errorf("pod finalizers = %v, want none", got.Finalizers)
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("worker index label is populated for leader pods", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{

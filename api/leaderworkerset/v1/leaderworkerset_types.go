@@ -139,6 +139,18 @@ const (
 	// to which it was added until explicit recovery or workload teardown.
 	GroupRestartBudgetCleanupFinalizer string = "leaderworkerset.sigs.k8s.io/group-restart-budget-cleanup"
 
+	// WorkerDeletionFinalizer is kept on worker Pods of groups whose restart
+	// policy recreates the group on a worker failure. It holds a deleted worker
+	// until the controller has handled the deletion, so a deletion that happens
+	// while no controller runs is still observed after the controller starts.
+	WorkerDeletionFinalizer string = "leaderworkerset.sigs.k8s.io/worker-deletion"
+
+	// RestartPolicyAnnotationKey is stamped on the worker StatefulSet's Pod
+	// template with the group's restart policy when that policy recreates the
+	// group on a worker failure. Pod admission uses it to add
+	// WorkerDeletionFinalizer to new workers.
+	RestartPolicyAnnotationKey string = "leaderworkerset.sigs.k8s.io/restart-policy"
+
 	// GroupIdentityAnnotationKey is set on leader and worker pod templates when the
 	// LeaderWorkerSet runs with GroupIdentity=Hash so that admission and controllers
 	// can tell the identity scheme apart without fetching the LWS object.
