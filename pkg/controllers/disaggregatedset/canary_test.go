@@ -256,8 +256,9 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 			desired := map[string]int{"prefill": tc.desired}
 			inputs, err := executor.prepareRolloutInputs(t.Context(), ds, old, target, desired)
 			require.NoError(t, err)
-			handled, err := executor.reconcileCanaryRestoration(t.Context(), ds, old, target, desired, inputs)
+			result, handled, err := executor.reconcileCanaryRestoration(t.Context(), ds, old, target, desired, inputs)
 			require.NoError(t, err)
+			require.Zero(t, result.RequeueAfter, "unchanged history waits for an object event")
 			require.Equal(t, tc.message != "", handled)
 			if tc.message != "" {
 				require.Contains(t, executor.canaryMessage, tc.message)
@@ -431,7 +432,7 @@ func TestCanaryStableGrowthCountsEveryOldRevision(t *testing.T) {
 	executor := newTestExecutor(c)
 	inputs, err := executor.prepareRolloutInputs(t.Context(), ds, old, target, desired)
 	require.NoError(t, err)
-	handled, err := executor.reconcileCanaryRestoration(t.Context(), ds, old, target, desired, inputs)
+	_, handled, err := executor.reconcileCanaryRestoration(t.Context(), ds, old, target, desired, inputs)
 	require.NoError(t, err)
 	require.True(t, handled)
 	for i, want := range []int32{6, 1} {
@@ -533,6 +534,23 @@ func TestCanaryHoldRequiresEveryGroupAndSlice(t *testing.T) {
 	executor.heldSlices = 2
 	require.True(t, executor.CanaryHeld())
 	require.False(t, (&RollingUpdateExecutor{}).CanaryHeld())
+}
+
+func TestCanaryHoldWakesOnEvents(t *testing.T) {
+	for _, ready := range []int32{0, 2} {
+		desired := [2]int32{4, 8}
+		ds := newTwoRoleTestDisaggregatedSet(desired, [2]int{1, 1}, [2]int{})
+		setCanaryPercent(ds, 25)
+		objects := revisionLWSObjects("old", [2]int32{3, 6}, [2]int32{3, 6}, desired, time.Unix(1, 0))
+		objects = append(objects, revisionLWSObjects("new", [2]int32{1, 2}, [2]int32{1, ready}, desired, time.Unix(2, 0))...)
+		executor := newTestExecutor(newTestClient(objects...))
+		result, _ := reconcileExistingForTest(t, executor, ds, "new")
+		if ready == 2 {
+			require.Zero(t, result.RequeueAfter, "a settled hold has no grace period to poll")
+		} else {
+			require.Positive(t, result.RequeueAfter, "unfinished groups still need scheduler grace checks")
+		}
+	}
 }
 
 func TestCanaryHoldCondition(t *testing.T) {

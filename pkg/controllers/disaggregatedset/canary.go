@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
@@ -177,9 +179,9 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	ctx context.Context, ds *disaggv1.DisaggregatedSet,
 	old disaggutils.RevisionRolesList, target disaggutils.RevisionRoles,
 	desired map[string]int, inputs rolloutInputs,
-) (bool, error) {
+) (ctrl.Result, bool, error) {
 	if !inputs.proportionalCanary {
-		return false, nil
+		return ctrl.Result{}, false, nil
 	}
 	percent, _ := canaryPercent(ds)
 	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && name != "" {
@@ -188,14 +190,14 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, inputs.readiness)
 	if stable.Revision == "" {
 		executor.canaryMessage = "Cannot identify the stable canary revision unambiguously; complete this rollout at canaryPercent 100 before starting another canary"
-		return true, nil
+		return ctrl.Result{}, true, nil
 	}
 	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
 		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; finish the layout change with canaryPercent 100 before starting a canary"
-		return true, nil
+		return ctrl.Result{}, true, nil
 	}
 	if err := executor.recordCanaryStable(ctx, ds, stable, true); err != nil {
-		return true, err
+		return ctrl.Result{}, true, err
 	}
 	needed := false
 	for i, name := range inputs.allRoleNames {
@@ -204,7 +206,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 			inputs.readiness.role(target, name).spec > inputs.targetReplicas[i]-quota
 	}
 	if !needed {
-		return false, nil
+		return ctrl.Result{}, false, nil
 	}
 	others := slices.DeleteFunc(slices.Clone(old), func(r disaggutils.RevisionRoles) bool { return r.Revision == stable.Revision })
 	candidates := append(orderedRevisionCandidates(others, inputs.readiness), target)
@@ -229,7 +231,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		// the bounded availability fallback, after ordinary and bootstrap work.
 		unschedulable, err := executor.targetUnschedulableRoles(ctx, stable, inputs.allRoleNames, inputs.readiness)
 		if err != nil {
-			return true, err
+			return ctrl.Result{}, true, err
 		}
 		if slices.Contains(unschedulable, true) {
 			for _, candidate := range candidates {
@@ -245,9 +247,9 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	if selectedStep == nil {
 		// A reverse-only pass cannot reduce an oversized stable role. Let the
 		// forward planner find any safe progress while its other roles load.
-		return false, nil
+		return ctrl.Result{}, false, nil
 	}
-	return true, executor.applyCanaryRestoration(ctx, ds, selected, stable, inputs, selectedState, selectedStep)
+	return ctrl.Result{RequeueAfter: time.Second}, true, executor.applyCanaryRestoration(ctx, ds, selected, stable, inputs, selectedState, selectedStep)
 }
 
 // Reverse direction using concrete revisions: A grows, one canary drains, and

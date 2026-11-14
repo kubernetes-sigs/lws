@@ -207,8 +207,8 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 
-	if handled, err := executor.reconcileCanaryRestoration(ctx, disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole, inputs); handled || err != nil {
-		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, err
+	if result, handled, err := executor.reconcileCanaryRestoration(ctx, disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole, inputs); handled || err != nil {
+		return result, false, err
 	}
 
 	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas, inputs.readiness, inputs.scaleDownDuringRollout)
@@ -269,6 +269,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		if heldAtCanary(state) {
 			log.V(1).Info("Rolling update is held at the canary percentage; waiting for promotion", "revision", targetRevision.Revision)
 			executor.heldSlices++
+			return ctrl.Result{}, false, nil // Spec and observer events resume a settled hold.
 		}
 		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
