@@ -1342,14 +1342,32 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		// A missing scope resolves as ExclusiveTopology, so only the Slice
+		// scope is stamped: stamping the global scope would change the
+		// template of existing groups on controller upgrade and roll them
+		// without a revision.
+		if scope == leaderworkerset.PlacementExclusiveSlice {
+			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
+		}
+		// A missing enforcement resolves as Required, for the same upgrade
+		// reason as the scope.
+		if utils.ExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			podAnnotations[leaderworkerset.ExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+		}
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(ptr.Deref(lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type, leaderworkerset.SubGroupPolicyTypeLeaderWorker))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
-		if topologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+		if topologyKey, scope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
+			if scope == leaderworkerset.PlacementExclusiveSlice {
+				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(scope)
+			}
+			if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+				podAnnotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+			}
 		}
 	}
 

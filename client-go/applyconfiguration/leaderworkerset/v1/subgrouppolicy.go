@@ -28,6 +28,7 @@ import (
 type SubGroupPolicyApplyConfiguration struct {
 	// subGroupPolicyType defines what type of Subgroups to create. Defaults to
 	// LeaderWorker
+	//
 	Type *leaderworkersetv1.SubGroupPolicyType `json:"subGroupPolicyType,omitempty"`
 	// subGroupSize is the number of pods per subgroup. This value is immutable,
 	// and must not be greater than LeaderWorkerSet.Spec.Size.

@@ -510,7 +510,7 @@ func validatePhaseOneSemantics(lws *leaderworkerset.LeaderWorkerSet, mode Schedu
 
 	// Only group level exclusivity holds back the worker StatefulSet until the
 	// leader is scheduled, which deadlocks a gang. Subgroup exclusivity does not.
-	if _, exclusive := utils.ExclusiveTopologyKey(lws); exclusive && (gangAtSelectedLevel(lws, mode) || topologyAtSelectedLevel(lws, mode)) {
+	if _, _, exclusive := utils.ExclusivePlacement(lws); exclusive && (gangAtSelectedLevel(lws, mode) || topologyAtSelectedLevel(lws, mode)) {
 		allErrs = append(allErrs, field.Forbidden(path, "gang scheduling or workload topology constraints cannot be combined with exclusive topology in alpha"))
 	}
 

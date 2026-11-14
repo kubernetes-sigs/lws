@@ -609,6 +609,22 @@ the headless service, defaults to shared</p>
 </tbody>
 </table>
 
+## `PlacementEnforcement`     {#leaderworkerset-x-k8s-io-v1-PlacementEnforcement}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [PlacementPolicy](#leaderworkerset-x-k8s-io-v1-PlacementPolicy)
+
+- [SubGroupPlacementPolicy](#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy)
+
+
+<p>PlacementEnforcement defines how an exclusive placement is enforced.</p>
+
+
+
+
 ## `PlacementPolicy`     {#leaderworkerset-x-k8s-io-v1-PlacementPolicy}
     
 
@@ -640,6 +656,18 @@ and optionally in each subgroup.</p>
    <p>topology is the node label key that defines the topology domain of a
 group, for example a rack, a block or a zone. Required when type is
 ExclusiveTopology.</p>
+</td>
+</tr>
+<tr><td><code>enforcement</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementEnforcement"><code>PlacementEnforcement</code></a>
+</td>
+<td>
+   <p>enforcement selects how the exclusive placement is enforced. Required
+keeps the injected anti-affinity required, so a group without a free
+domain stays Pending; Preferred makes it a scheduling preference, so
+the scheduler spreads the groups across domains but may co-locate them
+once it runs out, trading the isolation guarantee for capacity.
+Defaults to Required.</p>
 </td>
 </tr>
 <tr><td><code>subGroup</code><br/>
@@ -887,6 +915,14 @@ subgroup.</p>
 <td>
    <p>topology is the node label key that defines the topology domain of a
 subgroup. Required when type is ExclusiveTopology.</p>
+</td>
+</tr>
+<tr><td><code>enforcement</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementEnforcement"><code>PlacementEnforcement</code></a>
+</td>
+<td>
+   <p>enforcement selects how the exclusive placement is enforced, as at the
+group level. Defaults to Required.</p>
 </td>
 </tr>
 </tbody>
