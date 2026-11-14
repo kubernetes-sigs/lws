@@ -17,6 +17,7 @@ limitations under the License.
 package webhooks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -313,6 +314,63 @@ func TestGetSubGroupIndex(t *testing.T) {
 			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex)
 			if tc.expectedSubGroupIndex != subGroupIndex {
 				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedSubGroupIndex, subGroupIndex)
+			}
+		})
+	}
+}
+
+func TestDefaultWorkerDeletionFinalizer(t *testing.T) {
+	cases := map[string]struct {
+		leader        bool
+		restartPolicy string
+		wantFinalizer bool
+	}{
+		"worker of a RecreateGroupOnPodRestart group": {
+			restartPolicy: string(leaderworkerset.RecreateGroupOnPodRestart), wantFinalizer: true,
+		},
+		"worker of a RecreateGroupAfterStart group": {
+			restartPolicy: string(leaderworkerset.RecreateGroupAfterStart), wantFinalizer: true,
+		},
+		"worker without the restart policy annotation": {},
+		"worker of a None restart policy group": {
+			restartPolicy: string(leaderworkerset.NoneRestartPolicy),
+		},
+		"leader of a RecreateGroupOnPodRestart group": {
+			leader: true, restartPolicy: string(leaderworkerset.RecreateGroupOnPodRestart),
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-0-1",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey:    "test",
+					leaderworkerset.GroupIndexLabelKey: "0",
+				},
+				Annotations: map[string]string{leaderworkerset.SizeAnnotationKey: "2"},
+			}}
+			if tc.leader {
+				pod.Name = "test-0"
+				pod.Labels[leaderworkerset.WorkerIndexLabelKey] = "0"
+			}
+			if tc.restartPolicy != "" {
+				pod.Annotations[leaderworkerset.RestartPolicyAnnotationKey] = tc.restartPolicy
+			}
+			webhook := NewPodWebhook(nil)
+			if err := webhook.Default(context.Background(), pod); err != nil {
+				t.Fatalf("Default() error = %v", err)
+			}
+			// Admission may run the webhook more than once.
+			if err := webhook.Default(context.Background(), pod); err != nil {
+				t.Fatalf("second Default() error = %v", err)
+			}
+			var want []string
+			if tc.wantFinalizer {
+				want = []string{leaderworkerset.WorkerDeletionFinalizer}
+			}
+			if diff := cmp.Diff(want, pod.Finalizers); diff != "" {
+				t.Errorf("unexpected finalizers (-want,+got):\n%s", diff)
 			}
 		})
 	}

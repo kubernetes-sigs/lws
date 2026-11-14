@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -134,9 +135,16 @@ var _ = ginkgo.Describe("Group restart budget", func() {
 			go func() {
 				defer wg.Done()
 				defer ginkgo.GinkgoRecover()
-				worker.Status.Phase = corev1.PodRunning
-				worker.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "worker", RestartCount: 1}}
-				gomega.Expect(k8sClient.Status().Update(ctx, &worker)).To(gomega.Succeed())
+				// The controller may update worker metadata concurrently, so
+				// re-read the Pod when the status update conflicts.
+				gomega.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&worker), &worker); err != nil {
+						return err
+					}
+					worker.Status.Phase = corev1.PodRunning
+					worker.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "worker", RestartCount: 1}}
+					return k8sClient.Status().Update(ctx, &worker)
+				})).To(gomega.Succeed())
 			}()
 		}
 		wg.Wait()
