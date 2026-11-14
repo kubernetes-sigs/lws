@@ -45,6 +45,8 @@ image:
 podAnnotations: {}
 podSecurityContext:
   runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
   # fsGroup: 2000
 securityContext:
   allowPrivilegeEscalation: false
