@@ -30,6 +30,7 @@ rules:
       - create
       - get
       - list
+      - patch
       - watch
   {{- end }}
   {{- if or (and .Values.computeDomainManagement .Values.computeDomainManagement.enabled) (and .Values.featureGates .Values.featureGates.AutoComputeDomain) }}

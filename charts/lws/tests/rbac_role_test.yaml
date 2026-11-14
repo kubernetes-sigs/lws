@@ -30,6 +30,7 @@ tests:
               - create
               - get
               - list
+              - patch
               - watch
 
   - it: grants no ComputeDomain permissions by default
