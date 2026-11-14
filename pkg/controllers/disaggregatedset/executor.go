@@ -312,7 +312,8 @@ func buildRolloutInputs(
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
 	_, canary := canaryPercent(disaggregatedSet)
 	stable := canaryStableRevision(append(slices.Clone(oldRevisions), targetRevision), allRoleNames, readiness)
-	if canary && stable.Revision == targetRevision.Revision {
+	noBaseline := !slices.ContainsFunc(oldRevisions, isCanaryStable) && !slices.ContainsFunc(allRoleNames, func(name string) bool { return readiness.totalReplicas(oldRevisions, name) > 0 })
+	if canary && (stable.Revision == targetRevision.Revision || noBaseline) {
 		// Initial creation, retired history, or a Git revert to the stable
 		// template converges to the target without inventing another canary.
 		canary = false
@@ -320,7 +321,15 @@ func buildRolloutInputs(
 			config[i].CanaryOldReplicas = 0
 		}
 	}
-	if canary && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
+	if canary && canaryDimension(disaggregatedSet) == disaggregatedsetv1.CanaryDimensionSlices {
+		percent := canaryPercentForSlice(disaggregatedSet, targetRevision)
+		for i, name := range allRoleNames {
+			config[i].CanaryOldReplicas = 0
+			if percent == 0 {
+				config[i].CanaryOldReplicas = desiredReplicasByRole[name]
+			}
+		}
+	} else if canary && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
 		// A slice serves only with every required role on the same revision.
 		// Keep it on A while indivisible, but continue all requested scaling.
 		for i, name := range allRoleNames {

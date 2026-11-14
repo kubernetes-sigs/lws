@@ -163,6 +163,9 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// while External roles use their scaler. Rollout code receives only these
 	// values and does not need to know where they came from.
 	desiredReplicasByRole := resolveDesiredReplicasByRole(disaggregatedSet, scalers)
+	if changed, err := r.resolveCanaryDimension(ctx, disaggregatedSet, allLWS, revision, desiredReplicasByRole); changed || err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Step 3: Reconcile LWS objects.
 	executor := r.createRollingUpdateExecutor()

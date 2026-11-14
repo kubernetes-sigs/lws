@@ -79,6 +79,38 @@ func TestValidateCanaryPercent(t *testing.T) {
 	}
 }
 
+func TestCanaryDimension(t *testing.T) {
+	for _, mode := range []disaggv1.CanaryDimension{"", "groups", "slices", "auto", "invalid"} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25), CanaryDimension: mode}}}
+		w := &DisaggregatedSetWebhook{}
+		_, err := w.ValidateCreate(t.Context(), ds)
+		if mode == "invalid" {
+			require.ErrorContains(t, err, "canaryDimension")
+			continue
+		}
+		require.NoError(t, err)
+		changed := ds.DeepCopy()
+		changed.Spec.Slices = ptr.To[int32](9)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		if mode == "slices" || mode == "auto" {
+			require.ErrorContains(t, err, "slice-count changes")
+		} else {
+			require.NoError(t, err)
+		}
+		changed.Spec.RolloutStrategy.CanaryDimension = "groups"
+		if mode == "" || mode == "groups" {
+			changed.Spec.RolloutStrategy.CanaryDimension = "slices"
+		}
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.ErrorContains(t, err, "cannot change dimension")
+		for _, percent := range []*int32{nil, ptr.To[int32](100)} {
+			changed.Spec.RolloutStrategy.CanaryPercent = percent
+			_, err = w.ValidateUpdate(t.Context(), ds, changed)
+			require.NoError(t, err)
+		}
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

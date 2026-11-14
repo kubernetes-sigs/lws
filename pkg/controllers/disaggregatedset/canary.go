@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	disaggv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	leaderv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	disaggutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
@@ -59,6 +61,66 @@ func canarySingletonRole(names []string, desired map[string]int) string {
 }
 
 const canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
+const canaryDimensionAnnotation = "disaggregatedset.x-k8s.io/canary-dimension"
+
+func canaryDimension(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
+	if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.CanaryDimension == "" {
+		return disaggv1.CanaryDimensionGroups
+	}
+	if ds.Spec.RolloutStrategy.CanaryDimension == disaggv1.CanaryDimensionAuto {
+		return disaggv1.CanaryDimension(ds.Annotations[canaryDimensionAnnotation])
+	}
+	return ds.Spec.RolloutStrategy.CanaryDimension
+}
+
+// Resolve auto before any workload writes. Wait for the DS informer to observe
+// this choice, just as for the revision-hash marker. No process-local state or
+// additional API read is needed, including after a restart or B -> C update.
+func (r *DisaggregatedSetReconciler) resolveCanaryDimension(ctx context.Context, ds *disaggv1.DisaggregatedSet, all []*leaderv1.LeaderWorkerSet, revision string, desired map[string]int) (bool, error) {
+	choice := ""
+	_, active := canaryPercent(ds)
+	if active && ds.Spec.RolloutStrategy.CanaryDimension == disaggv1.CanaryDimensionAuto && slices.ContainsFunc(all, func(lws *leaderv1.LeaderWorkerSet) bool { return lws.Labels[disaggv1.RevisionLabelKey] != revision }) {
+		choice = ds.Annotations[canaryDimensionAnnotation]
+		if choice == "" {
+			choice = string(disaggv1.CanaryDimensionGroups)
+			if disaggutils.GetSlices(ds) > 1 && canarySingletonRole(rolloutRoleNames(ds), desired) != "" {
+				choice = string(disaggv1.CanaryDimensionSlices)
+			}
+		} else if choice != string(disaggv1.CanaryDimensionGroups) && choice != string(disaggv1.CanaryDimensionSlices) {
+			return false, fmt.Errorf("invalid recorded canary dimension %q", choice)
+		}
+	}
+	if ds.Annotations[canaryDimensionAnnotation] == choice {
+		return false, nil
+	}
+	patch := client.MergeFromWithOptions(ds.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if ds.Annotations == nil {
+		ds.Annotations = make(map[string]string)
+	}
+	if choice == "" {
+		delete(ds.Annotations, canaryDimensionAnnotation)
+	} else {
+		ds.Annotations[canaryDimensionAnnotation] = choice
+	}
+	return true, r.Patch(ctx, ds, patch)
+}
+
+func canaryPercentForSlice(ds *disaggv1.DisaggregatedSet, target disaggutils.RevisionRoles) int {
+	percent, _ := canaryPercent(ds)
+	if canaryDimension(ds) != disaggv1.CanaryDimensionSlices {
+		return percent
+	}
+	count := int(disaggutils.GetSlices(ds))
+	selected := count - canaryOldReplicas(count, percent)
+	for _, lws := range target.Roles {
+		index, _ := strconv.Atoi(lws.Labels[disaggv1.SliceLabelKey])
+		if index < selected {
+			return 100
+		}
+		break
+	}
+	return 0
+}
 
 func isCanaryStable(revision disaggutils.RevisionRoles) bool {
 	for _, lws := range revision.Roles {
@@ -184,8 +246,11 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		return ctrl.Result{}, false, nil
 	}
 	percent, _ := canaryPercent(ds)
-	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && name != "" {
+	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && canaryDimension(ds) != disaggv1.CanaryDimensionSlices && name != "" {
 		executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
+	}
+	if percent > 0 && canaryDimension(ds) == disaggv1.CanaryDimensionSlices && disaggutils.GetSlices(ds) == 1 {
+		executor.canaryMessage = "Keeping the only slice on the stable revision; a slice canary needs at least two slices, but role scaling continues"
 	}
 	stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, inputs.readiness)
 	if stable.Revision == "" {

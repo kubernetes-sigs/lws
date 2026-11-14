@@ -299,10 +299,21 @@ type DisaggregatedSetSpec struct {
 	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
 }
 
+// CanaryDimension selects the unit used to divide a canary.
+// +kubebuilder:validation:Enum=groups;slices;auto
+type CanaryDimension string
+
+const (
+	CanaryDimensionGroups CanaryDimension = "groups"
+	CanaryDimensionSlices CanaryDimension = "slices"
+	CanaryDimensionAuto   CanaryDimension = "auto"
+)
+
 // DisaggregatedSetRolloutStrategy configures a set-wide canary hold.
 type DisaggregatedSetRolloutStrategy struct {
-	// CanaryPercent is the canary share of each role or sub-role's desired replica
-	// groups, applied independently in every slice. Omitted or 100 applies no hold.
+	// CanaryPercent is the new revision's requested share, using CanaryDimension
+	// as the unit. By default, split each role/sub-role's groups independently in
+	// every slice. Omitted or 100 applies no hold.
 	// The oldest revision with surviving groups is recorded as the baseline;
 	// that choice survives controller restarts. A later template update replaces
 	// the canary within its share while retaining the recorded baseline's share.
@@ -312,9 +323,10 @@ type DisaggregatedSetRolloutStrategy struct {
 	// the surviving baseline, the rollout converges fully to it without a hold.
 	// Remove CanaryPercent in the same Git change to leave no canary hold.
 	// It does not limit initial creation when there is no old revision.
-	// For 1..99, the canary count rounds up and keeps at least one group on each
+	// For 1..99, the canary count rounds up and keeps at least one unit on each
 	// side. If an active role has only one group, the whole slice stays on the
-	// baseline so it remains a complete serving revision; scaling still applies.
+	// baseline in groups mode so it remains a complete serving revision; scaling
+	// still applies. In slices mode the units are whole slices instead of groups.
 	// This is not a traffic percentage.
 	// While held, scaling changes baseline and canary shares under either
 	// scaling policy, including Deferred. Readiness and availability budgets may
@@ -329,6 +341,17 @@ type DisaggregatedSetRolloutStrategy struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	CanaryPercent *int32 `json:"canaryPercent,omitempty"`
+
+	// CanaryDimension defaults to groups: divide each role/sub-role within each
+	// slice. Slices instead promotes whole slices in ascending slice-index order.
+	// Auto chooses groups unless a positive role/sub-role has only one group and
+	// at least two slices exist; then it chooses slices. This choice is recorded
+	// when the canary starts and retained across percentage and template changes.
+	// Dimensions cannot change during a partial canary. Slice-count changes are
+	// not supported during a slices or auto canary; finish or remove the hold first.
+	// This field has no effect when CanaryPercent is omitted or 100.
+	// +optional
+	CanaryDimension CanaryDimension `json:"canaryDimension,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.

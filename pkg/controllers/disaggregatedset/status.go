@@ -67,7 +67,7 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, held)
 	if canaryMessage != "" && len(unresolvedRoles) == 0 {
 		condition.Type = string(disaggregatedsetv1.DisaggregatedSetProgressing)
-		condition.Message = canaryMessage
+		condition.Reason, condition.Message = "RolloutInProgress", canaryMessage
 	}
 	holdStarted := condition.Reason == reasonCanaryHeld && progressingReason(ds) != reasonCanaryHeld
 	changed = setDisaggregatedSetCondition(ds, condition) || changed

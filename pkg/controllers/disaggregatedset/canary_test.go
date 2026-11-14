@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
@@ -40,7 +42,10 @@ import (
 )
 
 func setCanaryPercent(ds *disaggv1.DisaggregatedSet, percent int32) {
-	ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To(percent)}
+	if ds.Spec.RolloutStrategy == nil {
+		ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{}
+	}
+	ds.Spec.RolloutStrategy.CanaryPercent = ptr.To(percent)
 }
 
 func canaryConfigs(surge, unavailable int, old RoleReplicaState) []RollingUpdateConfig {
@@ -315,6 +320,12 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 			for i, status := range statuses {
 				require.Equal(t, tc.desired[i], status.AvailableReplicas)
 			}
+			if tc.desired[0] == 1 {
+				require.NoError(t, c.Create(t.Context(), ds))
+				r := newTestReconciler(c)
+				require.NoError(t, r.updateStatus(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil), nil, ptr.To(true), executor.canaryMessage))
+				require.Equal(t, "RolloutInProgress", progressingReason(ds), "scaling has settled, but no canary has been tested")
+			}
 		})
 	}
 }
@@ -322,101 +333,110 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		for _, subRoles := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/subRoles=%t", identity, subRoles), func(t *testing.T) {
-				t.Parallel()
+			for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
+				t.Run(fmt.Sprintf("%s/subRoles=%t/%s", identity, subRoles, dimension), func(t *testing.T) {
+					t.Parallel()
 
-				f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "b")
-				old := f.withRevision("old", "a", "a", "a", "b", "b", "b")
-				old.lws.Annotations[canaryStableAnnotation] = "true"
-				require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
-				f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}}
-				if !subRoles {
-					f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{staticRole("model")}
-					// Reuse the native workload simulator, without subrole annotations
-					// or assignments. Readiness comes from real Pod observations.
-					for _, fixture := range []*subRoleFixture{old, f} {
-						delete(fixture.lws.Annotations, subRoleReplicasAnnotation)
-						delete(fixture.lws.Annotations, disaggv1.InitialSubRoleReplicasAnnotationKey)
-						require.NoError(t, f.manager.client.Update(t.Context(), fixture.lws))
-						for _, group := range fixture.observe().Groups {
-							for _, pod := range group.Pods {
-								delete(pod.Labels, disaggv1.SubRoleLabelKey)
-								require.NoError(t, f.manager.client.Update(t.Context(), pod))
-							}
-						}
-					}
-				}
-				setCanaryPercent(f.ds, 25)
-				require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
-				initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
-				executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
-				// Keep counts small: every group has a leader and two workers.
-				for _, phase := range []struct {
-					percent           int32
-					desired, old, new [2]int
-				}{
-					{25, [2]int{8, 8}, [2]int{6, 6}, [2]int{2, 2}},
-					{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
-					{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
-					{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
-					{0, [2]int{12, 8}, [2]int{12, 8}, [2]int{0, 0}},
-					{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
-					{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
-				} {
-					setCanaryPercent(f.ds, phase.percent)
-					desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
+					f := newSubRoleFixtureForIdentity(t, identity, 0, "a", "b")
+					old := f.withRevision("old", "a", "a", "a", "b", "b", "b")
+					old.lws.Annotations[canaryStableAnnotation] = "true"
+					require.NoError(t, f.manager.client.Update(t.Context(), old.lws))
+					f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}}
 					if !subRoles {
-						delete(desired, "model/a")
-						delete(desired, "model/b")
-					}
-					settled := false
-					last := [2]string{}
-					for range 80 {
-						_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
-						require.NoError(t, err)
-						require.Empty(t, executor.canaryMessage)
-						settled = true
-						for index, fixture := range []*subRoleFixture{old, f} {
-							fixture.native()
-							if subRoles {
-								fixture.sync()
-							}
-							observed := fixture.observe()
-							actual := map[string]int{"a": 0, "b": 0}
-							groups := activeSubRoleGroups(observed)
-							for _, group := range groups {
-								if subRoles {
-									child, coherent := groupSubRole(group)
-									settled = settled && coherent
-									actual[child]++
-								}
+						f.ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{staticRole("model")}
+						// Reuse the native workload simulator, without subrole annotations
+						// or assignments. Readiness comes from real Pod observations.
+						for _, fixture := range []*subRoleFixture{old, f} {
+							delete(fixture.lws.Annotations, subRoleReplicasAnnotation)
+							delete(fixture.lws.Annotations, disaggv1.InitialSubRoleReplicasAnnotationKey)
+							require.NoError(t, f.manager.client.Update(t.Context(), fixture.lws))
+							for _, group := range fixture.observe().Groups {
 								for _, pod := range group.Pods {
-									if podutils.PodRunningAndReady(*pod) {
-										continue
-									}
-									settled = false
-									pod.Status.Phase = corev1.PodRunning
-									pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-									require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+									delete(pod.Labels, disaggv1.SubRoleLabelKey)
+									require.NoError(t, f.manager.client.Update(t.Context(), pod))
 								}
 							}
-							want := [2][2]int{phase.old, phase.new}[index]
-							last[index] = fmt.Sprintf("%s: issued=%d groups=%d", fixture.lws.Name, getLWSReplicas(observed.LWS), len(groups))
-							settled = settled && int(getLWSReplicas(observed.LWS)) == want[0]+want[1] && len(groups) == want[0]+want[1]
-							if subRoles {
-								counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
-								require.NoError(t, err)
-								settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual)
-							}
-						}
-						if settled {
-							break
 						}
 					}
-					require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
-				}
-				require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
-			})
+					setCanaryPercent(f.ds, 25)
+					f.ds.Spec.RolloutStrategy.CanaryDimension = dimension
+					f.ds.Spec.Slices = ptr.To[int32](2)
+					require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
+					initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
+					executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: events.NewFakeRecorder(100)}
+					// Keep counts small: every group has a leader and two workers.
+					for _, phase := range []struct {
+						percent           int32
+						desired, old, new [2]int
+					}{
+						{25, [2]int{8, 8}, [2]int{6, 6}, [2]int{2, 2}},
+						{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
+						{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
+						{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
+						{0, [2]int{12, 8}, [2]int{12, 8}, [2]int{0, 0}},
+						{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
+						{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
+					} {
+						setCanaryPercent(f.ds, phase.percent)
+						if dimension == disaggv1.CanaryDimensionSlices && phase.percent > 0 {
+							// This is selected slice 0. Reversing to 0 must restore its
+							// baseline from zero through the real native adapters.
+							phase.old, phase.new = [2]int{}, phase.desired
+						}
+						desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
+						if !subRoles {
+							delete(desired, "model/a")
+							delete(desired, "model/b")
+						}
+						settled := false
+						last := [2]string{}
+						for range 80 {
+							_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
+							require.NoError(t, err)
+							require.Empty(t, executor.canaryMessage)
+							settled = true
+							for index, fixture := range []*subRoleFixture{old, f} {
+								fixture.native()
+								if subRoles {
+									fixture.sync()
+								}
+								observed := fixture.observe()
+								actual := map[string]int{"a": 0, "b": 0}
+								groups := activeSubRoleGroups(observed)
+								for _, group := range groups {
+									if subRoles {
+										child, coherent := groupSubRole(group)
+										settled = settled && coherent
+										actual[child]++
+									}
+									for _, pod := range group.Pods {
+										if podutils.PodRunningAndReady(*pod) {
+											continue
+										}
+										settled = false
+										pod.Status.Phase = corev1.PodRunning
+										pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+										require.NoError(t, f.manager.client.Status().Update(t.Context(), pod))
+									}
+								}
+								want := [2][2]int{phase.old, phase.new}[index]
+								last[index] = fmt.Sprintf("%s: issued=%d groups=%d", fixture.lws.Name, getLWSReplicas(observed.LWS), len(groups))
+								settled = settled && int(getLWSReplicas(observed.LWS)) == want[0]+want[1] && len(groups) == want[0]+want[1]
+								if subRoles {
+									counts, err := subRoleCounts(observed.LWS, subRoleReplicasAnnotation)
+									require.NoError(t, err)
+									settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual)
+								}
+							}
+							if settled {
+								break
+							}
+						}
+						require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
+					}
+					require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
+				})
+			}
 		}
 	}
 }
@@ -977,6 +997,129 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 				require.Equal(t, percent, *ds.Spec.RolloutStrategy.CanaryPercent)
 			}
 		})
+	}
+}
+
+func TestCanarySlicePromotionAndReversal(t *testing.T) {
+	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionSlices, disaggv1.CanaryDimensionAuto} {
+		for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
+			t.Run(fmt.Sprintf("%s/%s", mode, identity), func(t *testing.T) {
+				ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 1}, [2]int{1, 1}, [2]int{})
+				ds.Spec.Slices = ptr.To[int32](8)
+				ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
+				setCanaryPercent(ds, 25)
+				ds.Spec.RolloutStrategy.CanaryDimension = mode
+				objects := []client.Object{ds}
+				for i := range ds.Spec.Roles {
+					ds.Spec.Roles[i].Spec.GroupIdentity = identity
+				}
+				for slice := range 8 {
+					for _, name := range testRoleNames() {
+						lws := revisionLWS("stable", name, 1, 1, time.Unix(1, 0), 1)
+						lws.Name = fmt.Sprintf("test-%d-stable-%s", slice, name)
+						lws.UID = types.UID(lws.Name)
+						lws.Spec.GroupIdentity = identity
+						lws.Labels[disaggv1.SliceLabelKey] = strconv.Itoa(slice)
+						objects = append(objects, lws)
+					}
+				}
+				c := newTestClient(objects...)
+				for _, phase := range []struct {
+					percent, replicas int32
+					version           string
+				}{
+					{25, 1, "B"}, {50, 1, "B"}, {25, 1, "B"},
+					{50, 2, "B"}, // Auto remains slices even though groups can now be split.
+					{50, 2, "C"}, {25, 2, "C"}, {0, 2, "C"}, {25, 2, "C"},
+					{25, 0, "C"}, {25, 1, "C"}, {100, 1, "C"},
+				} {
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+					setCanaryPercent(ds, phase.percent)
+					for i := range ds.Spec.Roles {
+						ds.Spec.Roles[i].Spec.Replicas = ptr.To(phase.replicas)
+						ds.Spec.Roles[i].Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers = []corev1.Container{{Name: "worker", Image: phase.version}}
+					}
+					require.NoError(t, c.Update(t.Context(), ds))
+					revision := disaggutils.ComputeRevision(ds.Spec.Roles)
+					r := newTestReconciler(c) // Every phase also tests controller restart.
+					settled := false
+					for range 100 {
+						_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+						require.NoError(t, err)
+						list := &leaderv1.LeaderWorkerSetList{}
+						require.NoError(t, c.List(t.Context(), list))
+						settled = true
+						stableCount, targetCount := 0, 0
+						for i := range list.Items {
+							lws, want := &list.Items[i], int32(0)
+							slice, err := strconv.Atoi(lws.Labels[disaggv1.SliceLabelKey])
+							require.NoError(t, err)
+							selected := phase.percent == 100 || slice < 8-canaryOldReplicas(8, int(phase.percent))
+							switch lws.Labels[disaggv1.RevisionLabelKey] {
+							case "stable":
+								stableCount++
+								if !selected {
+									want = phase.replicas
+								}
+								require.EqualValues(t, lws.Name, lws.UID, "baseline identity survives at zero")
+							case revision:
+								targetCount++
+								if selected {
+									want = phase.replicas
+								}
+							}
+							settled = settled && getLWSReplicas(lws) == want && lws.Status.ReadyReplicas == want
+							lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = getLWSReplicas(lws), getLWSReplicas(lws), getLWSReplicas(lws)
+							require.NoError(t, c.Status().Update(t.Context(), lws))
+						}
+						wantStable := 16
+						if phase.percent == 100 {
+							wantStable = 0
+						}
+						settled = settled && stableCount == wantStable && targetCount == 16
+						if settled {
+							break
+						}
+					}
+					require.True(t, settled, "phase %+v", phase)
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+					if mode == disaggv1.CanaryDimensionAuto && phase.percent < 100 {
+						require.Equal(t, "slices", ds.Annotations[canaryDimensionAnnotation])
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCanaryAutoChoicePersists(t *testing.T) {
+	for _, initial := range []int32{1, 4} {
+		ds := newTwoRoleTestDisaggregatedSet([2]int32{initial, initial}, [2]int{1, 1}, [2]int{})
+		ds.Spec.Slices = ptr.To[int32](8)
+		setCanaryPercent(ds, 25)
+		ds.Spec.RolloutStrategy.CanaryDimension = disaggv1.CanaryDimensionAuto
+		c := newTestClient(ds)
+		r := newTestReconciler(c)
+		old := []*leaderv1.LeaderWorkerSet{revisionLWS("A", "prefill", initial, initial, time.Unix(1, 0))}
+		changed, err := r.resolveCanaryDimension(t.Context(), ds, old, "B", map[string]int{"prefill": int(initial), "decode": int(initial)})
+		require.NoError(t, err)
+		require.True(t, changed)
+		want := disaggv1.CanaryDimensionGroups
+		if initial == 1 {
+			want = disaggv1.CanaryDimensionSlices
+		}
+		for _, count := range []int{1, 4, 0} {
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
+			changed, err = newTestReconciler(c).resolveCanaryDimension(t.Context(), ds, old, "C", map[string]int{"prefill": count, "decode": count})
+			require.NoError(t, err)
+			require.False(t, changed)
+			require.Equal(t, want, canaryDimension(ds))
+		}
+		ds.Spec.RolloutStrategy.CanaryPercent = nil
+		changed, err = r.resolveCanaryDimension(t.Context(), ds, old, "C", nil)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.Empty(t, ds.Annotations[canaryDimensionAnnotation])
 	}
 }
 
