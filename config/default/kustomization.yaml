@@ -8,6 +8,10 @@ namespace: lws-system
 # field above.
 namePrefix: lws-
 
+# Requires Kubernetes 1.30+. Remove this component to disable metadata protection.
+components:
+- ../components/metadata-protection
+
 # Common labels to add to all resources and selectors (matches Helm behavior).
 # includeSelectors is required to preserve the selector injection that the
 # deprecated commonLabels field performed implicitly.
@@ -33,11 +37,9 @@ resources:
 - manager_metrics_service.yaml
 
 # [VOLCANO] To enable Volcano gang scheduling RBAC, uncomment the following.
-# components:
-# - ../components/volcano
+# Add ../components/volcano to the components list above.
 # [COMPUTEDOMAIN] To enable NVIDIA DRA ComputeDomain RBAC, uncomment the following.
-# components:
-# - ../components/computedomain
+# Add ../components/computedomain to the components list above.
 
 patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
