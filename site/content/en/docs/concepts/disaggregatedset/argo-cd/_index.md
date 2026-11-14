@@ -69,7 +69,7 @@ Argo CD loads the ConfigMap change automatically. Refresh the Application to re-
 
 - `CanaryHeld` becomes Healthy: the requested intermediate state has settled, not the whole rollout.
 - `Available=True` becomes Healthy on completion.
-- Missing or stale status, an active rollout, or `CanaryBlocked` remains Progressing, with the controller's explanation when available.
+- Missing or stale status, an active rollout, or a canary that cannot yet run remains Progressing, with the controller's explanation when available.
 
 The patch preserves unrelated ConfigMap entries but replaces this kind's existing health customization. If Git or Helm manages `argocd-cm`, put the same entry in that source of truth so the change is not reverted. Review any existing customization before replacing it.
 
@@ -161,9 +161,27 @@ Argo CD does not choose the next percentage or judge the model's answers: you or
 Four Prefill and eight Decode groups move from A to B. Each role has `maxSurge: 1` and `maxUnavailable: 0`: new groups become Ready before old groups leave. The marker shows the requested hold; the bars show Ready groups on B. Timing is illustrative.
 {{< /canvas-animation >}}
 
-Initial creation without an old revision starts the full workload, even with `0`. A positive partial canary (`1`–`99`) needs at least two groups in each active logical role; `0` can hold a one-group role entirely old. A Ready hold confirms replica readiness, not the quality of the model's answers or its latency: your checks or analysis must decide whether to promote.
+Initial creation without an old revision starts the full workload, even with `0`. A positive partial group canary (`1`–`99`) needs at least two groups in each active logical role. If one role has only one group, the whole slice stays on A and continues scaling; its status explains why it cannot yet run a canary. A Ready hold confirms replica readiness, not the quality of the model's answers or its latency: your checks or analysis must decide whether to promote.
 
-A fresh `External` role starts with one group until its autoscaler or operator updates the RoleScaler. Before requesting a positive partial canary, ensure every active role or sub-role has a desired count of at least two.
+A fresh `External` role starts with one group until its autoscaler or operator updates the RoleScaler. This does not freeze peer scaling. For multi-slice Static deployments with small roles, choose whole-slice canaries instead.
+
+### Canary complete slices
+
+The same Argo CD health check and percentage actions work with `canaryDimension`. Set the dimension in Git together with the initial hold and new templates:
+
+```yaml
+spec:
+  slices: 8
+  rolloutStrategy:
+    canaryPercent: 25
+    canaryDimension: slices
+```
+
+For eight slices of 1 Prefill + 1 Decode, two complete slices roll to B and six remain on A. Increasing the percentage to 50 adds two B slices; returning to 25 restores those same two slices to A. B → C updates the selected slices while the others remain on A. Each transition still follows the slice's rollout budgets and readiness checks.
+
+Omitting the dimension means `groups`. `auto` chooses groups unless a positive role/sub-role has only one group and there are at least two slices, then records `slices`. The choice is made once for the canary and survives restarts and later percentage/template changes; it is not recalculated to chase rounding differences. Role scaling does not change that choice.
+
+Finish or remove the partial hold before changing dimension. Slice-count changes are also rejected during `slices` or `auto` canaries. This does not add slice autoscaling, and the existing restriction on External scaling with multiple slices still applies.
 
 ## Replace the canary while keeping its baseline
 
@@ -195,7 +213,7 @@ A regains its share before B shrinks. At zero, B's LWS objects and desired templ
 {{% alert title="Zero percent is a hold, not a durable rollback" color="danger" %}}
 Setting `canaryPercent: 0` does **not** restore the desired templates. The rejected new templates are still in the DisaggregatedSet. Raising the percentage or removing the field can deploy them again. To make the rollback durable, **restore the stable templates in Git**. If they match the surviving baseline A, LWS converges fully to A even if the percentage remains at `0`.
 
-We recommend also resetting `canaryPercent: 100` in that Git change. It avoids carrying an unintended hold into the next release and permits an ordinary rollout if the old baseline no longer exists. Readiness and rollout budgets still govern convergence.
+In that same Git change, remove `canaryPercent` to restore its default, `nil` (omitted). This means no canary hold. Explicitly set a starting percentage together with the next canary release's templates. Readiness and rollout budgets still govern convergence.
 {{% /alert %}}
 
 Canary mode also preserves the requested proportion when demand changes. At 25%, doubling demand from four Prefill / eight Decode to eight / sixteen gives six old + two new Prefill and twelve old + four new Decode. Reducing demand back to four / eight restores three old + one new Prefill and six old + two new Decode.
@@ -208,9 +226,9 @@ Readiness, `maxSurge`, `maxUnavailable`, and safe group deletion still govern ev
 Double desired capacity from four Prefill / eight Decode to eight / sixteen, then halve it again. Both revisions resize to preserve the 25% split, including with `Deferred`. A higher availability floor takes time to fill; existing excess after a reduction drains safely. Timing and intermediate changes are illustrative.
 {{< /canvas-animation >}}
 
-LWS chooses the **oldest revision with surviving groups** as the baseline and records that choice across template updates and controller restarts. Its active roles and sub-roles must match the requested layout. If that baseline is incompatible or no longer has a required role, the canary is blocked even when a younger revision is compatible; LWS does not silently make the younger canary the baseline. This selection does not determine whether the revision passed your application checks. If the stored history cannot identify one baseline unambiguously, finish the rollout at `100` before starting another canary.
+LWS chooses the **oldest revision with surviving groups** as the baseline and records that choice across template updates and controller restarts. Its role/sub-role templates must match the requested layout, but its replica counts may reach zero. If a required template is missing or the baseline identity is ambiguous, LWS explains the problem through `Progressing` rather than silently treating a younger canary as the baseline. This selection does not determine whether the revision passed your application checks.
 
-Scaling one required role or sub-role to zero while peers remain positive is also blocked during a canary. Finish that layout change at `100`; scaling the whole set to zero is allowed. Lowering the percentage alone cannot recreate a fully drained baseline. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
+An existing role can scale to zero and grow back from its saved templates. At whole-set zero, both the baseline and target LWS objects remain at zero; resuming restores the split. In slice mode, role resizing keeps the same selected slices. Only finishing the canary retires the baseline; lowering the percentage afterward cannot recreate its deleted templates. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
 
 The [companion harness in #1309](https://github.com/kubernetes-sigs/lws/pull/1309) covers Ordinal and Hash groups, ordinary roles and sub-roles, both scaling policies, and a Static-to-External handoff followed by real scaler updates. Recorded traces require that separate contribution; the animations above illustrate expected behavior and are included with this guide.
 
