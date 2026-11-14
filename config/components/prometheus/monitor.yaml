@@ -16,6 +16,7 @@ spec:
   endpoints:
     - path: /metrics
       port: https
+      honorLabels: true
       scheme: https
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:

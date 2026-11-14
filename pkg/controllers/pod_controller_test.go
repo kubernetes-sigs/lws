@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
@@ -1606,6 +1608,8 @@ func TestPodReconcilerRecreatesGroupSplitByUpgrade(t *testing.T) {
 			}
 			recorder := events.NewFakeRecorder(10)
 			reconciler := PodReconciler{Client: k8sClient, Scheme: scheme, Record: recorder, SchedulerProvider: &stubSchedulerProvider{}}
+			splitRecreations := metrics.GroupRecreationsTotal.WithLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit)
+			splitRecreationsBefore := testutil.ToFloat64(splitRecreations)
 
 			result, err := reconciler.reconcilePod(ctx, podReconcileRequestForPod(leader, false))
 			if err != nil || !result.IsZero() {
@@ -1616,6 +1620,13 @@ func TestPodReconcilerRecreatesGroupSplitByUpgrade(t *testing.T) {
 				if strings.Contains(event, "RecreateGroup") {
 					recreateEvents = append(recreateEvents, event)
 				}
+			}
+			wantSplitRecreations := 0.0
+			if tc.wantRecreate {
+				wantSplitRecreations = 1
+			}
+			if got := testutil.ToFloat64(splitRecreations) - splitRecreationsBefore; got != wantSplitRecreations {
+				t.Errorf("lws_group_recreations_total{reason=%q} increased by %v, want %v", metrics.GroupRecreateReasonUpgradeSplit, got, wantSplitRecreations)
 			}
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(leader), &corev1.Pod{})
 			if !tc.wantRecreate {
@@ -3242,6 +3253,192 @@ func TestHandleRestartPolicyRestartBackoff(t *testing.T) {
 			t.Fatalf("expected worker StatefulSet not to be created for unready leader, got err = %v", err)
 		}
 	})
+}
+
+// podCtrlCounters holds the pod controller counters of one LeaderWorkerSet.
+type podCtrlCounters struct {
+	recreations     float64
+	budgetExhausted float64
+	backoffs        float64
+}
+
+func podCtrlReadCounters(lws *leaderworkerset.LeaderWorkerSet) podCtrlCounters {
+	return podCtrlCounters{
+		recreations:     testutil.ToFloat64(metrics.GroupRecreationsTotal.WithLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonPodRestart)),
+		budgetExhausted: testutil.ToFloat64(metrics.GroupRestartBudgetExhaustedTotal.WithLabelValues(lws.Namespace, lws.Name)),
+		backoffs:        testutil.ToFloat64(metrics.GroupRestartBackoffsTotal.WithLabelValues(lws.Namespace, lws.Name)),
+	}
+}
+
+// podCtrlRestartedLeader is the leader of a one-pod group, created age ago,
+// whose container restarted once.
+func podCtrlRestartedLeader(lws *leaderworkerset.LeaderWorkerSet, age time.Duration) *corev1.Pod {
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 1)
+	leader.Labels[leaderworkerset.RevisionKey] = "revision-a"
+	leader.CreationTimestamp = metav1.NewTime(time.Now().Add(-age))
+	leader.Status.Phase = corev1.PodRunning
+	leader.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "leader", RestartCount: 1}}
+	return leader
+}
+
+// TestHandleRestartPolicyMetrics checks that each restart-policy outcome is
+// counted once per group, however often the group is reconciled afterwards.
+func TestHandleRestartPolicyMetrics(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+
+	tests := []struct {
+		name string
+		lws  *leaderworkerset.LeaderWorkerSet
+		// leaderAge is how long ago the leader pod was created.
+		leaderAge time.Duration
+		want      podCtrlCounters
+	}{
+		{
+			name: "a restarted container recreates the group",
+			lws:  wrappers.BuildLeaderWorkerSet("metrics-recreate").Size(1).Obj(),
+			want: podCtrlCounters{recreations: 1},
+		},
+		{
+			name: "a used up restart budget terminates the group",
+			lws:  wrappers.BuildLeaderWorkerSet("metrics-budget").Size(1).MaxGroupRestarts(0).Obj(),
+			want: podCtrlCounters{budgetExhausted: 1},
+		},
+		{
+			name:      "restart backoff delays the recreation",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-backoff").Size(1).RestartBackoff(ptr.To[int32](10), ptr.To[int32](300)).Obj(),
+			leaderAge: 2 * time.Second,
+			want:      podCtrlCounters{backoffs: 1},
+		},
+		{
+			name:      "a recreation after the backoff window is not a backoff",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-backoff-passed").Size(1).RestartBackoff(ptr.To[int32](10), ptr.To[int32](300)).Obj(),
+			leaderAge: 12 * time.Second,
+			want:      podCtrlCounters{recreations: 1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			leader := podCtrlRestartedLeader(tc.lws, tc.leaderAge)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws, leader).Build()
+			r := &PodReconciler{Client: c, Scheme: scheme, Record: fakeEventRecorder{}}
+			before := podCtrlReadCounters(tc.lws)
+
+			// A second reconcile sees the group terminating or its recreation
+			// pending and must not count it again.
+			for range 2 {
+				if _, _, err := r.handleRestartPolicy(context.Background(), *leader, *tc.lws.DeepCopy()); err != nil {
+					t.Fatalf("handleRestartPolicy() error = %v", err)
+				}
+			}
+
+			after := podCtrlReadCounters(tc.lws)
+			got := podCtrlCounters{
+				recreations:     after.recreations - before.recreations,
+				budgetExhausted: after.budgetExhausted - before.budgetExhausted,
+				backoffs:        after.backoffs - before.backoffs,
+			}
+			if got != tc.want {
+				t.Errorf("counter increments = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleRestartPolicyMetricsStaleLeader checks that a reconcile reading
+// the leader from before the first reconcile's writes, as a lagging cache
+// does, acts on the leader again but does not count it again.
+func TestHandleRestartPolicyMetricsStaleLeader(t *testing.T) {
+	tests := []struct {
+		name string
+		lws  *leaderworkerset.LeaderWorkerSet
+		// leaderAge is how long ago the leader pod was created.
+		leaderAge time.Duration
+		// exhausted starts the leader as an earlier reconcile left it before
+		// deleting it: marked exhausted and held by the budget finalizer.
+		exhausted bool
+		want      podCtrlCounters
+	}{
+		{
+			name: "the terminating leader is deleted again",
+			lws:  wrappers.BuildLeaderWorkerSet("metrics-stale-recreate").Size(1).Obj(),
+			want: podCtrlCounters{recreations: 1},
+		},
+		{
+			name:      "the pending recreation is marked again",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-stale-backoff").Size(1).RestartBackoff(ptr.To[int32](10), ptr.To[int32](300)).Obj(),
+			leaderAge: 2 * time.Second,
+			want:      podCtrlCounters{backoffs: 1},
+		},
+		{
+			name:      "the exhausted leader is deleted again",
+			lws:       wrappers.BuildLeaderWorkerSet("metrics-stale-exhausted").Size(1).MaxGroupRestarts(0).Obj(),
+			exhausted: true,
+			want:      podCtrlCounters{budgetExhausted: 1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := podCtrlTestScheme(t)
+			leader := podCtrlRestartedLeader(tc.lws, tc.leaderAge)
+			leader.UID = "leader"
+			// Keeps the deleted leader terminating, like graceful pod deletion.
+			leader.Finalizers = []string{"leaderworkerset.sigs.k8s.io/test"}
+			if tc.exhausted {
+				leader.Annotations[leaderworkerset.GroupRestartBudgetExhaustedAnnotationKey] = "true"
+				leader.Finalizers = append(leader.Finalizers, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.lws, leader).Build()
+			stale := &corev1.Pod{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(leader), stale); err != nil {
+				t.Fatal(err)
+			}
+			cached := interceptor.NewClient(c, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if pod, ok := obj.(*corev1.Pod); ok && key == client.ObjectKeyFromObject(stale) {
+					stale.DeepCopyInto(pod)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			}})
+			r := &PodReconciler{Client: cached, Scheme: scheme, Record: fakeEventRecorder{}}
+			before := podCtrlReadCounters(tc.lws)
+
+			for range 2 {
+				if _, _, err := r.handleRestartPolicy(ctx, *leader, *tc.lws.DeepCopy()); err != nil {
+					t.Fatalf("handleRestartPolicy() error = %v", err)
+				}
+			}
+
+			after := podCtrlReadCounters(tc.lws)
+			got := podCtrlCounters{
+				recreations:     after.recreations - before.recreations,
+				budgetExhausted: after.budgetExhausted - before.budgetExhausted,
+				backoffs:        after.backoffs - before.backoffs,
+			}
+			if got != tc.want {
+				t.Errorf("counter increments = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleRestartPolicyMetricsHealthyWorker(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	lws := wrappers.BuildLeaderWorkerSet("metrics-healthy").Size(2).Obj()
+	leader := wrappers.MakePodWithLabels(lws.Name, "0", "0", lws.Namespace, 2)
+	worker := wrappers.MakePodWithLabels(lws.Name, "0", "1", lws.Namespace, 2)
+	worker.Status.Phase = corev1.PodRunning
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, leader, worker).Build()
+	r := &PodReconciler{Client: c, Scheme: scheme, Record: fakeEventRecorder{}}
+	before := podCtrlReadCounters(lws)
+
+	deleted, _, err := r.handleRestartPolicy(context.Background(), *worker, *lws.DeepCopy())
+	if err != nil || deleted {
+		t.Fatalf("handleRestartPolicy() = %t, %v, want false and no error", deleted, err)
+	}
+	if after := podCtrlReadCounters(lws); after != before {
+		t.Errorf("counters changed from %+v to %+v for a healthy worker", before, after)
+	}
 }
 
 func TestMergeResult(t *testing.T) {
