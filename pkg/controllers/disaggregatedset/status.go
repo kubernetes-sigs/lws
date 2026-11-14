@@ -44,7 +44,7 @@ import (
 // canaryHeld reports that the rollout executor found every rolling slice
 // settled at the canary percentage in this reconcile. Nil means observation
 // is pending, so only an unchanged, previously verified hold can be retained.
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld *bool, canaryBlocked string) error {
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld *bool, canaryMessage string) error {
 	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
@@ -65,9 +65,9 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
 	unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole)
 	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, held)
-	if canaryBlocked != "" && len(unresolvedRoles) == 0 {
+	if canaryMessage != "" && len(unresolvedRoles) == 0 {
 		condition.Type = string(disaggregatedsetv1.DisaggregatedSetProgressing)
-		condition.Reason, condition.Message = "CanaryBlocked", canaryBlocked
+		condition.Message = canaryMessage
 	}
 	holdStarted := condition.Reason == reasonCanaryHeld && progressingReason(ds) != reasonCanaryHeld
 	changed = setDisaggregatedSetCondition(ds, condition) || changed

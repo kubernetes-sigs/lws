@@ -213,7 +213,7 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	// Observe status after workload writes, including slices that failed to
 	// reconcile. DisaggregatedSet and scaler counts come from the same aggregate.
-	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers, canaryHeld, executor.canaryBlocked); errors.Is(statusErr, errStatusPending) || errors.Is(statusErr, errReplicaGroupsPending) {
+	if statusErr := r.updateStatus(ctx, disaggregatedSet, roleNames, revision, desiredReplicasByRole, scalers, canaryHeld, executor.canaryMessage); errors.Is(statusErr, errStatusPending) || errors.Is(statusErr, errReplicaGroupsPending) {
 		result = earliestRequeue(result, ctrl.Result{RequeueAfter: time.Second})
 	} else if statusErr != nil {
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("failed to update status: %w", statusErr))

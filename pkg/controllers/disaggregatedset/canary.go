@@ -47,6 +47,15 @@ func canaryOldReplicas(desired, percent int) int {
 	return desired - updated
 }
 
+func canarySingletonRole(names []string, desired map[string]int) string {
+	for _, name := range names {
+		if desired[name] == 1 {
+			return name
+		}
+	}
+	return ""
+}
+
 const canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
 
 func isCanaryStable(revision disaggutils.RevisionRoles) bool {
@@ -173,19 +182,16 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		return false, nil
 	}
 	percent, _ := canaryPercent(ds)
-	for _, name := range inputs.allRoleNames {
-		if percent > 0 && desired[name] == 1 {
-			executor.canaryBlocked = fmt.Sprintf("Cannot split role %s's single replica group between two revisions; increase its replicas or set canaryPercent to 100", name)
-			return true, nil
-		}
+	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && name != "" {
+		executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
 	}
 	stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, inputs.readiness)
 	if stable.Revision == "" {
-		executor.canaryBlocked = "Cannot identify the stable canary revision unambiguously; complete this rollout at canaryPercent 100 before starting another canary"
+		executor.canaryMessage = "Cannot identify the stable canary revision unambiguously; complete this rollout at canaryPercent 100 before starting another canary"
 		return true, nil
 	}
 	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
-		executor.canaryBlocked = "Canary requires a surviving stable revision with the same active roles and sub-roles; finish the layout change with canaryPercent 100 before starting a canary"
+		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; finish the layout change with canaryPercent 100 before starting a canary"
 		return true, nil
 	}
 	if err := executor.recordCanaryStable(ctx, ds, stable, true); err != nil {

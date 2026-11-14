@@ -153,7 +153,7 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 						}
 						_, _, err = executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
 						require.NoError(t, err)
-						require.Empty(t, executor.canaryBlocked)
+						require.Empty(t, executor.canaryMessage)
 						emitted := ""
 						for len(recorder.Events) > 0 {
 							emitted += <-recorder.Events
@@ -238,7 +238,6 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 		percent, desired, old, new int
 		oldName, message           string
 	}{
-		{"single group cannot be split", 25, 1, 1, 0, "prefill", "single replica group"},
 		{"zero holds a single old group", 0, 1, 1, 0, "prefill", ""},
 		{"layout change is explicit", 25, 4, 4, 0, "previous", "same active roles"},
 		{"promotion permits layout change", 100, 4, 4, 0, "previous", ""},
@@ -261,10 +260,10 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.message != "", handled)
 			if tc.message != "" {
-				require.Contains(t, executor.canaryBlocked, tc.message)
+				require.Contains(t, executor.canaryMessage, tc.message)
 				r := newTestReconciler(c)
-				require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill"}, "new", desired, nil, ptr.To(false), executor.canaryBlocked))
-				require.Equal(t, "CanaryBlocked", meta.FindStatusCondition(ds.Status.Conditions, "Progressing").Reason)
+				require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill"}, "new", desired, nil, ptr.To(false), executor.canaryMessage))
+				require.Equal(t, "RolloutInProgress", meta.FindStatusCondition(ds.Status.Conditions, "Progressing").Reason)
 			}
 			stored := &leaderv1.LeaderWorkerSet{}
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(a), stored))
@@ -273,7 +272,7 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 	}
 }
 
-func TestCanaryExistingRolesCanReachAndLeaveZero(t *testing.T) {
+func TestCanaryExistingRolesCanResize(t *testing.T) {
 	for _, tc := range []struct {
 		name                                             string
 		initial, old, current, desired, wantOld, wantNew [2]int32
@@ -281,6 +280,7 @@ func TestCanaryExistingRolesCanReachAndLeaveZero(t *testing.T) {
 		{"initially zero", [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}, [2]int32{4, 2}, [2]int32{3, 1}, [2]int32{1, 1}},
 		{"interrupted drain", [2]int32{4, 8}, [2]int32{0, 6}, [2]int32{1, 2}, [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}},
 		{"scale one role to zero", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}},
+		{"singleton keeps serving while peers grow", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{1, 16}, [2]int32{1, 16}, [2]int32{0, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newTwoRoleTestDisaggregatedSet(tc.desired, [2]int{1, 1}, [2]int{1, 1})
@@ -294,7 +294,11 @@ func TestCanaryExistingRolesCanReachAndLeaveZero(t *testing.T) {
 			executor := newTestExecutor(c)
 			for range 40 {
 				reconcileExistingForTest(t, executor, ds, "new")
-				require.Empty(t, executor.canaryBlocked, "existing templates can be scaled from zero")
+				if tc.desired[0] == 1 {
+					require.Contains(t, executor.canaryMessage, "scaling continues")
+				} else {
+					require.Empty(t, executor.canaryMessage)
+				}
 				list := &leaderv1.LeaderWorkerSetList{}
 				require.NoError(t, c.List(t.Context(), list))
 				for i := range list.Items {
@@ -348,7 +352,7 @@ func TestCanarySubRolesScaleSurvivingOldGroups(t *testing.T) {
 				for range 80 {
 					_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
 					require.NoError(t, err)
-					require.Empty(t, executor.canaryBlocked)
+					require.Empty(t, executor.canaryMessage)
 					settled = true
 					for index, fixture := range []*subRoleFixture{old, f} {
 						fixture.native()
@@ -667,7 +671,7 @@ func TestCanaryMixedScalingAndRestart(t *testing.T) {
 			require.NoError(t, err)
 			_, _, err = executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
 			require.NoError(t, err)
-			require.Empty(t, executor.canaryBlocked)
+			require.Empty(t, executor.canaryMessage)
 			list := &leaderv1.LeaderWorkerSetList{}
 			require.NoError(t, c.List(t.Context(), list))
 			settled = true

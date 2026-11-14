@@ -313,8 +313,9 @@ type DisaggregatedSetRolloutStrategy struct {
 	// Remove CanaryPercent in the same Git change to leave no canary hold.
 	// It does not limit initial creation when there is no old revision.
 	// For 1..99, the canary count rounds up and keeps at least one group on each
-	// side. A positive one-group role cannot be split and blocks until replicas
-	// increase or CanaryPercent reaches 100. This is not a traffic percentage.
+	// side. If an active role has only one group, the whole slice stays on the
+	// baseline so it remains a complete serving revision; scaling still applies.
+	// This is not a traffic percentage.
 	// While held, scaling changes baseline and canary shares under either
 	// scaling policy, including Deferred. Readiness and availability budgets may
 	// delay convergence. Percentage changes alone never recreate retired history.

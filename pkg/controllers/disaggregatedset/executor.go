@@ -66,7 +66,7 @@ type RollingUpdateExecutor struct {
 	// with every group issued and Ready. The status reports a hold
 	// only when every rolling slice is held.
 	rollingSlices, heldSlices int
-	canaryBlocked             string
+	canaryMessage             string
 }
 
 // CanaryHeld reports that every slice still rolling in this reconcile is
@@ -317,6 +317,13 @@ func buildRolloutInputs(
 		canary = false
 		for i := range config {
 			config[i].CanaryOldReplicas = 0
+		}
+	}
+	if canary && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
+		// A slice serves only with every required role on the same revision.
+		// Keep it on A while indivisible, but continue all requested scaling.
+		for i, name := range allRoleNames {
+			config[i].CanaryOldReplicas = desiredReplicasByRole[name]
 		}
 	}
 	scaleDownEnabled := canary || scaleDownDuringRolloutEnabled(disaggregatedSet)
