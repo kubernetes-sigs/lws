@@ -238,7 +238,6 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 		percent, desired, old, new int
 		oldName, message           string
 	}{
-		{"do not revive drained old history", 25, 8, 0, 4, "prefill", ""},
 		{"single group cannot be split", 25, 1, 1, 0, "prefill", "single replica group"},
 		{"zero holds a single old group", 0, 1, 1, 0, "prefill", ""},
 		{"layout change is explicit", 25, 4, 4, 0, "previous", "same active roles"},
@@ -901,20 +900,22 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 					list := &leaderv1.LeaderWorkerSetList{}
 					require.NoError(t, c.List(t.Context(), list))
 					settled = true
-					currentRoles := 0
+					currentRoles, stableRoles := 0, 0
 					for i := range list.Items {
 						lws, want := &list.Items[i], int32(0)
 						if lws.Labels[disaggv1.RevisionLabelKey] == revision {
-							want, currentRoles = desired, currentRoles+1
+							want, currentRoles = desired-int32(canaryOldReplicas(int(desired), int(percent))), currentRoles+1
 							require.EqualValues(t, lws.Name, lws.UID, "zero keeps the current LWS for reuse")
-						} else if desired > 0 {
-							require.Zero(t, *lws.Spec.Replicas, "retired history must not be revived")
+						} else {
+							want, stableRoles = int32(canaryOldReplicas(int(desired), int(percent))), stableRoles+1
+							require.Equal(t, "true", lws.Annotations[canaryStableAnnotation])
+							require.EqualValues(t, lws.Name, lws.UID, "zero keeps the baseline templates and identity")
 						}
 						settled = settled && *lws.Spec.Replicas == want && lws.Status.ReadyReplicas == want
 						lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
 						require.NoError(t, c.Status().Update(t.Context(), lws))
 					}
-					settled = settled && currentRoles == 2
+					settled = settled && currentRoles == 2 && stableRoles == 2
 					if settled {
 						break
 					}

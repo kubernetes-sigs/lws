@@ -49,6 +49,15 @@ func canaryOldReplicas(desired, percent int) int {
 
 const canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
 
+func isCanaryStable(revision disaggutils.RevisionRoles) bool {
+	for _, lws := range revision.Roles {
+		if lws.Annotations[canaryStableAnnotation] == "true" {
+			return true
+		}
+	}
+	return false
+}
+
 // Keep the recorded baseline while it survives. Without a marker, the oldest
 // live revision starts the canary. Tied timestamps cannot identify that revision
 // safely: block instead of letting a revision hash choose the stable workload.
@@ -57,6 +66,14 @@ func canaryStableRevision(revisions disaggutils.RevisionRolesList, names []strin
 	var oldest, marked disaggutils.RevisionRoles
 	ambiguous := false
 	for i := len(candidates) - 1; i >= 0; i-- {
+		for _, lws := range candidates[i].Roles {
+			if lws.Annotations[canaryStableAnnotation] == "true" {
+				if marked.Revision != "" && marked.Revision != candidates[i].Revision {
+					return disaggutils.RevisionRoles{}
+				}
+				marked = candidates[i]
+			}
+		}
 		live := false
 		for _, name := range names {
 			if readiness.role(candidates[i], name).spec > 0 {
@@ -71,14 +88,6 @@ func canaryStableRevision(revisions disaggutils.RevisionRolesList, names []strin
 		} else if oldest.LatestCreationTime().Equal(candidates[i].LatestCreationTime()) {
 			ambiguous = true
 		}
-		for _, lws := range candidates[i].Roles {
-			if lws.Annotations[canaryStableAnnotation] == "true" {
-				if marked.Revision != "" && marked.Revision != candidates[i].Revision {
-					return disaggutils.RevisionRoles{}
-				}
-				marked = candidates[i]
-			}
-		}
 	}
 	if marked.Revision != "" {
 		return marked
@@ -91,10 +100,10 @@ func canaryStableRevision(revisions disaggutils.RevisionRolesList, names []strin
 
 // Persist the identity before any scaling. Mark A itself: B -> C needs no
 // annotation transfer, and completing the rollout removes A and its marker.
-func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles) error {
+func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, retain bool) error {
 	manager := executor.LWSManager
 	for _, lws := range stable.Roles {
-		if lws.Annotations[canaryStableAnnotation] == "true" {
+		if (lws.Annotations[canaryStableAnnotation] == "true") == retain {
 			continue
 		}
 		if !metav1.IsControlledBy(lws, ds) {
@@ -105,7 +114,11 @@ func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, d
 		if updated.Annotations == nil {
 			updated.Annotations = make(map[string]string)
 		}
-		updated.Annotations[canaryStableAnnotation] = "true"
+		if retain {
+			updated.Annotations[canaryStableAnnotation] = "true"
+		} else {
+			delete(updated.Annotations, canaryStableAnnotation)
+		}
 		if err := manager.mutate(ctx, updated, false, func(ctx context.Context) error { return manager.client.Patch(ctx, updated, patch) }); err != nil {
 			return err
 		}
@@ -156,7 +169,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	old disaggutils.RevisionRolesList, target disaggutils.RevisionRoles,
 	desired map[string]int, inputs rolloutInputs,
 ) (bool, error) {
-	if !inputs.proportionalCanary || replicaSum(inputs.targetReplicas) == 0 {
+	if !inputs.proportionalCanary {
 		return false, nil
 	}
 	percent, _ := canaryPercent(ds)
@@ -175,7 +188,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		executor.canaryBlocked = "Canary requires a surviving stable revision with the same active roles and sub-roles; finish the layout change with canaryPercent 100 before starting a canary"
 		return true, nil
 	}
-	if err := executor.recordCanaryStable(ctx, ds, stable); err != nil {
+	if err := executor.recordCanaryStable(ctx, ds, stable, true); err != nil {
 		return true, err
 	}
 	needed := false

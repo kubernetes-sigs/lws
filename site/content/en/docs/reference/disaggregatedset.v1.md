@@ -264,7 +264,7 @@ Lowering the percentage restores baseline capacity within rollout budgets;
 0 drains canary groups but keeps the target LWS objects at zero replicas.
 For a durable rollback, restore the stable templates in Git. If they match
 the surviving baseline, the rollout converges fully to it without a hold.
-Also resetting CanaryPercent to 100 is recommended for future rollouts.
+Remove CanaryPercent in the same Git change to leave no canary hold.
 It does not limit initial creation when there is no old revision.
 For 1..99, the canary count rounds up and keeps at least one group on each
 side. A positive one-group role cannot be split and blocks until replicas
@@ -275,10 +275,9 @@ delay convergence. Percentage changes alone never recreate retired history.
 The active role/sub-role layout must match the recorded baseline; an
 incompatible baseline blocks even if a younger revision is compatible.
 An ambiguous initial choice or conflicting recorded baselines also blocks.
-Scaling a required role/sub-role to zero while peers remain positive blocks.
-Finish such layout changes at 100; scaling the whole set to zero is allowed.
-Once all groups have drained, the baseline is retired. Later scale-up uses
-only the current templates, even when CanaryPercent is below 100.</p>
+Existing roles can scale to and from zero. Scaling the whole set to zero
+retains the marked baseline's LWS templates; scale-up restores the split.
+Completing the canary retires that baseline and its rollback history.</p>
 </td>
 </tr>
 </tbody>

@@ -217,11 +217,27 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 		}
+		if inputs.proportionalCanary {
+			executor.heldSlices++ // Zero demand keeps the baseline for resumption.
+			return ctrl.Result{}, false, nil
+		}
+		for _, revision := range append(slices.Clone(oldRevisions), targetRevision) {
+			if err := executor.recordCanaryStable(ctx, disaggregatedSet, revision, false); err != nil {
+				return ctrl.Result{}, false, err
+			}
+		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
 		return ctrl.Result{}, true, nil
 	}
 	candidates := orderedRevisionCandidates(oldRevisions, inputs.readiness)
+	if len(candidates) == 0 && inputs.proportionalCanary {
+		for _, revision := range oldRevisions {
+			if revision.Revision == inputs.stableRevision {
+				candidates = append(candidates, revision)
+			}
+		}
+	}
 	if len(candidates) == 0 {
 		if inputs.scaleDownDuringRollout {
 			// Drained objects may still exist. The target must converge exactly,
@@ -295,7 +311,7 @@ func buildRolloutInputs(
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
 	_, canary := canaryPercent(disaggregatedSet)
 	stable := canaryStableRevision(append(slices.Clone(oldRevisions), targetRevision), allRoleNames, readiness)
-	if canary && (stable.Revision == targetRevision.Revision || !slices.ContainsFunc(allRoleNames, func(name string) bool { return readiness.totalReplicas(oldRevisions, name) > 0 })) {
+	if canary && stable.Revision == targetRevision.Revision {
 		// Initial creation, retired history, or a Git revert to the stable
 		// template converges to the target without inventing another canary.
 		canary = false

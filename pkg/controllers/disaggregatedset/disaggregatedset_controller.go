@@ -701,6 +701,9 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(
 		if drainedRevision.Revision == retainedRevision {
 			continue
 		}
+		if _, canary := canaryPercent(disaggregatedSet); canary && isCanaryStable(drainedRevision) {
+			continue // Keep the templates even when every role is scaled to zero.
+		}
 		for _, lws := range drainedRevision.Roles {
 			log.Info("Deleting drained LWS", "name", lws.Name)
 			if err := r.LWSManager.deleteInForeground(ctx, lws); err != nil {
