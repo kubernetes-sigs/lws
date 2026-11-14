@@ -48,6 +48,7 @@ const (
 	EventReasonBootstrapSurge         = "BootstrapSurge"
 	EventReasonAvailabilityFallback   = "AvailabilityFallback"
 	EventReasonRevisionDrainBlocked   = "RevisionDrainBlocked"
+	EventReasonCanaryHeld             = "CanaryHeld"
 	EventReasonInitialReplicasMissing = "InitialReplicasMissing"
 	EventReasonLWSDeleted             = "LWSDeleted"
 	// EventReasonFailedCreate and EventReasonUnexpectedComputeDomainOwner match
@@ -61,6 +62,17 @@ const (
 type RollingUpdateExecutor struct {
 	Record     events.EventRecorder
 	LWSManager *LeaderWorkerSetManager
+	// Slices rolling in this reconcile, and those held at the canary percentage
+	// with every group issued and Ready. The status reports a hold
+	// only when every rolling slice is held.
+	rollingSlices, heldSlices int
+	canaryMessage             string
+}
+
+// CanaryHeld reports that every slice still rolling in this reconcile is
+// held at the requested canary percentage.
+func (executor *RollingUpdateExecutor) CanaryHeld() bool {
+	return executor.heldSlices > 0 && executor.heldSlices == executor.rollingSlices
 }
 
 type rolloutInputs struct {
@@ -70,6 +82,8 @@ type rolloutInputs struct {
 	readiness              rolloutReadiness
 	scaleUpDuringRollout   bool
 	scaleDownDuringRollout bool
+	proportionalCanary     bool
+	stableRevision         string
 }
 
 type scaleDirection string
@@ -104,6 +118,7 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 	if len(oldRevisions) == 0 {
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
+	executor.rollingSlices++
 	// Guardrail: old LWS objects should already have their initial-replicas
 	// baseline. Recover it before planning if that annotation is unexpectedly
 	// missing or invalid.
@@ -192,17 +207,37 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 		return ctrl.Result{}, false, err
 	}
 
+	if result, handled, err := executor.reconcileCanaryRestoration(ctx, disaggregatedSet, oldRevisions, targetRevision, desiredReplicasByRole, inputs); handled || err != nil {
+		return result, false, err
+	}
+
 	specComplete, targetReady := rolloutCompletionStatus(oldRevisions, targetRevision, inputs.allRoleNames, inputs.targetReplicas, inputs.readiness, inputs.scaleDownDuringRollout)
 	if specComplete {
 		if !targetReady {
 			log.V(1).Info("Waiting for target revision to become ready")
 			return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 		}
+		if inputs.proportionalCanary {
+			executor.heldSlices++ // Zero demand keeps the baseline for resumption.
+			return ctrl.Result{}, false, nil
+		}
+		for _, revision := range append(slices.Clone(oldRevisions), targetRevision) {
+			if err := executor.recordCanaryStable(ctx, disaggregatedSet, revision, false); err != nil {
+				return ctrl.Result{}, false, err
+			}
+		}
 		log.Info("Rolling update complete")
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateCompleted, "Update", "Completed rolling update to revision %s", targetRevision.Revision)
 		return ctrl.Result{}, true, nil
 	}
 	candidates := orderedRevisionCandidates(oldRevisions, inputs.readiness)
+	if len(candidates) == 0 && inputs.proportionalCanary {
+		for _, revision := range oldRevisions {
+			if revision.Revision == inputs.stableRevision {
+				candidates = append(candidates, revision)
+			}
+		}
+	}
 	if len(candidates) == 0 {
 		if inputs.scaleDownDuringRollout {
 			// Drained objects may still exist. The target must converge exactly,
@@ -224,6 +259,19 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 	selectedRevision, selectedState, selectedStep, err := executor.selectNextRolloutStep(ctx, candidates, oldRevisions, targetRevision, inputs)
 	if err != nil {
 		return ctrl.Result{}, false, err
+	}
+	if selectedStep == nil && inputs.proportionalCanary {
+		// No step can also mean groups are still starting. The status records
+		// the hold (condition reason CanaryHeld and one event) only once
+		// this slice has settled at its canary hold.
+		stable := canaryStableRevision(append(slices.Clone(oldRevisions), targetRevision), inputs.allRoleNames, inputs.readiness)
+		state := inputs.stateForRevision(oldRevisions, stable, targetRevision)
+		if heldAtCanary(state) {
+			log.V(1).Info("Rolling update is held at the canary percentage; waiting for promotion", "revision", targetRevision.Revision)
+			executor.heldSlices++
+			return ctrl.Result{}, false, nil // Spec and observer events resume a settled hold.
+		}
+		return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 	}
 	if selectedStep == nil {
 		reason := "no feasible replica change is currently available within the rollout constraints"
@@ -261,13 +309,43 @@ func buildRolloutInputs(
 	desiredRoles, oldRoles := collectDesiredAndOldRoles(targetRoleNames, append(slices.Clone(oldRevisions), targetRevision), readiness)
 	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
 	allRoleNames := append(slices.Clone(targetRoleNames), removedRoleNames...)
+	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
+	_, canary := canaryPercent(disaggregatedSet)
+	stable := canaryStableRevision(append(slices.Clone(oldRevisions), targetRevision), allRoleNames, readiness)
+	noBaseline := !slices.ContainsFunc(oldRevisions, isCanaryStable) && !slices.ContainsFunc(allRoleNames, func(name string) bool { return readiness.totalReplicas(oldRevisions, name) > 0 })
+	if canary && (stable.Revision == targetRevision.Revision || noBaseline) {
+		// Initial creation, retired history, or a Git revert to the stable
+		// template converges to the target without inventing another canary.
+		canary = false
+		for i := range config {
+			config[i].CanaryOldReplicas = 0
+		}
+	}
+	if canary && canaryDimension(disaggregatedSet) == disaggregatedsetv1.CanaryDimensionSlices {
+		percent := canaryPercentForSlice(disaggregatedSet, targetRevision)
+		for i, name := range allRoleNames {
+			config[i].CanaryOldReplicas = 0
+			if percent == 0 {
+				config[i].CanaryOldReplicas = desiredReplicasByRole[name]
+			}
+		}
+	} else if canary && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
+		// A slice serves only with every required role on the same revision.
+		// Keep it on A while indivisible, but continue all requested scaling.
+		for i, name := range allRoleNames {
+			config[i].CanaryOldReplicas = desiredReplicasByRole[name]
+		}
+	}
+	scaleDownEnabled := canary || scaleDownDuringRolloutEnabled(disaggregatedSet)
 	return rolloutInputs{
 		allRoleNames:           allRoleNames,
-		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole, readiness),
-		config:                 extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole),
+		targetReplicas:         rolloutTargetReplicas(disaggregatedSet, allRoleNames, desiredRoles, oldRevisions, targetRevision, desiredReplicasByRole, readiness, scaleDownEnabled),
+		config:                 config,
 		readiness:              readiness,
-		scaleUpDuringRollout:   scaleUpDuringRolloutEnabled(disaggregatedSet),
-		scaleDownDuringRollout: scaleDownDuringRolloutEnabled(disaggregatedSet),
+		scaleUpDuringRollout:   canary || scaleUpDuringRolloutEnabled(disaggregatedSet),
+		scaleDownDuringRollout: scaleDownEnabled,
+		proportionalCanary:     canary,
+		stableRevision:         stable.Revision,
 	}
 }
 
@@ -299,9 +377,7 @@ func (executor *RollingUpdateExecutor) selectNextRolloutStep(
 	var selectedStep *UpdateStep
 	candidateStates := make([]RolloutState, len(candidates))
 	for i, candidate := range candidates {
-		state := rolloutStateForRevision(inputs.allRoleNames, oldRevisions, candidate, targetRevision, inputs.targetReplicas, inputs.config, inputs.readiness)
-		state.ScaleUpDuringRollout = inputs.scaleUpDuringRollout
-		state.ScaleDownDuringRollout = inputs.scaleDownDuringRollout
+		state := inputs.stateForRevision(oldRevisions, candidate, targetRevision)
 		candidateStates[i] = state
 		step := ComputeNextStep(state)
 		if step == nil {
@@ -590,6 +666,7 @@ func rolloutTargetReplicas(
 	newRevision disaggregatedsetutils.RevisionRoles,
 	desiredReplicasByRole map[string]int,
 	readiness rolloutReadiness,
+	scaleDownDuringRollout bool,
 ) RoleReplicaState {
 	targets := make(RoleReplicaState, len(allRoleNames))
 	for i, roleName := range allRoleNames {
@@ -600,7 +677,7 @@ func rolloutTargetReplicas(
 		// Keep an External target from shrinking only while old capacity for
 		// this role still overlaps it. Drained old objects or another role's
 		// old replicas must not keep this target artificially high.
-		if !scaleDownDuringRolloutEnabled(ds) && isExternal(ds, roleName) && readiness.totalReplicas(oldRevisions, roleName) > 0 {
+		if !scaleDownDuringRollout && isExternal(ds, roleName) && readiness.totalReplicas(oldRevisions, roleName) > 0 {
 			targets[i] = max(targets[i], readiness.role(newRevision, roleName).spec)
 		}
 	}
@@ -665,10 +742,40 @@ func extractRollingUpdateConfig(
 				// admission, but a percentage can round down to 0 after a scale-down.
 				cfg = defaultRollingUpdateConfig
 			}
+			if percent, active := canaryPercent(ds); active {
+				cfg.CanaryOldReplicas = canaryOldReplicas(replicas, percent)
+			}
 			config[roleIndex[name]] = cfg
 		}
 	}
 	return config
+}
+
+// heldAtCanary reports that every role has its desired groups across all
+// revisions and every issued group is Ready. The caller also verifies that
+// the active canary bounds leave no further rollout step.
+func heldAtCanary(state RolloutState) bool {
+	// Individually Ready groups in incomplete old revisions do not form a
+	// serving workload. Drained history, and a zero-percent target, are allowed.
+	if replicaSum(state.ActiveOld.SpecReplicas) > 0 && !allRequiredRolesPresent(state.ActiveOld.RequiredRoles, state.ActiveOld.ReadyReplicas) {
+		return false
+	}
+	for _, parked := range state.ParkedOld {
+		if replicaSum(parked.SpecReplicas) > 0 {
+			return false
+		}
+	}
+	for i, desired := range state.Target.DesiredReplicas {
+		old, oldReady := state.ActiveOld.SpecReplicas[i], state.ActiveOld.ReadyReplicas[i]
+		for _, parked := range state.ParkedOld {
+			old, oldReady = old+parked.SpecReplicas[i], oldReady+parked.ReadyReplicas[i]
+		}
+		target := state.Target.SpecReplicas[i]
+		if old != state.Config[i].CanaryOldReplicas || old+target != desired || oldReady != old || state.Target.ReadyReplicas[i] != target {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultRollingUpdateConfig applies to a role without a rollingUpdateConfiguration.
@@ -787,8 +894,7 @@ func subRoleTargets(names []string, targets RoleReplicaState) map[string]map[str
 	return parents
 }
 
-// scaleRevision applies targets only in the requested direction. This prevents
-// the target revision from shrinking and old revisions from growing.
+// scaleRevision applies ordinary rollout changes in the requested direction.
 func (executor *RollingUpdateExecutor) scaleRevision(
 	ctx context.Context,
 	ds *disaggregatedsetv1.DisaggregatedSet,
@@ -796,6 +902,16 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 	roleNames []string,
 	targets RoleReplicaState,
 	direction scaleDirection,
+) error {
+	return executor.scaleRevisionWithStrategy(ctx, ds, revision, roleNames, targets, direction, true)
+}
+
+// Stable canary growth uses the same scaling path without applying the current
+// revision's budgets to historical workloads.
+func (executor *RollingUpdateExecutor) scaleRevisionWithStrategy(
+	ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet,
+	revision disaggregatedsetutils.RevisionRoles, roleNames []string,
+	targets RoleReplicaState, direction scaleDirection, refreshStrategy bool,
 ) error {
 	eventReason := EventReasonScalingUp
 	if direction == scaleDown {
@@ -815,8 +931,8 @@ func (executor *RollingUpdateExecutor) scaleRevision(
 			continue
 		}
 		var strategy *leaderworkersetv1.RolloutStrategy
-		if config := roleConfigs[parent]; direction == scaleUp && config != nil {
-			// Only the target grows. Refresh its live budgets so a role created
+		if config := roleConfigs[parent]; direction == scaleUp && refreshStrategy && config != nil {
+			// Refresh target budgets so a role created
 			// at zero with zero/zero budgets can resume; leave old revisions alone.
 			strategy = &config.Spec.RolloutStrategy
 		}
@@ -977,10 +1093,11 @@ func (plan rolloutPlan) validateTargets(step *UpdateStep, limits RoleReplicaStat
 	}
 	usedBootstrap := false
 	for i, old := range snapshot.ActiveOld.SpecReplicas {
-		if step.Past[i] < 0 || step.Past[i] > old {
-			return fmt.Errorf("old target %d for role %d is outside [0,%d]", step.Past[i], i, old)
+		minimumOld := snapshot.canaryOldFloor(i)
+		if step.Past[i] < minimumOld || step.Past[i] > old {
+			return fmt.Errorf("old target %d for role %d is outside [%d,%d]", step.Past[i], i, minimumOld, old)
 		}
-		minimum, maximum := min(snapshot.Target.SpecReplicas[i], plan.ordinary.New[i]), min(limits[i], phase[i])
+		minimum, maximum := min(snapshot.Target.SpecReplicas[i], plan.ordinary.New[i]), min(limits[i], phase[i], snapshot.canaryCeiling(i))
 		if step.New[i] < minimum || step.New[i] > maximum {
 			return fmt.Errorf("new target %d for role %d is outside [%d,%d]", step.New[i], i, minimum, maximum)
 		}

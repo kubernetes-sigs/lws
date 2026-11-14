@@ -49,6 +49,68 @@ func TestValidateHashSubRoles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateCanaryPercent(t *testing.T) {
+	for _, percent := range []int32{-1, 0, 25, 100, 101} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To(percent)},
+		}}
+		webhook := &DisaggregatedSetWebhook{}
+		_, createErr := webhook.ValidateCreate(t.Context(), ds)
+		old := ds.DeepCopy()
+		old.Spec.RolloutStrategy = nil
+		_, updateErr := webhook.ValidateUpdate(t.Context(), old, ds)
+		for _, err := range []error{createErr, updateErr} {
+			if percent < 0 || percent > 100 {
+				require.ErrorContains(t, err, "between 0 and 100")
+			} else {
+				require.NoError(t, err)
+			}
+		}
+	}
+	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25)},
+		}}
+		ds.Spec.Roles[0].Spec.GroupIdentity = identity
+		_, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), ds)
+		require.NoError(t, err)
+	}
+}
+
+func TestCanaryDimension(t *testing.T) {
+	for _, mode := range []disaggv1.CanaryDimension{"", "groups", "slices", "auto", "invalid"} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25), CanaryDimension: mode}}}
+		w := &DisaggregatedSetWebhook{}
+		_, err := w.ValidateCreate(t.Context(), ds)
+		if mode == "invalid" {
+			require.ErrorContains(t, err, "canaryDimension")
+			continue
+		}
+		require.NoError(t, err)
+		changed := ds.DeepCopy()
+		changed.Spec.Slices = ptr.To[int32](9)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		if mode == "slices" || mode == "auto" {
+			require.ErrorContains(t, err, "slice-count changes")
+		} else {
+			require.NoError(t, err)
+		}
+		changed.Spec.RolloutStrategy.CanaryDimension = "groups"
+		if mode == "" || mode == "groups" {
+			changed.Spec.RolloutStrategy.CanaryDimension = "slices"
+		}
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.ErrorContains(t, err, "cannot change dimension")
+		for _, percent := range []*int32{nil, ptr.To[int32](100)} {
+			changed.Spec.RolloutStrategy.CanaryPercent = percent
+			_, err = w.ValidateUpdate(t.Context(), ds, changed)
+			require.NoError(t, err)
+		}
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

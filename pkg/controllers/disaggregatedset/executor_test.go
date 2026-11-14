@@ -2074,14 +2074,14 @@ func TestTargetInitialReplicasFollowResolvedRolloutTarget(t *testing.T) {
 	targets := rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill),
 		disaggregatedsetutils.RevisionRolesList{{Revision: "old"}},
 		disaggregatedsetutils.RevisionRoles{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: stored}},
-		map[string]int{testRolePrefill: 1}, nil)
+		map[string]int{testRolePrefill: 1}, nil, false)
 	assert.Equal(t, RoleReplicaState{1}, targets, "a drained old object must not keep the external target high")
 
 	old := makeLWS(withReplicas(1), withReadyReplicas(1))
 	targets = rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill),
 		disaggregatedsetutils.RevisionRolesList{{Revision: "old", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: old}}},
 		disaggregatedsetutils.RevisionRoles{Revision: "hashB", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{testRolePrefill: stored}},
-		map[string]int{testRolePrefill: 1}, nil)
+		map[string]int{testRolePrefill: 1}, nil, false)
 	assert.Equal(t, RoleReplicaState{2}, targets, "non-zero old capacity for the same role keeps the in-flight target from shrinking")
 
 	require.NoError(t, executor.syncTargetInitialReplicas(
@@ -2126,6 +2126,39 @@ func TestExternalScaleDownPersistsClampedRolloutTarget(t *testing.T) {
 	require.True(t, ok)
 	assert.EqualValues(t, 3, initial,
 		"while old capacity remains, the current Spec—not the lower raw scaler value—is the rollout target")
+}
+
+func TestCanaryGitRevertPreservesDeferredTarget(t *testing.T) {
+	for _, policy := range []disaggregatedsetv1.RolloutScalingPolicy{disaggregatedsetv1.RolloutScalingDeferred, disaggregatedsetv1.RolloutScalingImmediate} {
+		t.Run(string(policy), func(t *testing.T) {
+			role := makeRoleSpec(testRolePrefill, 4, corev1.PodSpec{}, intstr.FromInt(1), intstr.FromInt(0))
+			role.Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+			ds := newTestDisaggregatedSet(role)
+			setCanaryPercent(ds, 25)
+			ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleDownDuringRollout: policy}
+			created := time.Now()
+			// Git restores A while its new groups are still starting, and the
+			// autoscaler reduces demand from four groups to two.
+			a := revisionLWS("A", testRolePrefill, 4, 2, created, 4)
+			b := revisionLWS("B", testRolePrefill, 2, 2, created.Add(time.Hour), 4)
+			c := newTestClient(a, b)
+			executor := newTestExecutor(c)
+			old, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "A")
+			require.NoError(t, err)
+			desired := map[string]int{testRolePrefill: 2}
+			inputs, err := executor.prepareRolloutInputs(t.Context(), ds, old, *target, desired)
+			require.NoError(t, err)
+			require.False(t, inputs.proportionalCanary, "restoring A is an ordinary rollout")
+			wantTarget, wantOld := 4, int32(2)
+			if policy == disaggregatedsetv1.RolloutScalingImmediate {
+				wantTarget, wantOld = 2, 0
+			}
+			require.Equal(t, RoleReplicaState{wantTarget}, inputs.targetReplicas)
+			_, _, err = executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
+			require.NoError(t, err)
+			require.Equal(t, wantOld, getTestLWSReplicas(c, testNamespace, b.Name))
+		})
+	}
 }
 
 func TestObserveOldRevisionNeverUsesBaselineBelowSpec(t *testing.T) {
@@ -2574,7 +2607,7 @@ func TestDrainedRevisionDoesNotInflateBaselineOrThrottleColdStart(t *testing.T) 
 	assert.Equal(t, "hashA", activeRevision.Revision, "the drained hashB revision must not become the planning baseline")
 	roleNames := testRoleNames()
 	config := extractRollingUpdateConfig(ds, roleNames, desiredReplicasByRole)
-	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole, readiness)
+	targets := rolloutTargetReplicas(ds, roleNames, sets.New(roleNames...), oldRevisions, *targetRevision, desiredReplicasByRole, readiness, false)
 	state := rolloutStateForRevision(roleNames, oldRevisions, activeRevision, *targetRevision, targets, config, readiness)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.ActiveOld.InitialReplicas)
 	assert.Equal(t, RoleReplicaState{2, 2}, state.AvailabilityBaseline)
@@ -3659,7 +3692,14 @@ func (f *subRoleFixture) native(wrongVictims ...types.UID) {
 	}
 	for _, group := range s.Groups {
 		if group.Ordinal >= f.start+n {
-			require.NoError(f.t, f.manager.client.Delete(f.t.Context(), group.Leader))
+			// The fake client has no garbage collector. Remove owned workers
+			// too, so a later growth can reuse the ordinal like the real controller.
+			for _, pod := range group.Pods {
+				require.NoError(f.t, client.IgnoreNotFound(f.nativeClient.Delete(f.t.Context(), pod)))
+			}
+			if group.WorkerStatefulSet != nil {
+				require.NoError(f.t, f.nativeClient.Delete(f.t.Context(), group.WorkerStatefulSet))
+			}
 		}
 	}
 	for ordinal := f.start; ordinal < f.start+n; ordinal++ {
@@ -4841,6 +4881,8 @@ func TestOrdinalSubRoleTransfersPreserveAcceptedFloors(t *testing.T) {
 		for health := range 16 {
 			for _, target := range []map[string]int{{"a": 1, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 1}} {
 				t.Run(fmt.Sprint(children, health, target), func(t *testing.T) {
+					t.Parallel()
+
 					f := newSubRoleFixture(t, 7, children...)
 					for i, group := range f.observe().Groups {
 						if health&(1<<i) == 0 {

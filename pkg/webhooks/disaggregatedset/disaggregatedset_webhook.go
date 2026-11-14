@@ -88,6 +88,12 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
+	allErrs = append(allErrs, validateCanaryDimension(obj, oldObj)...)
+	if strategy := obj.Spec.RolloutStrategy; strategy != nil && strategy.CanaryPercent != nil {
+		if percent := *strategy.CanaryPercent; percent < 0 || percent > 100 {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "rolloutStrategy", "canaryPercent"), percent, "must be between 0 and 100"))
+		}
+	}
 
 	// Roles are a map-style list; reordering must preserve legacy templates.
 	oldRoles := make(map[string]*disaggv1.DisaggregatedRoleSpec)
@@ -193,6 +199,34 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	allErrs = append(allErrs, cdErrs...)
 
 	return warnings, allErrs
+}
+
+func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
+	strategy := obj.Spec.RolloutStrategy
+	if strategy == nil {
+		return nil
+	}
+	path := field.NewPath("spec", "rolloutStrategy", "canaryDimension")
+	dimension := func(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
+		if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.CanaryDimension == "" {
+			return disaggv1.CanaryDimensionGroups
+		}
+		return ds.Spec.RolloutStrategy.CanaryDimension
+	}
+	mode := dimension(obj)
+	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices && mode != disaggv1.CanaryDimensionAuto {
+		return field.ErrorList{field.NotSupported(path, mode, []string{"groups", "slices", "auto"})}
+	}
+	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.CanaryPercent == nil || *old.Spec.RolloutStrategy.CanaryPercent == 100 || strategy.CanaryPercent == nil || *strategy.CanaryPercent == 100 {
+		return nil
+	}
+	if dimension(old) != mode {
+		return field.ErrorList{field.Forbidden(path, "cannot change dimension during a partial canary; finish or remove the hold first")}
+	}
+	if mode != disaggv1.CanaryDimensionGroups && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a slices or auto canary; finish or remove the hold first")}
+	}
+	return nil
 }
 
 func isExternal(scaling *disaggv1.RoleScaling) bool {

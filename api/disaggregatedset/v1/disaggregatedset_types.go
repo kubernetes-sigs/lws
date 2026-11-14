@@ -285,6 +285,11 @@ type DisaggregatedSetSpec struct {
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
+	// RolloutStrategy controls progressive delivery across all roles and sub-roles.
+	// Changing it does not create a new revision.
+	// +optional
+	RolloutStrategy *DisaggregatedSetRolloutStrategy `json:"rolloutStrategy,omitempty"`
+
 	// PlacementPolicy controls how a slice's roles are co-located and how the
 	// DisaggregatedSet's slices are spread across topology domains. When set, the
 	// controller injects pod affinity and anti-affinity into the managed
@@ -292,6 +297,61 @@ type DisaggregatedSetSpec struct {
 	// created, so changing it takes effect on the next rollout.
 	// +optional
 	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// CanaryDimension selects the unit used to divide a canary.
+// +kubebuilder:validation:Enum=groups;slices;auto
+type CanaryDimension string
+
+const (
+	CanaryDimensionGroups CanaryDimension = "groups"
+	CanaryDimensionSlices CanaryDimension = "slices"
+	CanaryDimensionAuto   CanaryDimension = "auto"
+)
+
+// DisaggregatedSetRolloutStrategy configures a set-wide canary hold.
+type DisaggregatedSetRolloutStrategy struct {
+	// CanaryPercent is the new revision's requested share, using CanaryDimension
+	// as the unit. By default, split each role/sub-role's groups independently in
+	// every slice. Omitted or 100 applies no hold.
+	// The oldest revision with surviving groups is recorded as the baseline;
+	// that choice survives controller restarts. A later template update replaces
+	// the canary within its share while retaining the recorded baseline's share.
+	// Lowering the percentage restores baseline capacity within rollout budgets;
+	// 0 drains canary groups but keeps the target LWS objects at zero replicas.
+	// For a durable rollback, restore the stable templates in Git. If they match
+	// the surviving baseline, the rollout converges fully to it without a hold.
+	// Remove CanaryPercent in the same Git change to leave no canary hold.
+	// It does not limit initial creation when there is no old revision.
+	// For 1..99, the canary count rounds up and keeps at least one unit on each
+	// side. If an active role has only one group, the whole slice stays on the
+	// baseline in groups mode so it remains a complete serving revision; scaling
+	// still applies. In slices mode the units are whole slices instead of groups.
+	// This is not a traffic percentage.
+	// While held, scaling changes baseline and canary shares under either
+	// scaling policy, including Deferred. Readiness and availability budgets may
+	// delay convergence. Percentage changes alone never recreate retired history.
+	// The active role/sub-role layout must match the recorded baseline; an
+	// incompatible baseline blocks even if a younger revision is compatible.
+	// An ambiguous initial choice or conflicting recorded baselines also blocks.
+	// Existing roles can scale to and from zero. Scaling the whole set to zero
+	// retains the marked baseline's LWS templates; scale-up restores the split.
+	// Completing the canary retires that baseline and its rollback history.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	CanaryPercent *int32 `json:"canaryPercent,omitempty"`
+
+	// CanaryDimension defaults to groups: divide each role/sub-role within each
+	// slice. Slices instead promotes whole slices in ascending slice-index order.
+	// Auto chooses groups unless a positive role/sub-role has only one group and
+	// at least two slices exist; then it chooses slices. This choice is recorded
+	// when the canary starts and retained across percentage and template changes.
+	// Dimensions cannot change during a partial canary. Slice-count changes are
+	// not supported during a slices or auto canary; finish or remove the hold first.
+	// This field has no effect when CanaryPercent is omitted or 100.
+	// +optional
+	CanaryDimension CanaryDimension `json:"canaryDimension,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.
