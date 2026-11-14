@@ -200,20 +200,37 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 func TestVolcanoProvider_InjectPodGroupMetadata(t *testing.T) {
 	provider := NewVolcanoProvider(fake.NewClientBuilder().WithScheme(scheme).Build())
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        "test-lws-1",
-			Annotations: map[string]string{},
-			Labels: map[string]string{
-				leaderworkerset.SetNameLabelKey:    "test-lws",
-				leaderworkerset.GroupIndexLabelKey: "1",
-				leaderworkerset.RevisionKey:        "rev1",
-			},
+	tests := []struct {
+		name        string
+		annotations map[string]string
+	}{
+		{
+			name:        "initialized annotations",
+			annotations: map[string]string{},
+		},
+		{
+			name:        "nil annotations",
+			annotations: nil,
 		},
 	}
 
-	require.NoError(t, provider.InjectPodGroupMetadata(pod))
-	// The webhook stamped name must match the one ReconcileScheduling creates.
-	assert.Equal(t, GetPodGroupName("test-lws", "1", "rev1"),
-		pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-lws-1",
+					Annotations: tc.annotations,
+					Labels: map[string]string{
+						leaderworkerset.SetNameLabelKey:    "test-lws",
+						leaderworkerset.GroupIndexLabelKey: "1",
+						leaderworkerset.RevisionKey:        "rev1",
+					},
+				},
+			}
+
+			require.NoError(t, provider.InjectPodGroupMetadata(pod))
+			assert.Equal(t, GetPodGroupName("test-lws", "1", "rev1"),
+				pod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey])
+		})
+	}
 }

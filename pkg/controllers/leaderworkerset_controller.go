@@ -903,7 +903,7 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 	readyNonDegradedCount, degradedGroupCount, desiredDegradedGroupCount := 0, 0, 0
 	unschedulableGroupCount := 0
 	partitionedUpdatedNonBurstCount, partitionedCurrentNonBurstCount, partitionedUpdatedAndReadyCount := 0, 0, 0
-	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
+	noWorkerSts := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) == 1
 	lwsPartition := *lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition
 
 	// Iterate through all leaderPods.
@@ -1131,7 +1131,7 @@ func (r *LeaderWorkerSetReconciler) getReplicaStates(ctx context.Context, lws *l
 	}, stsList.Items, int(stsReplicas))
 
 	// Once size==1, no worker statefulSets will be created.
-	noWorkerSts := *lws.Spec.LeaderWorkerTemplate.Size == 1
+	noWorkerSts := ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) == 1
 
 	for idx := int32(0); idx < stsReplicas; idx++ {
 		nominatedName := fmt.Sprintf("%s-%d", lws.Name, idx)
@@ -1341,7 +1341,7 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		leaderworkerset.RevisionKey:         revisionKey,
 	})
 	podAnnotations := make(map[string]string)
-	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
+	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1)))
 	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 	}
