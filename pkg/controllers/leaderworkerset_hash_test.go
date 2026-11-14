@@ -52,7 +52,7 @@ func TestLeaderDeploymentZeroReplicaBudgets(t *testing.T) {
 			lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = tc.surge
 			lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = tc.unavailable
 			before := lws.DeepCopy()
-			deployment, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+			deployment, err := constructLeaderDeploymentApplyConfiguration(lws, nil, "rev-1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +82,7 @@ func TestLeaderDeploymentApplyConfig(t *testing.T) {
 		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
 	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 
-	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, nil, "rev-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestLeaderDeploymentApplyConfigPolicyAnnotations(t *testing.T) {
 		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
 	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 
-	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, nil, "rev-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestLeaderDeploymentApplyConfigSizeOneHasNoGate(t *testing.T) {
 		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
 	lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
 
-	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, "rev-1")
+	deployConfig, err := constructLeaderDeploymentApplyConfiguration(lws, nil, "rev-1")
 	if err != nil {
 		t.Fatal(err)
 	}

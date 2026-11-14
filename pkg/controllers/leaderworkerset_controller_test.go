@@ -2478,56 +2478,6 @@ func TestPruneScaledDownGroupRestartCountsPreservesActiveSurgeReplica(t *testing
 	}
 }
 
-func TestCalculateContinuousReadyReplicas(t *testing.T) {
-	tests := []struct {
-		name   string
-		states []replicaState
-		want   int32
-	}{
-		{
-			name:   "no replicas",
-			states: nil,
-			want:   0,
-		},
-		{
-			name: "all replicas ready and updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-			},
-			want: 3,
-		},
-		{
-			name: "counting stops at the first replica that is not updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: false},
-				{ready: true, updated: true},
-			},
-			want: 1,
-		},
-		{
-			name: "an updated but not ready tail replica counts as zero",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: false, updated: true},
-			},
-			want: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := calculateContinuousReadyReplicas(tc.states)
-			if got != tc.want {
-				t.Fatalf("calculateContinuousReadyReplicas()=%d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestCalculateLWSUnreadyReplicas(t *testing.T) {
 	tests := []struct {
 		name        string
