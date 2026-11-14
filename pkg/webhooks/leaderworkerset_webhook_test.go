@@ -368,6 +368,23 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	}
 }
 
+func TestGeneralValidateRollingUpdateBudget(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").
+		Replica(3).
+		RolloutStrategy(v1.RolloutStrategy{
+			Type: v1.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &v1.RollingUpdateConfiguration{
+				MaxUnavailable: intstr.FromString("25%"),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).
+		Obj()
+
+	if errs := (&LeaderWorkerSetWebhook{}).generalValidate(lws); len(errs) != 0 {
+		t.Fatalf("positive percentage should remain valid after scale-down: %v", errs.ToAggregate())
+	}
+}
+
 func TestGeneralValidateRestartBackoff(t *testing.T) {
 	tests := []struct {
 		name      string

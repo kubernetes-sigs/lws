@@ -570,7 +570,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			},
 			lwsCreationShouldFail: false,
 		}),
-		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to non-zero should be failed", &testValidationCase{
+		ginkgo.Entry("set maxSurge to 0 and maxUnavailable to a positive percentage should succeed", &testValidationCase{
 			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
@@ -578,7 +578,7 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
 				return lws
 			},
-			lwsCreationShouldFail: true,
+			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("creation with negative partition should fail", &testValidationCase{
 			dsTemplateError: "partition",
