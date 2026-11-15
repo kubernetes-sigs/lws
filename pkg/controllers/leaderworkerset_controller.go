@@ -315,7 +315,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
 		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
-	} else if !lwsUpdated && partition != *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
+	} else if !lwsUpdated && partition < *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
 		// An event is logged to track update progress.
 		oldPartition := *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition
 		var updateMsg string
@@ -979,17 +979,21 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		// The floor is a rollout guarantee. A plain scale-down with no active
 		// rollout retires excess ordinals as requested, even while some of the
 		// remaining groups are unready.
+		nextPartition := min(partition, max(burstReplicas, targetReplicas))
 		if hasUncertain {
 			targetReplicas = max(targetReplicas, stsReplicas)
+			nextPartition = min(partition, max(burstReplicas, targetReplicas))
 		} else if rolloutActive {
 			targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
+			activeStates := states[:min(len(states), int(targetReplicas))]
+			nextPartition = max(min(partition, max(burstReplicas, targetReplicas)),
+				protectFloorPartition(activeStates, floor, userPartition))
 		}
 		recordSurgeDeletionEvent(targetReplicas)
 		return rollingUpdatePlan{
-			// Do not lower partition below the planned replicas. The floor
-			// guard can keep Ready ordinals above the burst limit, and they
-			// must stay on their revision.
-			partition: min(partition, max(burstReplicas, targetReplicas)),
+			// Keep Ready ordinals retained above the burst limit, and any older
+			// Ready ordinals now needed for the floor, below the partition.
+			partition: nextPartition,
 			replicas:  targetReplicas,
 			baseline:  activeBaseline(),
 			floor:     floor,
@@ -1035,6 +1039,9 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	recordSurgeDeletionEvent(targetReplicas)
 	activeStates := states[:min(len(states), int(targetReplicas))]
 	nextPartition := rollingUpdatePartitionWithFloor(activeStates, floor, min(partition, targetReplicas), userPartition)
+	if rolloutActive && targetReplicas < stsReplicas {
+		nextPartition = max(nextPartition, protectFloorPartition(activeStates, floor, userPartition))
+	}
 
 	var nextBaseline *int32
 	if rolloutActive && rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) {
@@ -2121,6 +2128,30 @@ func rollingUpdatePartitionWithFloor(states []replicaState, floor, currentPartit
 		}
 	}
 	return max(userPartition, min(partition, currentPartition))
+}
+
+// protectFloorPartition returns the smallest partition at or above
+// userPartition that keeps min(floor, countReadyStates(states)) Ready groups
+// available: every updated Ready group in states, plus enough older Ready
+// groups below the partition. Shrinking the StatefulSet removes any updated
+// Ready credit above targetReplicas, so the partition can rise to protect the
+// remaining Ready groups.
+func protectFloorPartition(states []replicaState, floor, userPartition int32) int32 {
+	goalReady := min(floor, countReadyStates(states))
+	neededOldReady := goalReady - countUpdatedReadyStates(states)
+	if neededOldReady <= 0 {
+		return userPartition
+	}
+	var seenOldReady int32
+	for idx := range states {
+		if states[idx].ready && !states[idx].updated {
+			seenOldReady++
+			if seenOldReady == neededOldReady {
+				return max(userPartition, int32(idx)+1)
+			}
+		}
+	}
+	return userPartition
 }
 
 // rolloutBaselineActive reports whether an Ordinal rollout still needs its

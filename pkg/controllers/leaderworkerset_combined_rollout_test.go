@@ -3731,3 +3731,246 @@ func TestUserSuppliedBaselineAnnotationIsNotPropagated(t *testing.T) {
 		})
 	}
 }
+
+func TestProtectFloorPartitionStateSpace(t *testing.T) {
+	kinds := []replicaState{
+		{ready: false, updated: false},
+		{ready: true, updated: false},
+		{ready: false, updated: true},
+		{ready: true, updated: true},
+	}
+	for n := 1; n <= 6; n++ {
+		states := make([]replicaState, n)
+		total := 1
+		for range n {
+			total *= len(kinds)
+		}
+		for code := range total {
+			rest := code
+			for idx := range states {
+				states[idx] = kinds[rest%len(kinds)]
+				rest /= len(kinds)
+			}
+			ready := countReadyStates(states)
+			for floor := int32(0); floor <= int32(n); floor++ {
+				goal := min(floor, ready)
+				for user := int32(0); user <= int32(n); user++ {
+					got := protectFloorPartition(states, floor, user)
+					if got < user || got > max(user, int32(n)) {
+						t.Fatalf("partition out of bounds for states=%v floor=%d user=%d: got %d", states, floor, user, got)
+					}
+					if avail := guaranteedAvailable(states, got); avail < goal {
+						t.Fatalf("floor violated for states=%v floor=%d user=%d: partition=%d available=%d want>=%d",
+							states, floor, user, got, avail, goal)
+					}
+					if got > user && guaranteedAvailable(states, got-1) >= goal {
+						t.Fatalf("partition not minimal for states=%v floor=%d user=%d: got %d, %d suffices",
+							states, floor, user, got, got-1)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestScaleDownReprotectsRemainingOldReadyGroups covers scaling down after an
+// updated Ready scale-up ordinal already allowed partition to reach 0. With
+// baseline=2 and maxUnavailable=1 (floor=1), B2 paid for partition=0 while A0
+// stayed Ready on rev-1 and B1 had a Ready leader with Pending workers. Scaling
+// down 3 -> 2 removes B2, so partition must rise from 0 to 1 to protect A0
+// until B1 is whole-group Ready.
+func TestScaleDownReprotectsRemainingOldReadyGroups(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(2).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 4,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "3",
+				rolloutBaselineAnnotationKey:          "2",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](3),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 4,
+			Replicas:           3,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+
+	objs := []client.Object{lws, sts}
+	// Group 0: old revision A0, whole-group Ready.
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 0, 2, "rev-1", "sts-rev-1", true, true, true)...)
+	// Group 1: updated leader B1 is Ready, but its worker is still Pending.
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 1, 2, "rev-2", "sts-rev-2", true, false, false)...)
+	// Group 2: updated scale-up group B2 is whole-group Ready (about to be removed by scale-down 3 -> 2).
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 2, 2, "rev-2", "sts-rev-2", true, true, true)...)
+
+	c, r := newCombinedTestClient(t, objs...)
+	rev2CR, err := revisionutils.NewRevision(ctx, c, lws, "rev-2")
+	if err != nil {
+		t.Fatalf("NewRevision() error = %v", err)
+	}
+	if _, err := revisionutils.CreateRevision(ctx, c, rev2CR); err != nil {
+		t.Fatalf("CreateRevision() error = %v", err)
+	}
+
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() on scale-down error = %v", err)
+	}
+
+	var updatedSts appsv1.StatefulSet
+	if err := c.Get(ctx, req.NamespacedName, &updatedSts); err != nil {
+		t.Fatalf("reading sts: %v", err)
+	}
+	if gotReplicas, gotPartition := *updatedSts.Spec.Replicas, *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; gotReplicas != 2 || gotPartition != 1 {
+		t.Fatalf("after scale-down 3 -> 2, (replicas, partition) = (%d, %d), want (2, 1) to protect A0",
+			gotReplicas, gotPartition)
+	}
+	if got := updatedSts.Annotations[rolloutBaselineAnnotationKey]; got != "2" {
+		t.Fatalf("rolloutBaselineAnnotationKey = %q, want %q", got, "2")
+	}
+
+	recorder := r.Record.(*events.FakeRecorder)
+	for len(recorder.Events) > 0 {
+		ev := <-recorder.Events
+		if strings.Contains(ev, "Updating replica") {
+			t.Fatalf("unexpected GroupsUpdating event when raising partition: %s", ev)
+		}
+	}
+
+	// Simulate StatefulSetController removing B2 and observing the new generation,
+	// then B1's worker becoming Ready so the rollout can finish A0.
+	updatedSts.Generation = 5
+	if err := c.Update(ctx, &updatedSts); err != nil {
+		t.Fatalf("updating sts generation: %v", err)
+	}
+	updatedSts.Status.ObservedGeneration = 5
+	updatedSts.Status.Replicas = 2
+	if err := c.Status().Update(ctx, &updatedSts); err != nil {
+		t.Fatalf("updating sts status: %v", err)
+	}
+	var workerSts1 appsv1.StatefulSet
+	if err := c.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-1"}, &workerSts1); err != nil {
+		t.Fatalf("reading worker sts 1: %v", err)
+	}
+	workerSts1.Status.ReadyReplicas = 1
+	workerSts1.Status.AvailableReplicas = 1
+	if err := c.Status().Update(ctx, &workerSts1); err != nil {
+		t.Fatalf("updating worker sts 1 status: %v", err)
+	}
+	var workerPod1 corev1.Pod
+	if err := c.Get(ctx, types.NamespacedName{Namespace: lws.Namespace, Name: lws.Name + "-1-1"}, &workerPod1); err != nil {
+		t.Fatalf("reading worker pod 1: %v", err)
+	}
+	workerPod1.Status = corev1.PodStatus{
+		Phase:      corev1.PodRunning,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+	}
+	if err := c.Status().Update(ctx, &workerPod1); err != nil {
+		t.Fatalf("updating worker pod 1 status: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() after B1 ready error = %v", err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, &updatedSts); err != nil {
+		t.Fatalf("reading sts: %v", err)
+	}
+	if gotPartition := *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; gotPartition != 0 {
+		t.Fatalf("after B1 becomes whole-group Ready, partition = %d, want 0", gotPartition)
+	}
+}
+
+// TestMaxSurgeReductionReprotectsRemainingOldReadyGroups covers Case 5 when
+// desired replicas stay at 2 while maxSurge drops from 1 to 0, removing the
+// Ready surge group B2 that previously allowed partition=0.
+func TestMaxSurgeReductionReprotectsRemainingOldReadyGroups(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(2).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-uid"
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       lws.Name,
+			Namespace:  lws.Namespace,
+			UID:        "leader-sts-uid",
+			Generation: 4,
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey: lws.Name,
+				leaderworkerset.RevisionKey:     "rev-2",
+				leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+			},
+			Annotations: map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "2",
+				rolloutBaselineAnnotationKey:          "2",
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To[int32](3),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+			},
+		},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 4,
+			Replicas:           3,
+			CurrentRevision:    "sts-rev-1",
+			UpdateRevision:     "sts-rev-2",
+		},
+	}
+
+	objs := []client.Object{lws, sts}
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 0, 2, "rev-1", "sts-rev-1", true, true, true)...)
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 1, 2, "rev-2", "sts-rev-2", true, false, false)...)
+	objs = append(objs, makeOwnedGroupObjects(lws, sts, 2, 2, "rev-2", "sts-rev-2", true, true, true)...)
+
+	_, r := newCombinedTestClient(t, objs...)
+	plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
+	if err != nil {
+		t.Fatalf("planRollingUpdate() error = %v", err)
+	}
+	if plan.replicas != 2 || plan.partition != 1 {
+		t.Fatalf("plan (replicas, partition) = (%d, %d), want (2, 1) to protect A0 when surge B2 is retired",
+			plan.replicas, plan.partition)
+	}
+}
