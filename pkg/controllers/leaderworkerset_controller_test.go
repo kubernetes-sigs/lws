@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +53,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -2786,6 +2788,60 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 			t.Errorf("expected worker statefulset to be retained under Sequential policy, got %d", len(stsList.Items))
 		}
 	})
+}
+
+func TestLeaderWorkerSetReconcilerClearsMetricsOfDeletedLWS(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	gone := types.NamespacedName{Namespace: "metrics-deleted", Name: "test-sample"}
+	kept := types.NamespacedName{Namespace: "metrics-kept", Name: "test-sample"}
+	metrics.GroupRecreated(gone.Namespace, gone.Name, metrics.GroupRecreateReasonPodRestart)
+	metrics.GroupRecreated(gone.Namespace, gone.Name, metrics.GroupRecreateReasonUpgradeSplit)
+	metrics.GroupRestartBudgetExhausted(gone.Namespace, gone.Name)
+	metrics.GroupRestartBackedOff(gone.Namespace, gone.Name)
+	metrics.GroupRecreated(kept.Namespace, kept.Name, metrics.GroupRecreateReasonPodRestart)
+	t.Cleanup(func() { metrics.ClearLeaderWorkerSet(kept.Namespace, kept.Name) })
+
+	r := NewLeaderWorkerSetReconciler(fake.NewClientBuilder().WithScheme(scheme).Build(), scheme, fakeEventRecorder{})
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: gone}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	// DeleteLabelValues reports whether the series existed.
+	for name, existed := range map[string]bool{
+		"group_recreations_total PodRestart":   metrics.GroupRecreationsTotal.DeleteLabelValues(gone.Namespace, gone.Name, metrics.GroupRecreateReasonPodRestart),
+		"group_recreations_total UpgradeSplit": metrics.GroupRecreationsTotal.DeleteLabelValues(gone.Namespace, gone.Name, metrics.GroupRecreateReasonUpgradeSplit),
+		"group_restart_budget_exhausted_total": metrics.GroupRestartBudgetExhaustedTotal.DeleteLabelValues(gone.Namespace, gone.Name),
+		"group_restart_backoffs_total":         metrics.GroupRestartBackoffsTotal.DeleteLabelValues(gone.Namespace, gone.Name),
+	} {
+		if existed {
+			t.Errorf("the deleted LeaderWorkerSet still has a %s series", name)
+		}
+	}
+	if got := testutil.ToFloat64(metrics.GroupRecreationsTotal.WithLabelValues(kept.Namespace, kept.Name, metrics.GroupRecreateReasonPodRestart)); got != 1 {
+		t.Errorf("group_recreations_total of another LeaderWorkerSet = %v, want 1", got)
+	}
+}
+
+func TestLeaderWorkerSetReconcilerInitializesMetrics(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	lws := wrappers.BuildLeaderWorkerSet("metrics-init").Obj()
+	t.Cleanup(func() { metrics.ClearLeaderWorkerSet(lws.Namespace, lws.Name) })
+
+	r := NewLeaderWorkerSetReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).WithStatusSubresource(lws).Build(), scheme, fakeEventRecorder{})
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	for name, existed := range map[string]bool{
+		"group_recreations_total PodRestart":   metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonPodRestart),
+		"group_recreations_total UpgradeSplit": metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit),
+		"group_restart_budget_exhausted_total": metrics.GroupRestartBudgetExhaustedTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+		"group_restart_backoffs_total":         metrics.GroupRestartBackoffsTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+	} {
+		if !existed {
+			t.Errorf("the LeaderWorkerSet has no %s series", name)
+		}
+	}
 }
 
 func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
