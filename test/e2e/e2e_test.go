@@ -28,6 +28,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -702,14 +703,37 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		gomega.Eventually(verifyMetricsServerStarted).Should(gomega.Succeed())
 
 		ginkgo.By("creating the curl-metrics job to access the metrics endpoint")
-		cmd = exec.Command("kubectl", "create", "job", "curl-metrics",
-			"--namespace", namespace,
-			"--image=curlimages/curl:7.78.0",
-			"--", "/bin/sh", "-c", fmt.Sprintf(
-				"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics",
-				token, metricsServiceName, namespace))
-		_, err = testutils.Run(cmd)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create curl-metrics job")
+		// The e2e config enforces the restricted Pod Security standard on the
+		// controller namespace, so the curl pod must meet it as well.
+		curlJob := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
+			Spec: batchv1.JobSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						SecurityContext: &corev1.PodSecurityContext{
+							RunAsNonRoot: ptr.To(true),
+							// The image runs as curl_user (UID 100). runAsNonRoot
+							// can only be checked against a numeric UID.
+							RunAsUser:      ptr.To[int64](100),
+							SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						},
+						Containers: []corev1.Container{{
+							Name:  "curl-metrics",
+							Image: "curlimages/curl:7.78.0",
+							Command: []string{"/bin/sh", "-c", fmt.Sprintf(
+								"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics",
+								token, metricsServiceName, namespace)},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptr.To(false),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
+						}},
+					},
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, curlJob)).To(gomega.Succeed(), "Failed to create curl-metrics job")
 
 		ginkgo.By("waiting for the curl-metrics pod to complete.")
 		verifyCurlUp := func(g gomega.Gomega) {
