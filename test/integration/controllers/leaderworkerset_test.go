@@ -911,8 +911,13 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// we could only check the leader pod is marked for deletion since it will be pending on its dependents; and the dependents
 						// won't be deleted automatically in integration test
 						var leaderPod corev1.Pod
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-						gomega.Expect(leaderPod.DeletionTimestamp != nil).To(gomega.BeTrue())
+						// The controller deletes the leader pod asynchronously after
+						// observing the worker pod deletion, so poll until it is marked
+						// for deletion.
+						gomega.Eventually(func() bool {
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+							return leaderPod.DeletionTimestamp != nil
+						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 						testing.ValidateEvent(ctx, k8sClient, "RecreateGroup", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleted leader pod test-sample-0 to recreate group 0", lws.Namespace)
 					},
 				},
