@@ -698,6 +698,67 @@ func TestVolcanoProvider_CreatePodGroupSetsPriorityClassName(t *testing.T) {
 	})
 }
 
+func TestVolcanoProvider_CreatePodGroupPriorityClassNameEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name         string
+		size         *int32
+		leaderTmpl   *corev1.PodTemplateSpec
+		workerTmpl   corev1.PodTemplateSpec
+		wantMinMem   int32
+		wantPriority string
+	}{
+		{
+			name:         "nil size with matching templates does not panic",
+			size:         nil,
+			leaderTmpl:   &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "high-priority"}},
+			workerTmpl:   corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "high-priority"}},
+			wantMinMem:   1,
+			wantPriority: "high-priority",
+		},
+		{
+			name:         "nil leader template uses worker priority class",
+			size:         ptr.To[int32](2),
+			leaderTmpl:   nil,
+			workerTmpl:   corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "worker-priority"}},
+			wantMinMem:   2,
+			wantPriority: "worker-priority",
+		},
+		{
+			name:         "mismatched leader and worker priority classes leave the field empty",
+			size:         ptr.To[int32](2),
+			leaderTmpl:   &corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "leader-priority"}},
+			workerTmpl:   corev1.PodTemplateSpec{Spec: corev1.PodSpec{PriorityClassName: "worker-priority"}},
+			wantMinMem:   2,
+			wantPriority: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := &leaderworkerset.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-lws", Namespace: "default"},
+				Spec: leaderworkerset.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+						Size:           tc.size,
+						LeaderTemplate: tc.leaderTmpl,
+						WorkerTemplate: tc.workerTmpl,
+					},
+				},
+			}
+			leaderPod := createTestLeaderPod("test-lws-0", "default", "test-lws", "0", "abc123")
+			pgName := leaderPod.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			require.NoError(t, NewVolcanoProvider(fakeClient).CreatePodGroupIfNotExists(ctx, lws, leaderPod))
+
+			var pg volcanov1beta1.PodGroup
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg))
+			assert.Equal(t, tc.wantMinMem, pg.Spec.MinMember)
+			assert.Equal(t, tc.wantPriority, pg.Spec.PriorityClassName)
+		})
+	}
+}
+
 // Helper function to create test leader pods
 func createTestLeaderPod(name, namespace, lwsName, groupIndex, revision string) *corev1.Pod {
 	return &corev1.Pod{
