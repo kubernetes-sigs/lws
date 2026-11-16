@@ -391,45 +391,34 @@ func exclusiveAffinityApplied(pod corev1.Pod, groupUniqueKey, topologyKey, podAf
 	}
 	// A Preferred enforcement places the anti-affinity in the weighted list, so
 	// the pair is recognized there too, or every invocation of the webhook
-	// would append it again. The term is matched by what it selects, not only by
-	// the topology key it uses: a pod whose template already carries its own
+	// would append it again. The term is matched by the label key it references,
+	// not only by the topology key: a pod whose template already carries its own
 	// preferred anti-affinity on the same topology key is not the placement this
 	// webhook injects, and treating it as one would skip the injection and
 	// silently drop the exclusivity guarantee.
 	for _, term := range pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
-		if term.PodAffinityTerm.TopologyKey == topologyKey && selectsExclusiveGroups(term.PodAffinityTerm.LabelSelector, podAffinityKey, groupUniqueKey) {
+		if term.PodAffinityTerm.TopologyKey == topologyKey && selectorReferencesKey(term.PodAffinityTerm.LabelSelector, podAffinityKey) {
 			hasAntiAffinity = true
 		}
 	}
 	return hasAffinity && hasAntiAffinity
 }
 
-// selectsExclusiveGroups reports whether the selector carries the expressions
-// the injected anti-affinity uses to repel the groups of this LeaderWorkerSet:
-// the affinity key exists and it is not this group. Extra expressions, such as
-// the set name scope, are allowed.
-func selectsExclusiveGroups(selector *metav1.LabelSelector, podAffinityKey, groupUniqueKey string) bool {
+// selectorReferencesKey reports whether the selector carries an expression on
+// podAffinityKey. That key belongs to the controller, so only an injected term
+// references it. The value cannot be compared: a hash identity group derives a
+// fresh key on every admission pass, so a value check would treat an already
+// injected term as missing and append a second one.
+func selectorReferencesKey(selector *metav1.LabelSelector, podAffinityKey string) bool {
 	if selector == nil {
 		return false
 	}
-	hasExists := false
-	hasNotIn := false
 	for _, expression := range selector.MatchExpressions {
-		if expression.Key != podAffinityKey {
-			continue
-		}
-		switch expression.Operator {
-		case metav1.LabelSelectorOpExists:
-			hasExists = true
-		case metav1.LabelSelectorOpNotIn:
-			for _, value := range expression.Values {
-				if value == groupUniqueKey {
-					hasNotIn = true
-				}
-			}
+		if expression.Key == podAffinityKey {
+			return true
 		}
 	}
-	return hasExists && hasNotIn
+	return false
 }
 
 func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {

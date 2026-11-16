@@ -384,8 +384,21 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		if len(weighted) != 2 {
 			t.Errorf("preferred anti-affinity terms = %d, want 2 (the user term plus the injected one)", len(weighted))
 		}
-		if !selectsExclusiveGroups(weighted[len(weighted)-1].PodAffinityTerm.LabelSelector, leaderworkerset.GroupUniqueHashLabelKey, "test-key") {
-			t.Error("the injected preferred anti-affinity term is missing")
+		injected := weighted[len(weighted)-1].PodAffinityTerm.LabelSelector
+		hasExists, hasNotIn := false, false
+		for _, expression := range injected.MatchExpressions {
+			if expression.Key != leaderworkerset.GroupUniqueHashLabelKey {
+				continue
+			}
+			switch expression.Operator {
+			case metav1.LabelSelectorOpExists:
+				hasExists = true
+			case metav1.LabelSelectorOpNotIn:
+				hasNotIn = len(expression.Values) == 1 && expression.Values[0] == "test-key"
+			}
+		}
+		if !hasExists || !hasNotIn {
+			t.Errorf("injected preferred anti-affinity selector = %#v, want group-key Exists and NotIn test-key", injected)
 		}
 	})
 }
@@ -522,6 +535,32 @@ func TestExclusiveAffinityApplied(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 										{Key: "leaderworkerset.sigs.k8s.io/group-key", Operator: metav1.LabelSelectorOpExists},
 										{Key: "leaderworkerset.sigs.k8s.io/group-key", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"test-key"}},
+									}},
+								},
+							}},
+						},
+					},
+				},
+			},
+			expectedAppliedExclusivePlacement: true,
+			topologyKey:                       "topologyKey",
+		},
+		{
+			name: "A preferred anti-affinity carrying a stale group key still counts as applied",
+			pod: corev1.Pod{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{TopologyKey: "topologyKey"}},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+								Weight: 100,
+								PodAffinityTerm: corev1.PodAffinityTerm{
+									TopologyKey: "topologyKey",
+									LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+										{Key: "leaderworkerset.sigs.k8s.io/group-key", Operator: metav1.LabelSelectorOpExists},
+										{Key: "leaderworkerset.sigs.k8s.io/group-key", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"a-stale-key"}},
 									}},
 								},
 							}},
