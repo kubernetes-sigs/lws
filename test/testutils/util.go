@@ -211,7 +211,7 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	// ExclusiveTopology, so only the Slice scope is recorded.
 	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
-		if scope == leaderworkerset.PlacementExclusiveSlice {
+		if scope == leaderworkerset.PlacementExclusiveSet {
 			pod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
 		}
 		// Mirror the leader template: a missing enforcement resolves as
@@ -222,7 +222,7 @@ func makeLeaderPod(leaderSts appsv1.StatefulSet, lws *leaderworkerset.LeaderWork
 	}
 	if subGroupTopologyKey, subGroupScope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 		pod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = subGroupTopologyKey
-		if subGroupScope == leaderworkerset.PlacementExclusiveSlice {
+		if subGroupScope == leaderworkerset.PlacementExclusiveSet {
 			pod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(subGroupScope)
 		}
 		if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {

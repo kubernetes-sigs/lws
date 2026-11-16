@@ -1311,28 +1311,28 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			subGroupPolicy: exclusive("rack"),
 		},
 		{
-			name: "group ExclusiveSlice is accepted without annotations",
+			name: "group ExclusiveSet is accepted without annotations",
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSlice,
+				Type:     v1.PlacementExclusiveSet,
 				Topology: "topology.kubernetes.io/zone",
 			},
 		},
 		{
-			name: "group and subgroup ExclusiveSlice on different topologies",
+			name: "group and subgroup ExclusiveSet on different topologies",
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSlice,
+				Type:     v1.PlacementExclusiveSet,
 				Topology: "topology.kubernetes.io/zone",
 			},
 			subGroupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSlice,
+				Type:     v1.PlacementExclusiveSet,
 				Topology: "cloud.google.com/gke-nodepool",
 			},
 		},
 		{
-			name:        "group ExclusiveSlice on the subgroup annotation's topology",
+			name:        "group ExclusiveSet on the subgroup annotation's topology",
 			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSlice,
+				Type:     v1.PlacementExclusiveSet,
 				Topology: "rack",
 			},
 			errSubstr: "spec.placementPolicy.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
@@ -1429,26 +1429,26 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 			errSubstr:     "spec.placementPolicy.topology",
 			errContains:   "conflicts with annotation leaderworkerset.sigs.k8s.io/exclusive-topology=zone on the leader template",
 		},
-		{name: "group ExclusiveSlice without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"}},
+		{name: "group ExclusiveSet without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"}},
 		{
-			name:          "group ExclusiveSlice with the annotation on the worker template is rejected",
+			name:          "group ExclusiveSet with the annotation on the worker template is rejected",
 			annotations:   map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
 			annotationsOn: "worker",
-			groupPolicy:   &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			groupPolicy:   &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"},
 			errSubstr:     "spec.placementPolicy.topology",
 			errContains:   "requires removing annotation",
 		},
 		{
-			name:        "group ExclusiveSlice with the annotation is rejected",
+			name:        "group ExclusiveSet with the annotation is rejected",
 			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
-			groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"},
 			errSubstr:   "spec.placementPolicy.topology",
 			errContains: "requires removing annotation",
 		},
 		{
-			name:           "subgroup ExclusiveSlice with the annotation is rejected",
+			name:           "subgroup ExclusiveSet with the annotation is rejected",
 			annotations:    map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
-			subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"},
+			subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"},
 			errSubstr:      "spec.placementPolicy.subGroup.topology",
 			errContains:    "requires removing annotation",
 		},
@@ -1509,7 +1509,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 	annotations := func(keys ...string) map[string]string {
 		m := map[string]string{}
 		for _, k := range keys {
-			m[k] = "ExclusiveSlice"
+			m[k] = "ExclusiveSet"
 		}
 		return m
 	}
@@ -1535,7 +1535,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
 		lws.Spec.PlacementPolicy = &v1.PlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
 		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{
-			v1.ExclusiveScopeAnnotationKey:       "ExclusiveSlice",
+			v1.ExclusiveScopeAnnotationKey:       "ExclusiveSet",
 			v1.ExclusiveEnforcementAnnotationKey: "Preferred",
 		}
 		_, err := r.ValidateCreate(context.Background(), lws)
@@ -1546,7 +1546,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 
 	t.Run("a value unchanged from the old template stays updatable", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveScopeAnnotationKey: "ExclusiveSlice"}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveScopeAnnotationKey: "ExclusiveSet"}
 		old := lws.DeepCopy()
 		if _, err := r.ValidateUpdate(context.Background(), old, lws); err != nil {
 			t.Fatalf("expected an unchanged annotation to be accepted, got %v", err)
@@ -1666,9 +1666,9 @@ func TestValidateSubGroupPlacementPolicyRequiresSubGroups(t *testing.T) {
 		t.Fatalf("expected a None subgroup placement to be accepted without subGroupPolicy, got %v", err)
 	}
 
-	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSlice, Topology: "rack"})
+	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"})
 	err = r.generalValidate(lws).ToAggregate()
 	if err == nil || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
-		t.Fatalf("expected an ExclusiveSlice subgroup placement without subGroupPolicy to be rejected, got %v", err)
+		t.Fatalf("expected an ExclusiveSet subgroup placement without subGroupPolicy to be rejected, got %v", err)
 	}
 }

@@ -19106,18 +19106,18 @@ spec:
                                     guarantee. Defaults to None.
                                   enum:
                                   - None
-                                  - ExclusiveSlice
+                                  - ExclusiveSet
                                   - ExclusiveTopology
                                   type: string
                               type: object
                               x-kubernetes-validations:
                               - message: topology is required when type is ExclusiveTopology
-                                  or ExclusiveSlice
-                                rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSlice''])
+                                  or ExclusiveSet
+                                rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSet''])
                                   || (has(self.topology) && size(self.topology) >
                                   0)'
                               - message: topology must be empty when type is None
-                                rule: self.type in ['ExclusiveTopology', 'ExclusiveSlice']
+                                rule: self.type in ['ExclusiveTopology', 'ExclusiveSet']
                                   || !has(self.topology) || size(self.topology) ==
                                   0
                               - message: enforcement must be Required when type is
@@ -19136,17 +19136,17 @@ spec:
                                 guarantee. Defaults to None.
                               enum:
                               - None
-                              - ExclusiveSlice
+                              - ExclusiveSet
                               - ExclusiveTopology
                               type: string
                           type: object
                           x-kubernetes-validations:
                           - message: topology is required when type is ExclusiveTopology
-                              or ExclusiveSlice
-                            rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSlice''])
+                              or ExclusiveSet
+                            rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSet''])
                               || (has(self.topology) && size(self.topology) > 0)'
                           - message: topology must be empty when type is None
-                            rule: self.type in ['ExclusiveTopology', 'ExclusiveSlice']
+                            rule: self.type in ['ExclusiveTopology', 'ExclusiveSet']
                               || !has(self.topology) || size(self.topology) == 0
                           - message: enforcement must be Required when type is None
                             rule: self.type != 'None' || !has(self.enforcement) ||

@@ -1758,14 +1758,14 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
-			name:     "group ExclusiveSlice placementPolicy",
-			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSlice, Topology: sliceTopology},
+			name:     "group ExclusiveSet placementPolicy",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: sliceTopology},
 			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
 		},
 		{
-			name: "subgroup ExclusiveSlice placementPolicy",
+			name: "subgroup ExclusiveSet placementPolicy",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSlice, Topology: sliceTopology}},
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: sliceTopology}},
 			subGroups: true,
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},

@@ -991,7 +991,7 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 // matching ExclusiveTopology pair is accepted so a value can be moved from the
 // annotation to the field in two steps. A level whose type is None falls back
 // to the annotation, since the API server defaults the type whenever
-// placementPolicy is set. An ExclusiveSlice field is rejected while the
+// placementPolicy is set. An ExclusiveSet field is rejected while the
 // annotation of the same level is set at all: the annotation is globally
 // scoped, so keeping it would silently change which pods the domain is
 // exclusive against.
@@ -1040,7 +1040,7 @@ func exclusiveAnnotationSources(lws *v1.LeaderWorkerSet) []annotationSource {
 }
 
 func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation, source string, fldPath *field.Path) field.ErrorList {
-	if placementType == v1.PlacementExclusiveSlice && annotationValue != "" {
+	if placementType == v1.PlacementExclusiveSet && annotationValue != "" {
 		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
 	}
 	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {

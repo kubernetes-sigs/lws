@@ -591,13 +591,13 @@ const (
 
 // PlacementPolicy defines the topology placement of the pods in each group,
 // and optionally in each subgroup.
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSlice']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSlice"
-// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSlice'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSet']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSet"
+// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 // +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'",message="enforcement must be Required when type is None"
 type PlacementPolicy struct {
 	// type selects the group level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveSlice,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveSet,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -626,13 +626,13 @@ type PlacementPolicy struct {
 
 // SubGroupPlacementPolicy defines the topology placement of the pods in each
 // subgroup.
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSlice']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSlice"
-// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSlice'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSet']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSet"
+// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 // +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'",message="enforcement must be Required when type is None"
 type SubGroupPlacementPolicy struct {
 	// type selects the subgroup level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveSlice,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveSet,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -656,11 +656,11 @@ const (
 	// PlacementNone injects no placement affinity.
 	PlacementNone PlacementType = "None"
 
-	// PlacementExclusiveSlice places all pods of a group, or of a subgroup,
+	// PlacementExclusiveSet places all pods of a group, or of a subgroup,
 	// in one topology domain and keeps the pods of other groups, or subgroups,
 	// of the same LeaderWorkerSet out of that domain. Groups of other
 	// LeaderWorkerSets may share the domain.
-	PlacementExclusiveSlice PlacementType = "ExclusiveSlice"
+	PlacementExclusiveSet PlacementType = "ExclusiveSet"
 
 	// PlacementExclusiveTopology places all pods of a group, or of a subgroup,
 	// in one topology domain and keeps the pods of other groups, or subgroups,

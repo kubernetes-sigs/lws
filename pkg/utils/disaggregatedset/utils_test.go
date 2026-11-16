@@ -545,14 +545,14 @@ func TestComputeRevisionPlacement(t *testing.T) {
 		}}
 	}
 	slice := func(topology string) *leaderworkersetv1.PlacementPolicy {
-		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: topology}
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSet, Topology: topology}
 	}
 	topology := func(topology string) *leaderworkersetv1.PlacementPolicy {
 		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Topology: topology}
 	}
 	subGroupSlice := func(topology string) *leaderworkersetv1.PlacementPolicy {
 		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone,
-			SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: topology}}
+			SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSet, Topology: topology}}
 	}
 
 	// Both revision algorithms must see the same placement identities: a
@@ -568,24 +568,24 @@ func TestComputeRevisionPlacement(t *testing.T) {
 				"an empty policy does not change the identity")
 
 			assert.NotEqual(t, compute(role(nil)), compute(role(slice("rack"))),
-				"enabling ExclusiveSlice must roll out")
+				"enabling ExclusiveSet must roll out")
 			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(slice("block"))),
-				"changing the ExclusiveSlice topology must roll out")
+				"changing the ExclusiveSet topology must roll out")
 			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(topology("rack"))),
 				"switching between the exclusive scopes must roll out")
 			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(nil)),
-				"removing ExclusiveSlice must roll out")
+				"removing ExclusiveSet must roll out")
 
 			assert.NotEqual(t, compute(role(nil)), compute(role(subGroupSlice("rack"))),
-				"enabling a subgroup ExclusiveSlice must roll out")
+				"enabling a subgroup ExclusiveSet must roll out")
 			assert.NotEqual(t, compute(role(subGroupSlice("rack"))), compute(role(subGroupSlice("host"))),
-				"changing the subgroup ExclusiveSlice topology must roll out")
+				"changing the subgroup ExclusiveSet topology must roll out")
 
 			preferred := func(topology string) *leaderworkersetv1.PlacementPolicy {
-				return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: topology,
+				return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSet, Topology: topology,
 					Enforcement: leaderworkersetv1.PlacementPreferred}
 			}
-			assert.Equal(t, compute(role(slice("rack"))), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSlice, Topology: "rack",
+			assert.Equal(t, compute(role(slice("rack"))), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveSet, Topology: "rack",
 				Enforcement: leaderworkersetv1.PlacementRequired})),
 				"a Required enforcement hashes as the absent field, so existing revisions stay valid")
 			assert.NotEqual(t, compute(role(slice("rack"))), compute(role(preferred("rack"))),

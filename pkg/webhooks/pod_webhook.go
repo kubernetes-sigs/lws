@@ -296,7 +296,7 @@ func exclusivePlacementEnforcement(pod *corev1.Pod, annotation string) leaderwor
 // SetExclusiveAffinities set the pod affinity/anti-affinity. The scope decides
 // how widely the anti-affinity repels: ExclusiveTopology keeps every other
 // group out of the domain, matching the deprecated annotations and the physical
-// exclusivity hardware-sliced accelerators need; ExclusiveSlice keeps only the
+// exclusivity hardware-sliced accelerators need; ExclusiveSet keeps only the
 // groups of this LeaderWorkerSet out, scoped by the set name label, so groups of
 // other LeaderWorkerSets may share the domain. The enforcement decides what
 // happens when no free domain remains: Required keeps the anti-affinity
@@ -304,7 +304,7 @@ func exclusivePlacementEnforcement(pod *corev1.Pod, annotation string) leaderwor
 // preference, so the scheduler co-locates the groups instead. The group's own
 // pods are always co-located by the required affinity, which does not soften.
 func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, scope leaderworkerset.PlacementType, enforcement leaderworkerset.PlacementEnforcement) {
-	if exclusiveAffinityApplied(*pod, topologyKey) {
+	if exclusiveAffinityApplied(*pod, groupUniqueKey, topologyKey, podAffinityKey) {
 		return
 	}
 	if pod.Spec.Affinity == nil {
@@ -330,7 +330,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			TopologyKey: topologyKey,
 		})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
-	// An ExclusiveSlice scope limits the repelled pods to the groups of this
+	// An ExclusiveSet scope limits the repelled pods to the groups of this
 	// LeaderWorkerSet, so groups of other LeaderWorkerSets may share the domain.
 	antiAffinityExpressions := []metav1.LabelSelectorRequirement{
 		{
@@ -343,7 +343,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			Values:   []string{groupUniqueKey},
 		},
 	}
-	if scope == leaderworkerset.PlacementExclusiveSlice {
+	if scope == leaderworkerset.PlacementExclusiveSet {
 		if lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]; lwsName != "" {
 			antiAffinityExpressions = append(antiAffinityExpressions, metav1.LabelSelectorRequirement{
 				Key:      leaderworkerset.SetNameLabelKey,
@@ -373,7 +373,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 const preferredEnforcementWeight int32 = 100
 
 // exclusiveAffinityApplied return true if the exclusive placement terms have been applied
-func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
+func exclusiveAffinityApplied(pod corev1.Pod, groupUniqueKey, topologyKey, podAffinityKey string) bool {
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil || pod.Spec.Affinity.PodAntiAffinity == nil {
 		return false
 	}
@@ -389,15 +389,47 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 			hasAntiAffinity = true
 		}
 	}
-	// A Preferred enforcement places the anti-affinity in the weighted list,
-	// so the pair is recognized there too, or every invocation of the webhook
-	// would append it again.
+	// A Preferred enforcement places the anti-affinity in the weighted list, so
+	// the pair is recognized there too, or every invocation of the webhook
+	// would append it again. The term is matched by what it selects, not only by
+	// the topology key it uses: a pod whose template already carries its own
+	// preferred anti-affinity on the same topology key is not the placement this
+	// webhook injects, and treating it as one would skip the injection and
+	// silently drop the exclusivity guarantee.
 	for _, term := range pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
-		if term.PodAffinityTerm.TopologyKey == topologyKey {
+		if term.PodAffinityTerm.TopologyKey == topologyKey && selectsExclusiveGroups(term.PodAffinityTerm.LabelSelector, podAffinityKey, groupUniqueKey) {
 			hasAntiAffinity = true
 		}
 	}
 	return hasAffinity && hasAntiAffinity
+}
+
+// selectsExclusiveGroups reports whether the selector carries the expressions
+// the injected anti-affinity uses to repel the groups of this LeaderWorkerSet:
+// the affinity key exists and it is not this group. Extra expressions, such as
+// the set name scope, are allowed.
+func selectsExclusiveGroups(selector *metav1.LabelSelector, podAffinityKey, groupUniqueKey string) bool {
+	if selector == nil {
+		return false
+	}
+	hasExists := false
+	hasNotIn := false
+	for _, expression := range selector.MatchExpressions {
+		if expression.Key != podAffinityKey {
+			continue
+		}
+		switch expression.Operator {
+		case metav1.LabelSelectorOpExists:
+			hasExists = true
+		case metav1.LabelSelectorOpNotIn:
+			for _, value := range expression.Values {
+				if value == groupUniqueKey {
+					hasNotIn = true
+				}
+			}
+		}
+	}
+	return hasExists && hasNotIn
 }
 
 func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {

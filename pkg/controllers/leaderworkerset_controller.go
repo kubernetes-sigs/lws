@@ -1348,7 +1348,7 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		// scope is stamped: stamping the global scope would change the
 		// template of existing groups on controller upgrade and roll them
 		// without a revision.
-		if scope == leaderworkerset.PlacementExclusiveSlice {
+		if scope == leaderworkerset.PlacementExclusiveSet {
 			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
 		}
 		// A missing enforcement resolves as Required, for the same upgrade
@@ -1362,7 +1362,7 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if topologyKey, scope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
-			if scope == leaderworkerset.PlacementExclusiveSlice {
+			if scope == leaderworkerset.PlacementExclusiveSet {
 				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(scope)
 			}
 			if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {

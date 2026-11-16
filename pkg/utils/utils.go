@@ -106,16 +106,16 @@ func CalculatePGMinResources(lws *leaderworkerset.LeaderWorkerSet) corev1.Resour
 }
 
 // IsExclusivePlacement reports whether the placement type places groups, or
-// subgroups, in exclusive topology domains. ExclusiveSlice scopes the
+// subgroups, in exclusive topology domains. ExclusiveSet scopes the
 // exclusivity to one LeaderWorkerSet; ExclusiveTopology is exclusive against
 // every workload.
 func IsExclusivePlacement(t leaderworkerset.PlacementType) bool {
-	return t == leaderworkerset.PlacementExclusiveSlice || t == leaderworkerset.PlacementExclusiveTopology
+	return t == leaderworkerset.PlacementExclusiveSet || t == leaderworkerset.PlacementExclusiveTopology
 }
 
 // ExclusivePlacement returns the topology key, the placement type (the
 // exclusivity scope) and whether group level exclusive placement is enabled.
-// An ExclusiveSlice or ExclusiveTopology spec.placementPolicy takes precedence
+// An ExclusiveSet or ExclusiveTopology spec.placementPolicy takes precedence
 // over the exclusive-topology annotation. A None type falls back to the
 // annotation, because the API server defaults the type to None whenever
 // placementPolicy is set, including when only subGroup is. The annotation has
@@ -131,7 +131,7 @@ func ExclusivePlacement(lws *leaderworkerset.LeaderWorkerSet) (string, leaderwor
 
 // SubGroupExclusivePlacement returns the topology key, the placement type (the
 // exclusivity scope) and whether subgroup level exclusive placement is
-// enabled. An ExclusiveSlice or ExclusiveTopology spec.placementPolicy.subGroup
+// enabled. An ExclusiveSet or ExclusiveTopology spec.placementPolicy.subGroup
 // takes precedence over the subgroup-exclusive-topology annotation, which
 // resolves as ExclusiveTopology. Subgroup placement needs subgroups, so it is
 // disabled without a subGroupPolicy.
