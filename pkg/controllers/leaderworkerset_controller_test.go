@@ -1935,11 +1935,31 @@ func TestLeaderWorkerSetPodWatchPredicate(t *testing.T) {
 		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
 		pred := r.podWatchPredicate()
 
+		hashWorkerPod := workerPod.DeepCopy()
+		hashWorkerPod.Annotations = map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+		}
+		unindexedPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-pod",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+				},
+			},
+		}
+
 		if !pred.Create(event.CreateEvent{Object: leaderPod}) {
 			t.Errorf("expected Create(leaderPod) to be true, got false")
 		}
-		if pred.Create(event.CreateEvent{Object: workerPod}) {
-			t.Errorf("expected Create(workerPod) to be false, got true")
+		if !pred.Create(event.CreateEvent{Object: workerPod}) {
+			t.Errorf("expected Create(Ordinal workerPod) to be true, got false")
+		}
+		if pred.Create(event.CreateEvent{Object: hashWorkerPod}) {
+			t.Errorf("expected Create(Hash workerPod) to be false, got true")
+		}
+		if pred.Create(event.CreateEvent{Object: unindexedPod}) {
+			t.Errorf("expected Create(unindexedPod) to be false, got true")
 		}
 		if pred.Create(event.CreateEvent{Object: nil}) {
 			t.Errorf("expected Create(nil) to be false, got true")

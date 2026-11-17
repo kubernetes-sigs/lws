@@ -101,7 +101,10 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		return ctrl.Result{}, err
 	}
 
-	var rolloutBaseline *int32
+	var (
+		rolloutBaseline *int32
+		converged       bool
+	)
 	if deploy != nil {
 		lwsReplicas := *lws.Spec.Replicas
 		if deploy.Annotations[rolloutBaselineAnnotationKey] == "" {
@@ -112,7 +115,8 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 			// A recorded baseline belongs to the rollout of the Deployment's
 			// current revision. A new revision inherits it only while that
 			// rollout is still in progress.
-			converged, err := r.isHashRolloutConverged(ctx, lws, deploy, revisionKey)
+			var err error
+			converged, err = r.isHashRolloutConverged(ctx, lws, deploy, revisionKey)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -137,7 +141,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		var updateStatus func() (bool, error)
 		if deploy != nil {
 			// The Deployment controller adds the surge pods of a rollout itself.
-			scaleDown = func() error { return r.scaleDownLeaderDeployment(ctx, deploy, *lws.Spec.Replicas) }
+			scaleDown = func() error { return r.scaleDownLeaderDeployment(ctx, lws, deploy, converged) }
 			updateStatus = func() (bool, error) { return r.updateStatusHash(ctx, lws, targetRevisionKey) }
 		}
 		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
@@ -298,11 +302,36 @@ func (r *LeaderWorkerSetReconciler) getLeaderDeployment(ctx context.Context, lws
 	return deploy, nil
 }
 
-func (r *LeaderWorkerSetReconciler) scaleDownLeaderDeployment(ctx context.Context, deploy *appsv1.Deployment, desiredReplicas int32) error {
+func (r *LeaderWorkerSetReconciler) scaleDownLeaderDeployment(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, deploy *appsv1.Deployment, converged bool) error {
+	desiredReplicas := *lws.Spec.Replicas
 	if deploy.Spec.Replicas == nil || desiredReplicas >= *deploy.Spec.Replicas {
 		return nil
 	}
+	var baseline *int32
+	if deploy.Annotations[rolloutBaselineAnnotationKey] != "" {
+		if converged {
+			delete(deploy.Annotations, rolloutBaselineAnnotationKey)
+		} else {
+			clamped := resolveDeploymentRolloutBaseline(deploy, desiredReplicas)
+			baseline = &clamped
+			deploy.Annotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(clamped))
+		}
+	}
+	maxUnavailable, err := leaderDeploymentMaxUnavailable(lws, baseline)
+	if err != nil {
+		return err
+	}
 	deploy.Spec.Replicas = ptr.To(desiredReplicas)
+	if deploy.Spec.Strategy.RollingUpdate != nil {
+		if deploy.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+			surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(deploy.Spec.Strategy.RollingUpdate.MaxSurge, 100, true)
+			unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, 100, false)
+			if surgeErr == nil && unavailableErr == nil && surge == 0 && unavailable == 0 {
+				maxUnavailable = intstr.FromInt32(1)
+			}
+		}
+		deploy.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+	}
 	return r.Update(ctx, deploy)
 }
 
@@ -422,28 +451,14 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 	}
 
 	deploymentLabels, deploymentAnnotations := leaderMetadata(lws, revisionKey)
-	rollingUpdate := lws.Spec.RolloutStrategy.RollingUpdateConfiguration
-	maxUnavailable := rollingUpdate.MaxUnavailable
-	if *lws.Spec.Replicas == 0 {
-		// LWS permits two zero budgets at zero replicas; Deployments do not.
-		// Resolve at 100 to distinguish zero from positive percentages. Only
-		// the empty Deployment gets a fallback, never the LWS's own settings.
-		surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&rollingUpdate.MaxSurge, 100, true)
-		unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, 100, false)
-		if surgeErr == nil && unavailableErr == nil && surge == 0 && unavailable == 0 {
-			maxUnavailable = intstr.FromInt32(1)
-		}
-	}
 	if rolloutBaseline != nil {
 		deploymentAnnotations[rolloutBaselineAnnotationKey] = strconv.Itoa(int(*rolloutBaseline))
-		if *lws.Spec.Replicas > *rolloutBaseline {
-			floor, err := rolloutFloor(lws, *rolloutBaseline, *lws.Spec.Replicas)
-			if err != nil {
-				return nil, err
-			}
-			maxUnavailable = intstr.FromInt32(*lws.Spec.Replicas - floor)
-		}
 	}
+	maxUnavailable, err := leaderDeploymentMaxUnavailable(lws, rolloutBaseline)
+	if err != nil {
+		return nil, err
+	}
+	rollingUpdate := lws.Spec.RolloutStrategy.RollingUpdateConfiguration
 
 	deploymentConfig := appsapplyv1.Deployment(lws.Name, lws.Namespace).
 		WithSpec(appsapplyv1.DeploymentSpec().
@@ -463,6 +478,32 @@ func constructLeaderDeploymentApplyConfiguration(lws *leaderworkerset.LeaderWork
 		WithAnnotations(deploymentAnnotations)
 
 	return deploymentConfig, nil
+}
+
+func leaderDeploymentMaxUnavailable(lws *leaderworkerset.LeaderWorkerSet, rolloutBaseline *int32) (intstr.IntOrString, error) {
+	rollingUpdate := lws.Spec.RolloutStrategy.RollingUpdateConfiguration
+	if rollingUpdate == nil {
+		return intstr.FromInt32(1), nil
+	}
+	maxUnavailable := rollingUpdate.MaxUnavailable
+	if *lws.Spec.Replicas == 0 {
+		// LWS permits two zero budgets at zero replicas; Deployments do not.
+		// Resolve at 100 to distinguish zero from positive percentages. Only
+		// the empty Deployment gets a fallback, never the LWS's own settings.
+		surge, surgeErr := intstr.GetScaledValueFromIntOrPercent(&rollingUpdate.MaxSurge, 100, true)
+		unavailable, unavailableErr := intstr.GetScaledValueFromIntOrPercent(&maxUnavailable, 100, false)
+		if surgeErr == nil && unavailableErr == nil && surge == 0 && unavailable == 0 {
+			maxUnavailable = intstr.FromInt32(1)
+		}
+	}
+	if rolloutBaseline != nil && *lws.Spec.Replicas > *rolloutBaseline {
+		floor, err := rolloutFloor(lws, *rolloutBaseline, *lws.Spec.Replicas)
+		if err != nil {
+			return intstr.IntOrString{}, err
+		}
+		maxUnavailable = intstr.FromInt32(*lws.Spec.Replicas - floor)
+	}
+	return maxUnavailable, nil
 }
 
 // updateStatusHash computes LWS status and conditions from the leader Deployment and

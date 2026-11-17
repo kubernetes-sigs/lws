@@ -275,7 +275,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if leaderSts != nil {
 			// replicas is the target of the rollout, which includes the surge
 			// replicas, so a scheduling error during a rollout keeps them.
-			scaleDown = func() error { return r.scaleDownLeaderStatefulSet(ctx, leaderSts, replicas) }
+			scaleDown = func() error { return r.scaleDownLeaderStatefulSet(ctx, leaderSts, replicas, partition) }
 			updateStatus = func() (bool, error) { return r.updateStatus(ctx, lws, targetRevisionKey) }
 		}
 		return r.handleWorkloadSchedulingError(ctx, err, scaleDown, updateStatus)
@@ -546,11 +546,15 @@ func (r *LeaderWorkerSetReconciler) handleWorkloadSchedulingError(
 	return ctrl.Result{}, err
 }
 
-func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Context, leaderSts *appsv1.StatefulSet, desiredReplicas int32) error {
+func (r *LeaderWorkerSetReconciler) scaleDownLeaderStatefulSet(ctx context.Context, leaderSts *appsv1.StatefulSet, desiredReplicas, partition int32) error {
 	if leaderSts.Spec.Replicas == nil || desiredReplicas >= *leaderSts.Spec.Replicas {
 		return nil
 	}
 	leaderSts.Spec.Replicas = ptr.To(desiredReplicas)
+	if leaderSts.Spec.UpdateStrategy.RollingUpdate != nil &&
+		partition > ptr.Deref(leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition, 0) {
+		leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To(partition)
+	}
 	return r.Update(ctx, leaderSts)
 }
 
@@ -596,7 +600,14 @@ func (r *LeaderWorkerSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *LeaderWorkerSetReconciler) podWatchPredicate() predicate.Funcs {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object != nil && e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0"
+			if e.Object == nil || e.Object.GetLabels()[leaderworkerset.SetNameLabelKey] == "" {
+				return false
+			}
+			if e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] == "0" {
+				return true
+			}
+			return e.Object.GetAnnotations()[leaderworkerset.GroupIdentityAnnotationKey] != string(leaderworkerset.GroupIdentityHash) &&
+				e.Object.GetLabels()[leaderworkerset.WorkerIndexLabelKey] != ""
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			if e.Object == nil {
@@ -869,18 +880,19 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		if err != nil {
 			return rollingUpdatePlan{}, err
 		}
+		floor, err := rolloutFloor(lws, baseline, lwsReplicas)
+		if err != nil {
+			return rollingUpdatePlan{}, err
+		}
 		if stsReplicas < lwsReplicas {
 			return rollingUpdatePlan{
 				partition: min(lwsReplicas, stsReplicas),
 				replicas:  lwsReplicas,
 				baseline:  ptr.To(baseline),
+				floor:     floor,
 			}, nil
 		}
 		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsReplicas)
-		floor, err := rolloutFloor(lws, baseline, lwsReplicas)
-		if err != nil {
-			return rollingUpdatePlan{}, err
-		}
 		var requeue bool
 		if targetReplicas < stsReplicas && floor > 0 {
 			states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
@@ -907,6 +919,41 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
 	hasRolloutBaseline := sts.Annotations[rolloutBaselineAnnotationKey] != ""
+	stsObserved := sts.Status.ObservedGeneration == 0 || sts.Status.ObservedGeneration >= sts.Generation
+	var (
+		states       []replicaState
+		hasUncertain bool
+		statesRead   bool
+	)
+	readStates := func() error {
+		if statesRead {
+			return nil
+		}
+		var err error
+		states, _, hasUncertain, err = r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
+		if err != nil {
+			return err
+		}
+		statesRead = true
+		readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
+		return nil
+	}
+	if hasRolloutBaseline && partition <= userPartition && stsObserved && stsReplicas != lwsReplicas {
+		if prevReplicas, err := parseNonNegativeInt32(sts.Annotations[leaderworkerset.ReplicasAnnotationKey]); err == nil {
+			if err := readStates(); err != nil {
+				return rollingUpdatePlan{}, err
+			}
+			// On scale-up, no ordinals are retired, so a rollout whose [0, prevReplicas)
+			// groups all run revisionKey can clear its baseline immediately. On
+			// scale-down, keep the baseline unless [0, prevReplicas) are also Ready so
+			// preserveFloorDuringSurgeTrim still protects the floor while groups start.
+			convergedForScale := allUpdatedAndReadyFrom(states, 0, prevReplicas) ||
+				(stsReplicas < lwsReplicas && !rolloutBaselineActive(states, partition, userPartition, prevReplicas))
+			if !hasUncertain && convergedForScale {
+				hasRolloutBaseline = false
+			}
+		}
+	}
 	// DisaggregatedSet approves child reductions using availability across revisions.
 	// Do not invent native surge for its replica-only updates. The previous desired
 	// count distinguishes a new scale request from existing native rollout surplus.
@@ -949,7 +996,6 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	if err != nil {
 		return rollingUpdatePlan{}, err
 	}
-	stsObserved := sts.Status.ObservedGeneration == 0 || sts.Status.ObservedGeneration >= sts.Generation
 	// A rollout is active when a baseline is recorded or the partition is above
 	// the user partition. Replica states cannot tell this: a group with no
 	// leader pod or no worker StatefulSet is not updated, but it is not on an
@@ -969,11 +1015,9 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	// the previous generation) so condemned ordinals are retired and
 	// ReplicasAnnotationKey stays synchronized before advancing partition.
 	if lwsReplicas < originalLwsReplicas {
-		states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
-		if err != nil {
+		if err := readStates(); err != nil {
 			return rollingUpdatePlan{}, err
 		}
-		readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 		lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 		targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
 		// The floor is a rollout guarantee. A plain scale-down with no active
@@ -1013,11 +1057,9 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 		}, nil
 	}
 
-	states, _, hasUncertain, err := r.getReplicaStatesAndLeaders(ctx, lws, sts, stsReplicas, revisionKey)
-	if err != nil {
+	if err := readStates(); err != nil {
 		return rollingUpdatePlan{}, err
 	}
-	readyGroups, updatedReadyGroups = countReadyStates(states), countUpdatedReadyStates(states)
 	if hasUncertain {
 		return rollingUpdatePlan{
 			partition: partition,
@@ -1030,11 +1072,12 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	lwsUnreadyReplicas := calculateLWSUnreadyReplicas(states, lwsReplicas)
 
 	// Case 5: Advance partition as far as the availability floor allows.
-	targetReplicas := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+	rawTarget := calculateRollingUpdateReplicas(lwsReplicas, int32(maxSurge), int32(maxUnavailable), lwsUnreadyReplicas)
+	targetReplicas := rawTarget
 	// Surplus ordinals of a completed rollout are retired as computed. The
 	// floor guard only delays that while a rollout is active.
 	if rolloutActive {
-		targetReplicas = preserveFloorDuringSurgeTrim(states, targetReplicas, stsReplicas, floor)
+		targetReplicas = preserveFloorDuringSurgeTrim(states, rawTarget, stsReplicas, floor)
 	}
 	recordSurgeDeletionEvent(targetReplicas)
 	activeStates := states[:min(len(states), int(targetReplicas))]
@@ -1044,7 +1087,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	}
 
 	var nextBaseline *int32
-	if rolloutActive && rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) {
+	if rolloutActive && (rolloutBaselineActive(states, nextPartition, userPartition, lwsReplicas) || targetReplicas > rawTarget) {
 		nextBaseline = ptr.To(baseline)
 	}
 	return rollingUpdatePlan{
@@ -1792,7 +1835,7 @@ func (p *pendingLeaderDeletes) markTakeoverObserved(lws *leaderworkerset.LeaderW
 	}
 	for _, pod := range stale {
 		podKey := client.ObjectKeyFromObject(pod)
-		if _, exists := p.deletes[podKey]; exists {
+		if entry, exists := p.deletes[podKey]; exists && entry.uid == pod.UID {
 			continue
 		}
 		p.deletes[podKey] = pendingLeaderDelete{

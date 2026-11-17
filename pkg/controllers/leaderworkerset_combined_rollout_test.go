@@ -861,6 +861,9 @@ func TestPodWatchPredicateReadinessAndTerminationTransitions(t *testing.T) {
 		Phase:      corev1.PodRunning,
 		Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
 	}
+	if !pred.Create(event.CreateEvent{Object: workerPending}) {
+		t.Fatal("expected Ordinal worker creation to trigger reconcile")
+	}
 	if !pred.Update(event.UpdateEvent{ObjectOld: workerPending, ObjectNew: workerReady}) {
 		t.Fatal("expected worker readiness transition to trigger reconcile")
 	}
@@ -879,8 +882,93 @@ func TestPodWatchPredicateReadinessAndTerminationTransitions(t *testing.T) {
 	hashWorkerReady.Annotations = map[string]string{
 		leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
 	}
+	if pred.Create(event.CreateEvent{Object: hashWorkerReady}) {
+		t.Fatal("expected hash-mode worker creation to be ignored by LWS predicate")
+	}
 	if pred.Update(event.UpdateEvent{ObjectOld: workerPending, ObjectNew: hashWorkerReady}) {
 		t.Fatal("expected hash-mode worker readiness update to be ignored by LWS predicate")
+	}
+
+	// Verify the cross-informer race: workerSts.Status arrives before its Pending
+	// worker pod, keeping rollout-baseline-replicas set on pass 1; once the Pending
+	// worker pod arrives (accepted by CreateFunc), pass 2 clears the baseline.
+	ctx := context.Background()
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-late-worker", "default").
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Replica(1).
+		Size(2).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromInt32(1),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+	lws.UID = "lws-late-worker-uid"
+	lws.Generation = 1
+
+	c, rec := newCombinedTestClient(t, lws)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+	if _, err := rec.Reconcile(ctx, req); err != nil {
+		t.Fatalf("initial Reconcile() error = %v", err)
+	}
+	sts := ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+	// Start a rollout so rollout-baseline-replicas="1" is recorded on leaderSts.
+	if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+		t.Fatalf("reading lws: %v", err)
+	}
+	lws.Generation = 2
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+	if err := c.Update(ctx, lws); err != nil {
+		t.Fatalf("updating lws: %v", err)
+	}
+	if _, err := rec.Reconcile(ctx, req); err != nil {
+		t.Fatalf("publish Reconcile() error = %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To[int32](0)
+	sts.Generation++
+	if err := c.Update(ctx, sts); err != nil {
+		t.Fatalf("setting partition=0: %v", err)
+	}
+	sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+	rev2 := revisionutils.GetRevisionKey(sts)
+
+	groupObjs := makeOwnedGroupObjects(lws, sts, 0, 2, rev2, "sts-"+rev2, true, false, false)
+	// Deliver leader pod and workerSts (with ObservedGeneration=1, UpdateRevision set) BEFORE worker pod.
+	for _, obj := range groupObjs[:2] {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("creating %T: %v", obj, err)
+		}
+	}
+	if _, err := rec.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() before worker pod cached error = %v", err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, sts); err != nil {
+		t.Fatalf("reading sts before worker pod cached: %v", err)
+	}
+	if got := sts.Annotations[rolloutBaselineAnnotationKey]; got != "1" {
+		t.Fatalf("baseline before worker pod cached = %q, want %q", got, "1")
+	}
+
+	// Deliver Pending worker pod: CreateFunc accepts it and Reconcile clears the baseline.
+	pendingWorker := groupObjs[2].(*corev1.Pod)
+	if !pred.Create(event.CreateEvent{Object: pendingWorker}) {
+		t.Fatal("expected Pending Ordinal worker pod CreateEvent to pass predicate")
+	}
+	if err := c.Create(ctx, pendingWorker); err != nil {
+		t.Fatalf("creating pending worker pod: %v", err)
+	}
+	if _, err := rec.Reconcile(ctx, req); err != nil {
+		t.Fatalf("Reconcile() after worker pod cached error = %v", err)
+	}
+	if err := c.Get(ctx, req.NamespacedName, sts); err != nil {
+		t.Fatalf("reading sts after worker pod cached: %v", err)
+	}
+	if _, exists := sts.Annotations[rolloutBaselineAnnotationKey]; exists {
+		t.Fatalf("expected %s to be cleared once Pending worker pod is cached, got %q", rolloutBaselineAnnotationKey, sts.Annotations[rolloutBaselineAnnotationKey])
 	}
 }
 
@@ -2454,6 +2542,122 @@ func TestPreserveFloorDuringSurgeTrim(t *testing.T) {
 	if plan.replicas != 4 {
 		t.Fatalf("plan.replicas = %d, want 4 (preserving Ready surge ordinal 3 to satisfy floor=2)", plan.replicas)
 	}
+	if plan.baseline == nil || *plan.baseline != 2 {
+		t.Fatalf("plan.baseline = %v, want 2 while Ready surge ordinal 3 holds floor=2", ptr.Deref(plan.baseline, -1))
+	}
+
+	// Verify multi-pass Reconcile keeps rollout-baseline-replicas and ordinal 3
+	// across consecutive reconciles until desired ordinals satisfy floor=2.
+	t.Run("multi-pass Reconcile retains surge ordinal until desired prefix satisfies floor", func(t *testing.T) {
+		reconcileLWS := wrappers.BuildBasicLeaderWorkerSet("test-reconcile", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Replica(2).
+			Size(1).
+			RolloutStrategy(leaderworkerset.RolloutStrategy{
+				Type: leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					Partition:      ptr.To[int32](0),
+					MaxUnavailable: intstr.FromInt32(0),
+					MaxSurge:       intstr.FromInt32(2),
+				},
+			}).Obj()
+		reconcileLWS.UID = "lws-reconcile-uid"
+		reconcileLWS.Generation = 1
+
+		rc, rr := newCombinedTestClient(t, reconcileLWS)
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(reconcileLWS)}
+		if _, err := rr.Reconcile(ctx, req); err != nil {
+			t.Fatalf("initial Reconcile() error = %v", err)
+		}
+		leaderSts := ackLeaderStatefulSet(t, ctx, rc, req.NamespacedName)
+		rev1 := revisionutils.GetRevisionKey(leaderSts)
+		for ord := range 2 {
+			for _, obj := range makeOwnedGroupObjects(reconcileLWS, leaderSts, ord, 1, rev1, "sts-"+rev1, true, true, true) {
+				if err := rc.Create(ctx, obj); err != nil {
+					t.Fatalf("creating initial group %d: %v", ord, err)
+				}
+			}
+		}
+
+		// Trigger template update to rev2 with maxUnavailable=0, maxSurge=2 (floor=2).
+		if err := rc.Get(ctx, req.NamespacedName, reconcileLWS); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		reconcileLWS.Generation = 2
+		reconcileLWS.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+		if err := rc.Update(ctx, reconcileLWS); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+		if _, err := rr.Reconcile(ctx, req); err != nil {
+			t.Fatalf("publish rev2 Reconcile() error = %v", err)
+		}
+		leaderSts = ackLeaderStatefulSet(t, ctx, rc, req.NamespacedName)
+		rev2 := revisionutils.GetRevisionKey(leaderSts)
+
+		// Advance to partition=0 with ord 0 starting on rev2 (!Ready), ord 1 Ready on rev2,
+		// ord 2 Pending on rev2, and ord 3 Ready on rev2.
+		leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To[int32](0)
+		leaderSts.Generation++
+		if err := rc.Update(ctx, leaderSts); err != nil {
+			t.Fatalf("setting partition=0 on leaderSts: %v", err)
+		}
+		leaderSts = ackLeaderStatefulSet(t, ctx, rc, req.NamespacedName)
+		for ord := range 2 {
+			var oldPod corev1.Pod
+			if err := rc.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("test-reconcile-%d", ord), Namespace: "default"}, &oldPod); err == nil {
+				if err := rc.Delete(ctx, &oldPod); err != nil {
+					t.Fatalf("deleting old pod %d: %v", ord, err)
+				}
+			}
+		}
+		for ord, ready := range []bool{false, true, false, true} {
+			for _, obj := range makeOwnedGroupObjects(reconcileLWS, leaderSts, ord, 1, rev2, "sts-"+rev2, ready, ready, ready) {
+				if err := rc.Create(ctx, obj); err != nil {
+					t.Fatalf("creating rev2 group %d: %v", ord, err)
+				}
+			}
+		}
+
+		for pass := 1; pass <= 2; pass++ {
+			if _, err := rr.Reconcile(ctx, req); err != nil {
+				t.Fatalf("pass %d Reconcile() error = %v", pass, err)
+			}
+			if err := rc.Get(ctx, req.NamespacedName, leaderSts); err != nil {
+				t.Fatalf("pass %d reading leaderSts: %v", pass, err)
+			}
+			if got := *leaderSts.Spec.Replicas; got != 4 {
+				t.Fatalf("pass %d sts.Spec.Replicas = %d, want 4", pass, got)
+			}
+			if got := leaderSts.Annotations[rolloutBaselineAnnotationKey]; got != "2" {
+				t.Fatalf("pass %d baseline annotation = %q, want %q", pass, got, "2")
+			}
+		}
+
+		// Once ord 0 becomes Ready, desired ordinals [0, 2) satisfy floor=2, so surge trims to 2 and clears baseline.
+		var pod0 corev1.Pod
+		if err := rc.Get(ctx, types.NamespacedName{Name: "test-reconcile-0", Namespace: "default"}, &pod0); err != nil {
+			t.Fatalf("getting test-reconcile-0: %v", err)
+		}
+		pod0.Status = corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		}
+		if err := rc.Status().Update(ctx, &pod0); err != nil {
+			t.Fatalf("marking test-reconcile-0 Ready: %v", err)
+		}
+		if _, err := rr.Reconcile(ctx, req); err != nil {
+			t.Fatalf("converged Reconcile() error = %v", err)
+		}
+		if err := rc.Get(ctx, req.NamespacedName, leaderSts); err != nil {
+			t.Fatalf("reading converged leaderSts: %v", err)
+		}
+		if got := *leaderSts.Spec.Replicas; got != 2 {
+			t.Fatalf("converged sts.Spec.Replicas = %d, want 2", got)
+		}
+		if _, exists := leaderSts.Annotations[rolloutBaselineAnnotationKey]; exists {
+			t.Fatalf("expected %s to be cleared after surge trim completes, got %q", rolloutBaselineAnnotationKey, leaderSts.Annotations[rolloutBaselineAnnotationKey])
+		}
+	})
 
 	// Also verify Case 2 (superseding update / rollback while surged) preserves ord 3 when needed:
 	lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromInt32(1) // floor = 1
@@ -2909,6 +3113,184 @@ func TestOrdinalCompletedRolloutBaselineIsNotInherited(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("scale-up before template update clears completed baseline", func(t *testing.T) {
+		lws := wrappers.BuildBasicLeaderWorkerSet("test-scale-up", "default").
+			WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+			Replica(1).
+			Size(2).
+			RolloutStrategy(leaderworkerset.RolloutStrategy{
+				Type: leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					Partition:      ptr.To[int32](0),
+					MaxUnavailable: intstr.FromInt32(1),
+					MaxSurge:       intstr.FromInt32(0),
+				},
+			}).Obj()
+		lws.UID = "lws-scale-up-uid"
+		lws.Generation = 1
+
+		c, r := newCombinedTestClient(t, lws)
+		req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("initial Reconcile() error = %v", err)
+		}
+		sts := ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+
+		// Combined scale-up (1 -> 4) and template update (rev2): baseline = 1.
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws: %v", err)
+		}
+		lws.Generation = 2
+		lws.Spec.Replicas = ptr.To[int32](4)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v2"
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws to rev2: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("publish rev2 Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		sts.Spec.UpdateStrategy.RollingUpdate.Partition = ptr.To[int32](0)
+		sts.Generation++
+		if err := c.Update(ctx, sts); err != nil {
+			t.Fatalf("setting partition=0: %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		rev2 := revisionutils.GetRevisionKey(sts)
+
+		// All 4 groups run rev2 (3 Ready, ord 1 still starting). Baseline "1" is not cleared yet.
+		for ord, ready := range []bool{true, false, true, true} {
+			for _, obj := range makeOwnedGroupObjects(lws, sts, ord, 2, rev2, "sts-"+rev2, ready, ready, ready) {
+				if err := c.Create(ctx, obj); err != nil {
+					t.Fatalf("creating rev2 group %d: %v", ord, err)
+				}
+			}
+		}
+
+		// Scale up 4 -> 6 before the baseline-clearing pass runs.
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws for scale-up: %v", err)
+		}
+		lws.Generation = 3
+		lws.Spec.Replicas = ptr.To[int32](6)
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("scaling lws to 6: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("scale-up Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		if _, exists := sts.Annotations[rolloutBaselineAnnotationKey]; exists {
+			t.Fatalf("expected scale-up after completed rollout to clear %s, got %q", rolloutBaselineAnnotationKey, sts.Annotations[rolloutBaselineAnnotationKey])
+		}
+
+		// Next template update (rev3) arrives before ordinals 4 and 5 create pods.
+		if err := c.Get(ctx, req.NamespacedName, lws); err != nil {
+			t.Fatalf("reading lws for rev3: %v", err)
+		}
+		lws.Generation = 4
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "worker:v3"
+		if err := c.Update(ctx, lws); err != nil {
+			t.Fatalf("updating lws to rev3: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("publish rev3 Reconcile() error = %v", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, c, req.NamespacedName)
+		if got := sts.Annotations[rolloutBaselineAnnotationKey]; got != "6" {
+			t.Fatalf("rev3 baseline = %q, want %q", got, "6")
+		}
+		// Advance pass must protect all 3 Ready groups (floor=5 > 3 Ready, so partition >= 4).
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("advance rev3 Reconcile() error = %v", err)
+		}
+		if err := c.Get(ctx, req.NamespacedName, sts); err != nil {
+			t.Fatalf("reading sts after rev3 advance: %v", err)
+		}
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got < 4 {
+			t.Fatalf("rev3 partition = %d, want >= 4 to protect all 3 Ready groups", got)
+		}
+	})
+
+	t.Run("scale-down after converged rollout clears completed baseline", func(t *testing.T) {
+		for _, tc := range []struct {
+			name           string
+			maxUnavailable int32
+			maxSurge       int32
+			disaggregated  bool
+		}{
+			{name: "plain scale-down clears stale baseline", maxUnavailable: 1, maxSurge: 0},
+			{name: "disaggregated child scale-down takes dsScale fast path", maxUnavailable: 0, maxSurge: 1, disaggregated: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				lws := wrappers.BuildBasicLeaderWorkerSet("test-scale-down", "default").
+					Replica(2).
+					Size(1).
+					RolloutStrategy(leaderworkerset.RolloutStrategy{
+						Type: leaderworkerset.RollingUpdateStrategyType,
+						RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+							Partition:      ptr.To[int32](0),
+							MaxUnavailable: intstr.FromInt32(tc.maxUnavailable),
+							MaxSurge:       intstr.FromInt32(tc.maxSurge),
+						},
+					}).Obj()
+				lws.UID = "lws-scale-down-uid"
+				if tc.disaggregated {
+					lws.OwnerReferences = []metav1.OwnerReference{{
+						APIVersion: "disaggregatedset.x-k8s.io/v1alpha1",
+						Kind:       "DisaggregatedSet",
+						Name:       "parent-ds",
+						UID:        "parent-ds-uid",
+						Controller: ptr.To(true),
+					}}
+				}
+				sts := &appsv1.StatefulSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       lws.Name,
+						Namespace:  lws.Namespace,
+						UID:        "leader-sts-scale-down-uid",
+						Generation: 3,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey: lws.Name,
+							leaderworkerset.RevisionKey:     "rev-2",
+							leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+						},
+						Annotations: map[string]string{
+							leaderworkerset.ReplicasAnnotationKey: "4",
+							rolloutBaselineAnnotationKey:          "1",
+						},
+					},
+					Spec: appsv1.StatefulSetSpec{
+						Replicas: ptr.To[int32](4),
+						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+							Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+							RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](0)},
+						},
+					},
+					Status: appsv1.StatefulSetStatus{
+						ObservedGeneration: 3,
+						Replicas:           4,
+						CurrentRevision:    "sts-rev-2",
+						UpdateRevision:     "sts-rev-2",
+					},
+				}
+				// Groups 0..3 all converged (updated and Ready) on rev-2 before the clearing pass ran.
+				objs := []client.Object{lws, sts}
+				for ord := range 4 {
+					objs = append(objs, makeOwnedGroupObjects(lws, sts, ord, 1, "rev-2", "sts-rev-2", true, true, true)...)
+				}
+				_, r := newCombinedTestClient(t, objs...)
+				plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
+				if err != nil {
+					t.Fatalf("planRollingUpdate(scale-down) error = %v", err)
+				}
+				if plan.replicas != 2 || plan.baseline != nil {
+					t.Fatalf("scale-down plan (replicas, baseline) = (%d, %v), want (2, nil)", plan.replicas, plan.baseline)
+				}
+			})
+		}
+	})
 }
 
 // TestScaleDownKeepsRetainedReadyTailAbovePartition verifies that a replica
@@ -3086,6 +3468,123 @@ func TestTakeoverBarrierWithholdsCreditFromLeadersDeliveredAfterList(t *testing.
 	if listCalls != 1 {
 		t.Fatalf("live LIST calls = %d, want 1", listCalls)
 	}
+
+	// Regression test: two historical incarnations (U1 then U2) of ordinal 0
+	// arrive sequentially through delayed informer events while surviving Ready
+	// ordinal 1 is protected behind partition 2 (floor = 1). Replacing U1's
+	// pending entry with U2 keeps ordinal 1 protected until a live incarnation
+	// newer than the LIST becomes Ready.
+	t.Run("two historical UIDs sharing one pod name keep partition 2 protecting surviving Ready group", func(t *testing.T) {
+		twoLWS := wrappers.BuildBasicLeaderWorkerSet("test-two-uids", "default").
+			Replica(2).
+			Size(1).
+			RolloutStrategy(leaderworkerset.RolloutStrategy{
+				Type: leaderworkerset.RollingUpdateStrategyType,
+				RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+					Partition:      ptr.To[int32](0),
+					MaxUnavailable: intstr.FromInt32(1),
+					MaxSurge:       intstr.FromInt32(0),
+				},
+			}).Obj()
+		twoLWS.UID = "lws-two-uids"
+		twoSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       twoLWS.Name,
+				Namespace:  twoLWS.Namespace,
+				UID:        "leader-sts-two-uids",
+				Generation: 2,
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: twoLWS.Name,
+					leaderworkerset.RevisionKey:     "rev-b",
+					leaderworkerset.RoleLabelKey:    leaderworkerset.RoleLeader,
+				},
+				Annotations: map[string]string{
+					leaderworkerset.ReplicasAnnotationKey: "2",
+					rolloutBaselineAnnotationKey:          "2",
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To[int32](2),
+				UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+					Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To[int32](2)},
+				},
+			},
+			Status: appsv1.StatefulSetStatus{
+				ObservedGeneration: 2,
+				Replicas:           2,
+				CurrentRevision:    "sts-rev-a",
+				UpdateRevision:     "sts-rev-b",
+			},
+		}
+
+		a1 := makeOwnedGroupObjects(twoLWS, twoSts, 1, 1, "rev-a", "sts-rev-a", true, true, true)[0]
+		a1.SetUID("a1-live-uid")
+		a1.SetResourceVersion("5")
+
+		u1 := makeOwnedGroupObjects(twoLWS, twoSts, 0, 1, "rev-b", "sts-rev-b", true, true, true)[0]
+		u1.SetUID("b0-historical-u1")
+		u1.SetResourceVersion("10")
+
+		u2 := makeOwnedGroupObjects(twoLWS, twoSts, 0, 1, "rev-b", "sts-rev-b", true, true, true)[0]
+		u2.SetUID("b0-historical-u2")
+		u2.SetResourceVersion("20")
+
+		_, twoRec := newCombinedTestClient(t, twoLWS, twoSts, u1.DeepCopyObject().(client.Object), a1)
+		twoListCalls := 0
+		twoRec.apiReader = fake.NewClientBuilder().WithScheme(lwsStatusScheme(t)).
+			WithObjects(a1.DeepCopyObject().(client.Object)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					twoListCalls++
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					list.SetResourceVersion("30")
+					return nil
+				},
+			}).Build()
+
+		observeTwo := func(pods ...client.Object) {
+			t.Helper()
+			_, view := newCombinedTestClient(t, append([]client.Object{twoLWS, twoSts}, pods...)...)
+			twoRec.Client = view.Client
+		}
+		planTwo := func(step string) rollingUpdatePlan {
+			t.Helper()
+			p, err := twoRec.planRollingUpdate(ctx, twoLWS, twoSts, "rev-b", false)
+			if err != nil {
+				t.Fatalf("%s: planRollingUpdate() error = %v", step, err)
+			}
+			return p
+		}
+
+		if got := planTwo("takeover with U1 cached").partition; got != 2 {
+			t.Fatalf("partition with historical U1 = %d, want 2", got)
+		}
+		observeTwo(u2.DeepCopyObject().(client.Object), a1)
+		if got := planTwo("delayed U2 replaces U1").partition; got != 2 {
+			t.Fatalf("partition with historical U2 = %d, want 2 (surviving Ready ordinal 1 must stay protected)", got)
+		}
+		observeTwo(a1)
+		if got := planTwo("U2 deletion observed").partition; got != 2 {
+			t.Fatalf("partition after U2 deletion = %d, want 2", got)
+		}
+		if twoRec.pendingDeletes.hasEntriesFor(client.ObjectKeyFromObject(twoLWS)) {
+			t.Fatal("expected U2 pending entry to resolve once deletion is cached")
+		}
+
+		u3 := makeOwnedGroupObjects(twoLWS, twoSts, 0, 1, "rev-b", "sts-rev-b", true, true, true)[0]
+		u3.SetUID("b0-live-u3")
+		u3.SetResourceVersion("40")
+		observeTwo(u3, a1)
+		if got := planTwo("live U3 Ready").partition; got != 1 {
+			t.Fatalf("partition with live Ready U3 = %d, want 1", got)
+		}
+		if twoListCalls != 1 {
+			t.Fatalf("live LIST calls = %d, want 1", twoListCalls)
+		}
+	})
 }
 
 // combinedRolloutLWS returns an Ordinal LWS with size 1 and the given rollout
@@ -3291,6 +3790,18 @@ func TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor(t *testing.T) {
 				objs = append(objs, lwsStatusLeaderPod(lws, i, "rev-2", false))
 			}
 			r, _ := lwsStatusNewReconciler(t, objs...)
+			// Case 2 publish pass (stsReplicas < lwsReplicas) also populates plan.floor.
+			preScaleSts := combinedRolloutSts(lws, 2, 0, map[string]string{
+				leaderworkerset.ReplicasAnnotationKey: "2",
+			})
+			publishPlan, err := r.planRollingUpdate(ctx, lws, preScaleSts, "rev-2", true)
+			if err != nil {
+				t.Fatalf("planRollingUpdate(publish) error = %v", err)
+			}
+			if publishPlan.floor != tc.wantFloor {
+				t.Fatalf("publish floor = %d, want %d", publishPlan.floor, tc.wantFloor)
+			}
+
 			plan, err := r.planRollingUpdate(ctx, lws, sts, "rev-2", false)
 			if err != nil {
 				t.Fatalf("planRollingUpdate() error = %v", err)
