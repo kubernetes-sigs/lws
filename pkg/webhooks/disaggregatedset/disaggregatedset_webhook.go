@@ -118,7 +118,11 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 		if !unchanged {
 			allErrs = append(allErrs, w.validateRoleRolloutStrategy(role, rolePath)...)
 			lws := &leaderworkerset.LeaderWorkerSet{ObjectMeta: role.ObjectMeta, Spec: role.Spec}
-			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws)...)
+			var oldLws *leaderworkerset.LeaderWorkerSet
+			if oldRole != nil {
+				oldLws = &leaderworkerset.LeaderWorkerSet{ObjectMeta: oldRole.ObjectMeta, Spec: oldRole.Spec}
+			}
+			allErrs = append(allErrs, webhooks.ValidateLeaderWorkerSetTemplate(rolePath.Child("spec"), metadataPath, lws, oldLws)...)
 			var oldSpec *leaderworkerset.LeaderWorkerSetSpec
 			if oldRole != nil {
 				oldSpec = &oldRole.Spec
@@ -192,8 +196,32 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	cdWarnings, cdErrs := w.validateComputeDomain(obj, oldObj, oldRoles)
 	warnings = append(warnings, cdWarnings...)
 	allErrs = append(allErrs, cdErrs...)
+	allErrs = append(allErrs, validateTemplateInternalPlacements(obj, oldRoles)...)
 
 	return warnings, allErrs
+}
+
+// validateTemplateInternalPlacements rejects the controller-managed
+// exclusive-scope and exclusive-enforcement annotations on a role's pod
+// templates, mirroring what the LeaderWorkerSet webhook does for a standalone
+// LeaderWorkerSet. Without this the DisaggregatedSet is admitted and its child
+// LeaderWorkerSets are then rejected by that webhook, leaving the
+// DisaggregatedSet unable to create any child.
+func validateTemplateInternalPlacements(obj *disaggv1.DisaggregatedSet, oldRoles map[string]*disaggv1.DisaggregatedRoleSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	rolesPath := field.NewPath("spec", "roles")
+	for i := range obj.Spec.Roles {
+		role := &obj.Spec.Roles[i]
+		templatePath := rolesPath.Index(i).Child("spec", "leaderWorkerTemplate")
+		var oldLeaderTemplate, oldWorkerTemplate *corev1.PodTemplateSpec
+		if oldRole := oldRoles[role.Name]; oldRole != nil {
+			oldLeaderTemplate = oldRole.Spec.LeaderWorkerTemplate.LeaderTemplate
+			oldWorkerTemplate = &oldRole.Spec.LeaderWorkerTemplate.WorkerTemplate
+		}
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalPlacementAnnotations(templatePath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLeaderTemplate)...)
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalPlacementAnnotations(templatePath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate, oldWorkerTemplate)...)
+	}
+	return allErrs
 }
 
 func isExternal(scaling *disaggv1.RoleScaling) bool {

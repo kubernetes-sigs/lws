@@ -349,7 +349,7 @@ func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	r := &LeaderWorkerSetWebhook{}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := r.generalValidate(tc.lws)
+			errs := r.generalValidate(tc.lws, nil)
 			if tc.wantErr {
 				if len(errs) == 0 {
 					t.Fatalf("expected validation error, got none")
@@ -473,7 +473,7 @@ func TestGeneralValidateRestartBackoff(t *testing.T) {
 	r := &LeaderWorkerSetWebhook{}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := r.generalValidate(tc.lws)
+			errs := r.generalValidate(tc.lws, nil)
 			if tc.wantErr {
 				if len(errs) == 0 {
 					t.Fatalf("expected validation error, got none")
@@ -591,7 +591,7 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 			},
 		}
 
-		allErrs := webhook.generalValidate(lws)
+		allErrs := webhook.generalValidate(lws, nil)
 		if len(allErrs) != 1 {
 			t.Fatalf("expected one validation error for missing subGroupSize, got %v", allErrs)
 		}
@@ -617,7 +617,7 @@ func TestLeaderWorkerSetValidation(t *testing.T) {
 			},
 		}
 
-		allErrs := webhook.generalValidate(lws)
+		allErrs := webhook.generalValidate(lws, nil)
 		if len(allErrs) != 1 {
 			t.Fatalf("expected one validation error for zero subGroupSize, got %v", allErrs)
 		}
@@ -1344,7 +1344,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			lws := wrappers.BuildLeaderWorkerSet("default").Size(4).SubGroupSize(2).Annotation(tc.annotations).Obj()
 			lws.Spec.PlacementPolicy = testPlacementPolicy(tc.groupPolicy, tc.subGroupPolicy)
-			err := r.generalValidate(lws).ToAggregate()
+			err := r.generalValidate(lws, nil).ToAggregate()
 			if tc.errSubstr == "" {
 				if err != nil {
 					t.Fatalf("unexpected validation error: %v", err)
@@ -1504,6 +1504,71 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	}
 }
 
+func TestValidatePlacementAnnotationConflictOnUpdate(t *testing.T) {
+	// An object admitted before the template sources were validated: the field
+	// sets the placement and the controller stamps its topology over the stale
+	// template annotation, so the template value is inert. It must stay
+	// updatable until either side of the pair changes.
+	conflicting := func() *v1.LeaderWorkerSet {
+		lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+		lws.Spec.PlacementPolicy = testPlacementPolicy(&v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}, nil)
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveKeyAnnotationKey: "zone"}
+		return lws
+	}
+	tests := []struct {
+		name      string
+		mutate    func(*v1.LeaderWorkerSet)
+		errSubstr string
+	}{
+		{
+			name:   "an unrelated update keeps the object updatable",
+			mutate: func(lws *v1.LeaderWorkerSet) { lws.Spec.Replicas = ptr.To[int32](2) },
+		},
+		{
+			name: "removing the stale annotation is allowed",
+			mutate: func(lws *v1.LeaderWorkerSet) {
+				delete(lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations, v1.ExclusiveKeyAnnotationKey)
+			},
+		},
+		{
+			name:      "changing the policy topology is revalidated",
+			mutate:    func(lws *v1.LeaderWorkerSet) { lws.Spec.PlacementPolicy.Topology = "host" },
+			errSubstr: "conflicts with annotation",
+		},
+		{
+			name: "changing the annotation is revalidated",
+			mutate: func(lws *v1.LeaderWorkerSet) {
+				lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations[v1.ExclusiveKeyAnnotationKey] = "host"
+			},
+			errSubstr: "conflicts with annotation",
+		},
+		{
+			name:      "switching to ExclusiveSet still requires removing the annotation",
+			mutate:    func(lws *v1.LeaderWorkerSet) { lws.Spec.PlacementPolicy.Type = v1.PlacementExclusiveSet },
+			errSubstr: "requires removing annotation",
+		},
+	}
+
+	r := &LeaderWorkerSetWebhook{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldLws := conflicting()
+			newLws := oldLws.DeepCopy()
+			tc.mutate(newLws)
+			_, err := r.ValidateUpdate(context.Background(), oldLws, newLws)
+			if tc.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Fatalf("expected an error containing %q, got %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
 func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 	r := &LeaderWorkerSetWebhook{}
 	annotations := func(keys ...string) map[string]string {
@@ -1656,18 +1721,18 @@ func TestValidateSubGroupPlacementPolicyRequiresSubGroups(t *testing.T) {
 	r := &LeaderWorkerSetWebhook{}
 	lws := wrappers.BuildLeaderWorkerSet("default").Size(4).Obj()
 	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"})
-	err := r.generalValidate(lws).ToAggregate()
+	err := r.generalValidate(lws, nil).ToAggregate()
 	if err == nil || !strings.Contains(err.Error(), "spec.placementPolicy.subGroup") || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
 		t.Fatalf("expected subgroup placement without subGroupPolicy to be rejected, got %v", err)
 	}
 
 	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementNone})
-	if err := r.generalValidate(lws).ToAggregate(); err != nil {
+	if err := r.generalValidate(lws, nil).ToAggregate(); err != nil {
 		t.Fatalf("expected a None subgroup placement to be accepted without subGroupPolicy, got %v", err)
 	}
 
 	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"})
-	err = r.generalValidate(lws).ToAggregate()
+	err = r.generalValidate(lws, nil).ToAggregate()
 	if err == nil || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
 		t.Fatalf("expected an ExclusiveSet subgroup placement without subGroupPolicy to be rejected, got %v", err)
 	}
