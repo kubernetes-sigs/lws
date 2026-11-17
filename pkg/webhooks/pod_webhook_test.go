@@ -70,7 +70,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		groupUniqueKey string
 		topologyKey    string
 		podAffinityKey string
-		scope          leaderworkerset.PlacementType
+		scope          leaderworkerset.PlacementScope
 		enforcement    leaderworkerset.PlacementEnforcement
 		expectedPod    *corev1.Pod
 	}{
@@ -84,7 +84,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
-			scope:          leaderworkerset.PlacementExclusiveTopology,
+			scope:          leaderworkerset.PlacementScopeAll,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -143,7 +143,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
-			scope:          leaderworkerset.PlacementExclusiveTopology,
+			scope:          leaderworkerset.PlacementScopeAll,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -176,9 +176,9 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			},
 		},
 		{
-			// ExclusiveSet scopes the anti-affinity to the pods of this
+			// Own scope scopes the anti-affinity to the pods of this
 			// LeaderWorkerSet via the set name label.
-			name: "ExclusiveSet scopes the anti-affinity to this LeaderWorkerSet",
+			name: "Own scope scopes the anti-affinity to this LeaderWorkerSet",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
@@ -188,7 +188,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
-			scope:          leaderworkerset.PlacementExclusiveSet,
+			scope:          leaderworkerset.PlacementScopeOwn,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"leaderworkerset.sigs.k8s.io/name": "test-lws"},
@@ -236,7 +236,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		{
 			// Without the set name label there is nothing to scope with, so
 			// the term stays global rather than dropping the exclusivity.
-			name: "ExclusiveSet without the set name label stays global",
+			name: "Own scope without the set name label stays global",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -245,7 +245,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
-			scope:          leaderworkerset.PlacementExclusiveSet,
+			scope:          leaderworkerset.PlacementScopeOwn,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{"leaderworkerset.sigs.k8s.io/exclusive-topology": "topologyKey"},
@@ -294,7 +294,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			groupUniqueKey: "test-key",
 			topologyKey:    "topologyKey",
 			podAffinityKey: leaderworkerset.GroupUniqueHashLabelKey,
-			scope:          leaderworkerset.PlacementExclusiveSet,
+			scope:          leaderworkerset.PlacementScopeOwn,
 			enforcement:    leaderworkerset.PlacementPreferred,
 			expectedPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -356,7 +356,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		}
 		for range 2 {
 			SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey,
-				leaderworkerset.PlacementExclusiveSet, leaderworkerset.PlacementPreferred)
+				leaderworkerset.PlacementScopeOwn, leaderworkerset.PlacementPreferred)
 		}
 		weighted := pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 		if len(weighted) != 1 {
@@ -395,7 +395,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			},
 		}
 		SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey,
-			leaderworkerset.PlacementExclusiveSet, leaderworkerset.PlacementPreferred)
+			leaderworkerset.PlacementScopeOwn, leaderworkerset.PlacementPreferred)
 		weighted := pod.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 		if len(weighted) != 2 {
 			t.Errorf("preferred anti-affinity terms = %d, want 2 (the user term plus the injected one)", len(weighted))
@@ -439,7 +439,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 			},
 		}
 		SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey,
-			leaderworkerset.PlacementExclusiveSet, leaderworkerset.PlacementRequired)
+			leaderworkerset.PlacementScopeOwn, leaderworkerset.PlacementRequired)
 		if got := len(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution); got != 2 {
 			t.Errorf("required affinity terms = %d, want 2 (the user term plus the injected one)", got)
 		}
@@ -458,7 +458,7 @@ func TestSetExclusiveAffinities(t *testing.T) {
 		pod := &corev1.Pod{}
 		for range 2 {
 			SetExclusiveAffinities(pod, "test-key", "topologyKey", leaderworkerset.GroupUniqueHashLabelKey,
-				leaderworkerset.PlacementExclusiveTopology, leaderworkerset.PlacementRequired)
+				leaderworkerset.PlacementScopeAll, leaderworkerset.PlacementRequired)
 		}
 		if got := len(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution); got != 1 {
 			t.Errorf("required affinity terms = %d, want 1", got)

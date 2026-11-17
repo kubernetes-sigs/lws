@@ -273,14 +273,14 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 }
 
 // exclusivePlacementScope reads the placement scope of one exclusive level
-// from the pod annotations. Only the Slice scope is recorded, since it is the
+// from the pod annotations. Only the Own scope is recorded, since it is the
 // only value that changes the injected affinity; a missing scope keeps the
-// global (ExclusiveTopology) behavior.
-func exclusivePlacementScope(pod *corev1.Pod, scopeAnnotation string) leaderworkerset.PlacementType {
-	if scope := pod.Annotations[scopeAnnotation]; scope != "" {
-		return leaderworkerset.PlacementType(scope)
+// All behavior.
+func exclusivePlacementScope(pod *corev1.Pod, scopeAnnotation string) leaderworkerset.PlacementScope {
+	if scope := leaderworkerset.PlacementScope(pod.Annotations[scopeAnnotation]); scope == leaderworkerset.PlacementScopeOwn {
+		return leaderworkerset.PlacementScopeOwn
 	}
-	return leaderworkerset.PlacementExclusiveTopology
+	return leaderworkerset.PlacementScopeAll
 }
 
 // exclusivePlacementEnforcement reads the enforcement of one exclusive level
@@ -294,11 +294,11 @@ func exclusivePlacementEnforcement(pod *corev1.Pod, annotation string) leaderwor
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity. The scope decides
-// how widely the anti-affinity repels: ExclusiveTopology keeps every other
-// group out of the domain, matching the deprecated annotations and the physical
-// exclusivity hardware-sliced accelerators need; ExclusiveSet keeps only the
-// groups of this LeaderWorkerSet out, scoped by the set name label, so groups of
-// other LeaderWorkerSets may share the domain. The enforcement decides what
+// how widely the anti-affinity repels: All keeps every other group out of the
+// domain, matching the deprecated annotations and the physical exclusivity
+// hardware-sliced accelerators need; Own keeps only the groups of this
+// LeaderWorkerSet out, scoped by the set name label, so groups of other
+// LeaderWorkerSets may share the domain. The enforcement decides what
 // happens when no free domain remains: Required keeps the anti-affinity
 // required, so the group stays Pending; Preferred makes it a scheduling
 // preference, so the scheduler co-locates the groups instead. The group's own
@@ -310,7 +310,7 @@ func exclusivePlacementEnforcement(pod *corev1.Pod, annotation string) leaderwor
 // placement. A pod that already has one of the terms (for example because the
 // webhook is reinvoked, or an existing group is recreated) is not changed
 // twice.
-func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, scope leaderworkerset.PlacementType, enforcement leaderworkerset.PlacementEnforcement) {
+func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string, scope leaderworkerset.PlacementScope, enforcement leaderworkerset.PlacementEnforcement) {
 	if pod.Spec.Affinity == nil {
 		pod.Spec.Affinity = &corev1.Affinity{}
 	}
@@ -336,7 +336,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			})
 	}
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
-	// An ExclusiveSet scope limits the repelled pods to the groups of this
+	// An Own scope limits the repelled pods to the groups of this
 	// LeaderWorkerSet, so groups of other LeaderWorkerSets may share the domain.
 	antiAffinityExpressions := []metav1.LabelSelectorRequirement{
 		{
@@ -349,7 +349,7 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 			Values:   []string{groupUniqueKey},
 		},
 	}
-	if scope == leaderworkerset.PlacementExclusiveSet {
+	if scope == leaderworkerset.PlacementScopeOwn {
 		if lwsName := pod.Labels[leaderworkerset.SetNameLabelKey]; lwsName != "" {
 			antiAffinityExpressions = append(antiAffinityExpressions, metav1.LabelSelectorRequirement{
 				Key:      leaderworkerset.SetNameLabelKey,

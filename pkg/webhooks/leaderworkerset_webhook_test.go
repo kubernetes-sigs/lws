@@ -1311,28 +1311,32 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			subGroupPolicy: exclusive("rack"),
 		},
 		{
-			name: "group ExclusiveSet is accepted without annotations",
+			name: "group Own scope is accepted without annotations",
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSet,
+				Type:     v1.PlacementExclusiveTopology,
+				Scope:    v1.PlacementScopeOwn,
 				Topology: "topology.kubernetes.io/zone",
 			},
 		},
 		{
-			name: "group and subgroup ExclusiveSet on different topologies",
+			name: "group and subgroup Own scope on different topologies",
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSet,
+				Type:     v1.PlacementExclusiveTopology,
+				Scope:    v1.PlacementScopeOwn,
 				Topology: "topology.kubernetes.io/zone",
 			},
 			subGroupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSet,
+				Type:     v1.PlacementExclusiveTopology,
+				Scope:    v1.PlacementScopeOwn,
 				Topology: "cloud.google.com/gke-nodepool",
 			},
 		},
 		{
-			name:        "group ExclusiveSet on the subgroup annotation's topology",
+			name:        "group Own scope on the subgroup annotation's topology",
 			annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
 			groupPolicy: &v1.SubGroupPlacementPolicy{
-				Type:     v1.PlacementExclusiveSet,
+				Type:     v1.PlacementExclusiveTopology,
+				Scope:    v1.PlacementScopeOwn,
 				Topology: "rack",
 			},
 			errSubstr: "spec.placementPolicy.topology: Invalid value: \"rack\": group and subgroup exclusive placement must use different topology keys",
@@ -1402,18 +1406,18 @@ func TestValidatePlacementPolicyAnnotationConflict(t *testing.T) {
 	}{
 		{name: "matching group annotation", annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"}, groupPolicy: rack},
 		{name: "matching subgroup annotation", annotations: map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"}, subGroupPolicy: rack},
-		{name: "group ExclusiveSet without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"}},
+		{name: "group Own scope without the annotation", groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Scope: v1.PlacementScopeOwn, Topology: "rack"}},
 		{
-			name:        "group ExclusiveSet with the annotation is rejected",
+			name:        "group Own scope with the annotation is rejected",
 			annotations: map[string]string{v1.ExclusiveKeyAnnotationKey: "rack"},
-			groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"},
+			groupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Scope: v1.PlacementScopeOwn, Topology: "rack"},
 			errSubstr:   "spec.placementPolicy.topology",
 			errContains: "requires removing annotation",
 		},
 		{
-			name:           "subgroup ExclusiveSet with the annotation is rejected",
+			name:           "subgroup Own scope with the annotation is rejected",
 			annotations:    map[string]string{v1.SubGroupExclusiveKeyAnnotationKey: "rack"},
-			subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"},
+			subGroupPolicy: &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Scope: v1.PlacementScopeOwn, Topology: "rack"},
 			errSubstr:      "spec.placementPolicy.subGroup.topology",
 			errContains:    "requires removing annotation",
 		},
@@ -1466,7 +1470,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 	annotations := func(keys ...string) map[string]string {
 		m := map[string]string{}
 		for _, k := range keys {
-			m[k] = "ExclusiveSet"
+			m[k] = "Own"
 		}
 		return m
 	}
@@ -1492,7 +1496,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
 		lws.Spec.PlacementPolicy = &v1.PlacementPolicy{Type: v1.PlacementExclusiveTopology, Topology: "rack"}
 		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{
-			v1.ExclusiveScopeAnnotationKey:       "ExclusiveSet",
+			v1.ExclusiveScopeAnnotationKey:       "Own",
 			v1.ExclusiveEnforcementAnnotationKey: "Preferred",
 		}
 		_, err := r.ValidateCreate(context.Background(), lws)
@@ -1503,7 +1507,7 @@ func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
 
 	t.Run("a value unchanged from the old template stays updatable", func(t *testing.T) {
 		lws := wrappers.BuildLeaderWorkerSet("default").Size(2).Obj()
-		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveScopeAnnotationKey: "ExclusiveSet"}
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{v1.ExclusiveScopeAnnotationKey: "Own"}
 		old := lws.DeepCopy()
 		if _, err := r.ValidateUpdate(context.Background(), old, lws); err != nil {
 			t.Fatalf("expected an unchanged annotation to be accepted, got %v", err)
@@ -1604,7 +1608,7 @@ func testPlacementPolicy(group, subGroup *v1.SubGroupPlacementPolicy) *v1.Placem
 	}
 	policy := &v1.PlacementPolicy{Type: v1.PlacementNone, SubGroup: subGroup}
 	if group != nil {
-		policy.Type, policy.Topology = group.Type, group.Topology
+		policy.Type, policy.Topology, policy.Scope = group.Type, group.Topology, group.Scope
 	}
 	return policy
 }
@@ -1623,9 +1627,9 @@ func TestValidateSubGroupPlacementPolicyRequiresSubGroups(t *testing.T) {
 		t.Fatalf("expected a None subgroup placement to be accepted without subGroupPolicy, got %v", err)
 	}
 
-	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveSet, Topology: "rack"})
+	lws.Spec.PlacementPolicy = testPlacementPolicy(nil, &v1.SubGroupPlacementPolicy{Type: v1.PlacementExclusiveTopology, Scope: v1.PlacementScopeOwn, Topology: "rack"})
 	err = r.generalValidate(lws).ToAggregate()
 	if err == nil || !strings.Contains(err.Error(), "requires leaderWorkerTemplate.subGroupPolicy") {
-		t.Fatalf("expected an ExclusiveSet subgroup placement without subGroupPolicy to be rejected, got %v", err)
+		t.Fatalf("expected an Own-scoped subgroup placement without subGroupPolicy to be rejected, got %v", err)
 	}
 }

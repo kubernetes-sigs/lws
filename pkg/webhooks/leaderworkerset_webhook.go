@@ -990,10 +990,9 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 // metadata. A matching ExclusiveTopology pair is accepted so a value can be
 // moved from the annotation to the field in two steps. A level whose type is
 // None falls back to the annotation, since the API server defaults the type
-// whenever placementPolicy is set. An ExclusiveSet field is rejected while the
-// annotation of the same level is set at all: the annotation is globally
-// scoped, so keeping it would silently change which pods the domain is
-// exclusive against.
+// whenever placementPolicy is set. An Own scope is rejected while the
+// annotation of the same level is set at all: the annotation repels every
+// workload, so keeping it would silently widen the repelled set.
 //
 // An annotation on a pod template is not a source here: whenever the field sets
 // the level, the controller stamps the field topology over the template's
@@ -1003,10 +1002,10 @@ func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWo
 	if policy == nil {
 		return nil
 	}
-	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
+	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Scope, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
 		v1.ExclusiveKeyAnnotationKey, policyPath.Child("topology"))
 	if policy.SubGroup != nil {
-		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
+		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Scope, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
 			v1.SubGroupExclusiveKeyAnnotationKey, policyPath.Child("subGroup", "topology"))...)
 	}
 	return allErrs
@@ -1035,9 +1034,9 @@ func exclusiveAnnotationSources(lws *v1.LeaderWorkerSet) []annotationSource {
 	return sources
 }
 
-func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
-	if placementType == v1.PlacementExclusiveSet && annotationValue != "" {
-		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
+func validatePlacementPolicyAnnotation(placementType v1.PlacementType, scope v1.PlacementScope, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
+	if placementType == v1.PlacementExclusiveTopology && scope == v1.PlacementScopeOwn && annotationValue != "" {
+		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation repels every workload", annotation))}
 	}
 	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {
 		return nil

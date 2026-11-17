@@ -17597,6 +17597,18 @@ spec:
                                   - Required
                                   - Preferred
                                 type: string
+                              scope:
+                                default: All
+                                description: |-
+                                  scope selects the pods the exclusive anti-affinity repels. All keeps
+                                  every other group out of the domain, matching the deprecated annotations
+                                  and the physical exclusivity hardware-sliced accelerators need; Own keeps
+                                  only the groups of this LeaderWorkerSet out, so groups of other
+                                  LeaderWorkerSets may share the domain. Defaults to All.
+                                enum:
+                                  - All
+                                  - Own
+                                type: string
                               subGroup:
                                 description: |-
                                   subGroup defines the topology placement of each subgroup within a group.
@@ -17611,6 +17623,15 @@ spec:
                                       - Required
                                       - Preferred
                                     type: string
+                                  scope:
+                                    default: All
+                                    description: |-
+                                      scope selects the pods the exclusive anti-affinity repels, as at the
+                                      group level. Defaults to All.
+                                    enum:
+                                      - All
+                                      - Own
+                                    type: string
                                   topology:
                                     description: |-
                                       topology is the node label key that defines the topology domain of a
@@ -17621,17 +17642,18 @@ spec:
                                     description: type selects the subgroup level placement guarantee. Defaults to None.
                                     enum:
                                       - None
-                                      - ExclusiveSet
                                       - ExclusiveTopology
                                     type: string
                                 type: object
                                 x-kubernetes-validations:
-                                  - message: topology is required when type is ExclusiveTopology or ExclusiveSet
-                                    rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSet'']) || (has(self.topology) && size(self.topology) > 0)'
+                                  - message: topology is required when type is ExclusiveTopology
+                                    rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
                                   - message: topology must be empty when type is None
-                                    rule: self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0
+                                    rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
                                   - message: enforcement must be Required when type is None
                                     rule: self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'
+                                  - message: scope must be All when type is None
+                                    rule: self.type != 'None' || !has(self.scope) || self.scope == 'All'
                               topology:
                                 description: |-
                                   topology is the node label key that defines the topology domain of a
@@ -17643,17 +17665,18 @@ spec:
                                 description: type selects the group level placement guarantee. Defaults to None.
                                 enum:
                                   - None
-                                  - ExclusiveSet
                                   - ExclusiveTopology
                                 type: string
                             type: object
                             x-kubernetes-validations:
-                              - message: topology is required when type is ExclusiveTopology or ExclusiveSet
-                                rule: '!(self.type in [''ExclusiveTopology'', ''ExclusiveSet'']) || (has(self.topology) && size(self.topology) > 0)'
+                              - message: topology is required when type is ExclusiveTopology
+                                rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
                               - message: topology must be empty when type is None
-                                rule: self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0
+                                rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
                               - message: enforcement must be Required when type is None
                                 rule: self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'
+                              - message: scope must be All when type is None
+                                rule: self.type != 'None' || !has(self.scope) || self.scope == 'All'
                           podTerminationPolicy:
                             default: Sequential
                             description: |-

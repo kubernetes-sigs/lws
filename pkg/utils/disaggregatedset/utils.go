@@ -159,8 +159,8 @@ func ComputeRevisionV1(roles []disaggregatedsetv1.DisaggregatedRoleSpec) string 
 
 // normalizedPlacementPolicy returns the exclusive placement that policy sets, or
 // nil when it sets none at either level, so an absent policy and type None hash
-// the same. The actual type and topology of exclusive levels are preserved, so
-// switching between the two exclusive scopes rolls out. Only a Preferred
+// the same. The type, topology and non-default scope of exclusive levels are
+// preserved, so switching between the two scopes rolls out. Only a Preferred
 // enforcement is recorded, since it is the only value that changes the
 // scheduling behavior, so Required keeps hashing as the absent field and
 // existing revisions stay valid. Topology keys of levels that are not
@@ -176,16 +176,22 @@ func normalizedPlacementPolicy(policy *leaderworkersetv1.PlacementPolicy) *leade
 	}
 	normalized := &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone}
 	if group {
-		normalized.Type = policy.Type
+		normalized.Type = leaderworkersetv1.PlacementExclusiveTopology
 		normalized.Topology = policy.Topology
+		if policy.Scope == leaderworkersetv1.PlacementScopeOwn {
+			normalized.Scope = leaderworkersetv1.PlacementScopeOwn
+		}
 		if policy.Enforcement == leaderworkersetv1.PlacementPreferred {
 			normalized.Enforcement = leaderworkersetv1.PlacementPreferred
 		}
 	}
 	if subGroup {
 		normalized.SubGroup = &leaderworkersetv1.SubGroupPlacementPolicy{
-			Type:     policy.SubGroup.Type,
+			Type:     leaderworkersetv1.PlacementExclusiveTopology,
 			Topology: policy.SubGroup.Topology,
+		}
+		if policy.SubGroup.Scope == leaderworkersetv1.PlacementScopeOwn {
+			normalized.SubGroup.Scope = leaderworkersetv1.PlacementScopeOwn
 		}
 		if policy.SubGroup.Enforcement == leaderworkersetv1.PlacementPreferred {
 			normalized.SubGroup.Enforcement = leaderworkersetv1.PlacementPreferred

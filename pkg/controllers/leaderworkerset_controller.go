@@ -1344,11 +1344,10 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
 	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
-		// A missing scope resolves as ExclusiveTopology, so only the Slice
-		// scope is stamped: stamping the global scope would change the
-		// template of existing groups on controller upgrade and roll them
-		// without a revision.
-		if scope == leaderworkerset.PlacementExclusiveSet {
+		// A missing scope resolves as All, so only the Own scope is stamped:
+		// stamping the default would change the template of existing groups on
+		// controller upgrade and roll them without a revision.
+		if scope == leaderworkerset.PlacementScopeOwn {
 			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
 		}
 		// A missing enforcement resolves as Required, for the same upgrade
@@ -1362,7 +1361,7 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if topologyKey, scope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
-			if scope == leaderworkerset.PlacementExclusiveSet {
+			if scope == leaderworkerset.PlacementScopeOwn {
 				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(scope)
 			}
 			if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {

@@ -40,14 +40,13 @@ const (
 	// which will be used for 1:1 exclusive scheduling in a given subgroup.
 	SubGroupExclusiveKeyAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology"
 
-	// Exclusive scope annotation records the PlacementType of the group-level
+	// Exclusive scope annotation records the PlacementScope of the group-level
 	// exclusive placement the group was created with, so the pod webhook can
-	// scope the injected anti-affinity accordingly. It is absent for objects
-	// created before the scope existed, which keeps the global (ExclusiveTopology)
-	// behavior.
+	// scope the injected anti-affinity accordingly. Only Own is recorded: a
+	// missing annotation resolves as All, so existing templates stay unchanged.
 	ExclusiveScopeAnnotationKey string = "leaderworkerset.sigs.k8s.io/exclusive-scope"
 
-	// Subgroup exclusive scope annotation records the PlacementType of the
+	// Subgroup exclusive scope annotation records the PlacementScope of the
 	// subgroup-level exclusive placement, mirroring ExclusiveScopeAnnotationKey.
 	SubGroupExclusiveScopeAnnotationKey string = "leaderworkerset.sigs.k8s.io/subgroup-exclusive-scope"
 
@@ -591,13 +590,14 @@ const (
 
 // PlacementPolicy defines the topology placement of the pods in each group,
 // and optionally in each subgroup.
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSet']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSet"
-// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
+// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 // +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'",message="enforcement must be Required when type is None"
+// +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.scope) || self.scope == 'All'",message="scope must be All when type is None"
 type PlacementPolicy struct {
 	// type selects the group level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveSet,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -606,6 +606,16 @@ type PlacementPolicy struct {
 	// ExclusiveTopology.
 	// +optional
 	Topology string `json:"topology,omitempty"`
+
+	// scope selects the pods the exclusive anti-affinity repels. All keeps
+	// every other group out of the domain, matching the deprecated annotations
+	// and the physical exclusivity hardware-sliced accelerators need; Own keeps
+	// only the groups of this LeaderWorkerSet out, so groups of other
+	// LeaderWorkerSets may share the domain. Defaults to All.
+	// +kubebuilder:default=All
+	// +kubebuilder:validation:Enum={All,Own}
+	// +optional
+	Scope PlacementScope `json:"scope,omitempty"`
 
 	// enforcement selects how the exclusive placement is enforced. Required
 	// keeps the injected anti-affinity required, so a group without a free
@@ -626,13 +636,14 @@ type PlacementPolicy struct {
 
 // SubGroupPlacementPolicy defines the topology placement of the pods in each
 // subgroup.
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['ExclusiveTopology', 'ExclusiveSet']) || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology or ExclusiveSet"
-// +kubebuilder:validation:XValidation:rule="self.type in ['ExclusiveTopology', 'ExclusiveSet'] || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
+// +kubebuilder:validation:XValidation:rule="self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)",message="topology is required when type is ExclusiveTopology"
+// +kubebuilder:validation:XValidation:rule="self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0",message="topology must be empty when type is None"
 // +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'",message="enforcement must be Required when type is None"
+// +kubebuilder:validation:XValidation:rule="self.type != 'None' || !has(self.scope) || self.scope == 'All'",message="scope must be All when type is None"
 type SubGroupPlacementPolicy struct {
 	// type selects the subgroup level placement guarantee. Defaults to None.
 	// +kubebuilder:default=None
-	// +kubebuilder:validation:Enum={None,ExclusiveSet,ExclusiveTopology}
+	// +kubebuilder:validation:Enum={None,ExclusiveTopology}
 	// +optional
 	Type PlacementType `json:"type,omitempty"`
 
@@ -640,6 +651,13 @@ type SubGroupPlacementPolicy struct {
 	// subgroup. Required when type is ExclusiveTopology.
 	// +optional
 	Topology string `json:"topology,omitempty"`
+
+	// scope selects the pods the exclusive anti-affinity repels, as at the
+	// group level. Defaults to All.
+	// +kubebuilder:default=All
+	// +kubebuilder:validation:Enum={All,Own}
+	// +optional
+	Scope PlacementScope `json:"scope,omitempty"`
 
 	// enforcement selects how the exclusive placement is enforced, as at the
 	// group level. Defaults to Required.
@@ -656,18 +674,28 @@ const (
 	// PlacementNone injects no placement affinity.
 	PlacementNone PlacementType = "None"
 
-	// PlacementExclusiveSet places all pods of a group, or of a subgroup,
-	// in one topology domain and keeps the pods of other groups, or subgroups,
-	// of the same LeaderWorkerSet out of that domain. Groups of other
-	// LeaderWorkerSets may share the domain.
-	PlacementExclusiveSet PlacementType = "ExclusiveSet"
-
 	// PlacementExclusiveTopology places all pods of a group, or of a subgroup,
-	// in one topology domain and keeps the pods of other groups, or subgroups,
-	// out of that domain, regardless of the workload they belong to. This is
-	// the physical-exclusivity scope the deprecated annotations always had,
-	// and the one hardware-sliced accelerators (e.g. TPU slices) require.
+	// in one topology domain. The scope decides which other pods are kept out
+	// of it: every LeaderWorkerSet pod, or only the groups of this
+	// LeaderWorkerSet. The default (All) is what the deprecated annotations
+	// always had, and what hardware-sliced accelerators (e.g. TPU slices)
+	// require.
 	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
+)
+
+// PlacementScope selects the pods an exclusive placement repels.
+type PlacementScope string
+
+const (
+	// PlacementScopeAll repels every LeaderWorkerSet and DisaggregatedSet pod
+	// from the domain. This is the behavior the deprecated annotations always
+	// had, and the one hardware-sliced accelerators (e.g. TPU slices) require.
+	PlacementScopeAll PlacementScope = "All"
+
+	// PlacementScopeOwn repels only the groups of this LeaderWorkerSet, so
+	// groups of other LeaderWorkerSets may share the domain. It trades the
+	// domain exclusivity for capacity.
+	PlacementScopeOwn PlacementScope = "Own"
 )
 
 // PlacementEnforcement defines how an exclusive placement is enforced.

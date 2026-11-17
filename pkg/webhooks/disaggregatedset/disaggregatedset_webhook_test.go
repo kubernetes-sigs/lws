@@ -1758,14 +1758,14 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
-			name:     "group ExclusiveSet placementPolicy",
-			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: sliceTopology},
+			name:     "group Own scope placementPolicy",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: sliceTopology},
 			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
 		},
 		{
-			name: "subgroup ExclusiveSet placementPolicy",
+			name: "subgroup Own scope placementPolicy",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: sliceTopology}},
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: sliceTopology}},
 			subGroups: true,
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
@@ -1959,7 +1959,7 @@ func TestValidateTemplateInternalPlacementAnnotationsOnUpdate(t *testing.T) {
 	// Adding another internal annotation is a new value, so it is rejected.
 	oldDs = internalPlacementDisaggregatedSet(leaderworkerset.ExclusiveEnforcementAnnotationKey)
 	newDs = internalPlacementDisaggregatedSet(leaderworkerset.ExclusiveEnforcementAnnotationKey)
-	newDs.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(leaderworkerset.PlacementExclusiveSet)
+	newDs.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(leaderworkerset.PlacementScopeOwn)
 	_, err = webhook.ValidateUpdate(context.Background(), oldDs, newDs)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), leaderworkerset.ExclusiveScopeAnnotationKey)

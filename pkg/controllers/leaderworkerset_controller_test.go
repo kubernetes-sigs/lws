@@ -2805,7 +2805,7 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 		wantSubGroupEnforcement string
 	}{
 		{
-			name: "placementPolicy",
+			name: "placementPolicy with the All scope",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
 			wantGroupKey:    "block",
@@ -2828,42 +2828,42 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 			wantSubGroupKey: "rack",
 		},
 		{
-			name: "ExclusiveSet stamps the scopes",
-			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "block",
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "host"}},
+			name: "the Own scope is stamped at both levels",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
 			wantGroupKey:      "block",
 			wantSubGroupKey:   "host",
-			wantGroupScope:    string(leaderworkerset.PlacementExclusiveSet),
-			wantSubGroupScope: string(leaderworkerset.PlacementExclusiveSet),
+			wantGroupScope:    string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope: string(leaderworkerset.PlacementScopeOwn),
 		},
 		{
-			name: "a Slice subgroup next to a global group",
+			name: "an Own subgroup next to an All group",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "host"}},
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
 			wantGroupKey:      "block",
 			wantSubGroupKey:   "host",
-			wantSubGroupScope: string(leaderworkerset.PlacementExclusiveSet),
+			wantSubGroupScope: string(leaderworkerset.PlacementScopeOwn),
 		},
 		{
 			name: "a Preferred group enforcement is stamped",
-			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "block",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
 				Enforcement: leaderworkerset.PlacementPreferred,
-				SubGroup:    &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "host"}},
+				SubGroup:    &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
 			wantGroupKey:         "block",
 			wantSubGroupKey:      "host",
-			wantGroupScope:       string(leaderworkerset.PlacementExclusiveSet),
-			wantSubGroupScope:    string(leaderworkerset.PlacementExclusiveSet),
+			wantGroupScope:       string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope:    string(leaderworkerset.PlacementScopeOwn),
 			wantGroupEnforcement: string(leaderworkerset.PlacementPreferred),
 		},
 		{
 			name: "a Preferred subgroup enforcement is stamped",
-			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "block",
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveSet, Topology: "host",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host",
 					Enforcement: leaderworkerset.PlacementPreferred}},
 			wantGroupKey:            "block",
 			wantSubGroupKey:         "host",
-			wantGroupScope:          string(leaderworkerset.PlacementExclusiveSet),
-			wantSubGroupScope:       string(leaderworkerset.PlacementExclusiveSet),
+			wantGroupScope:          string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope:       string(leaderworkerset.PlacementScopeOwn),
 			wantSubGroupEnforcement: string(leaderworkerset.PlacementPreferred),
 		},
 	}
@@ -2883,8 +2883,8 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; got != tc.wantSubGroupKey {
 				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
 			}
-			// A missing scope resolves as ExclusiveTopology, so the global
-			// scope must stay unstamped to keep upgrade rollouts away.
+			// A missing scope resolves as All, so the default scope must stay
+			// unstamped to keep upgrade rollouts away.
 			if got := podTemplate.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey]; got != tc.wantGroupScope {
 				t.Errorf("exclusive-scope annotation = %q, want %q", got, tc.wantGroupScope)
 			}
