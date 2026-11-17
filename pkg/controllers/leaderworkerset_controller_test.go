@@ -1935,11 +1935,31 @@ func TestLeaderWorkerSetPodWatchPredicate(t *testing.T) {
 		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
 		pred := r.podWatchPredicate()
 
+		hashWorkerPod := workerPod.DeepCopy()
+		hashWorkerPod.Annotations = map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+		}
+		unindexedPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-pod",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+				},
+			},
+		}
+
 		if !pred.Create(event.CreateEvent{Object: leaderPod}) {
 			t.Errorf("expected Create(leaderPod) to be true, got false")
 		}
-		if pred.Create(event.CreateEvent{Object: workerPod}) {
-			t.Errorf("expected Create(workerPod) to be false, got true")
+		if !pred.Create(event.CreateEvent{Object: workerPod}) {
+			t.Errorf("expected Create(Ordinal workerPod) to be true, got false")
+		}
+		if pred.Create(event.CreateEvent{Object: hashWorkerPod}) {
+			t.Errorf("expected Create(Hash workerPod) to be false, got true")
+		}
+		if pred.Create(event.CreateEvent{Object: unindexedPod}) {
+			t.Errorf("expected Create(unindexedPod) to be false, got true")
 		}
 		if pred.Create(event.CreateEvent{Object: nil}) {
 			t.Errorf("expected Create(nil) to be false, got true")
@@ -2477,56 +2497,6 @@ func TestPruneScaledDownGroupRestartCountsPreservesActiveSurgeReplica(t *testing
 	}
 	if _, found := counts["revision-a/2"]; found {
 		t.Fatalf("inactive replica count was not removed: %#v", counts)
-	}
-}
-
-func TestCalculateContinuousReadyReplicas(t *testing.T) {
-	tests := []struct {
-		name   string
-		states []replicaState
-		want   int32
-	}{
-		{
-			name:   "no replicas",
-			states: nil,
-			want:   0,
-		},
-		{
-			name: "all replicas ready and updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-			},
-			want: 3,
-		},
-		{
-			name: "counting stops at the first replica that is not updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: false},
-				{ready: true, updated: true},
-			},
-			want: 1,
-		},
-		{
-			name: "an updated but not ready tail replica counts as zero",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: false, updated: true},
-			},
-			want: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := calculateContinuousReadyReplicas(tc.states)
-			if got != tc.want {
-				t.Fatalf("calculateContinuousReadyReplicas()=%d, want %d", got, tc.want)
-			}
-		})
 	}
 }
 

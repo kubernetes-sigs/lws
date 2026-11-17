@@ -42,6 +42,7 @@ import (
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
@@ -749,6 +750,170 @@ func TestReconcileWorkloadScheduling(t *testing.T) {
 		}
 		if got := lwsSchedLeaderReplicas(t, k8sClient, lws, false); got != surged {
 			t.Errorf("leader replicas = %d after a scheduling error, want the surge replicas %d kept", got, surged)
+		}
+	})
+
+	t.Run("a scheduling error during an ordinal rollout scale-down raises partition to protect the floor", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(1).MaxUnavailable(1).MaxSurge(0).Obj()
+		lws.UID = "lws-sched-ordinal-floor"
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		provider := &lwsSchedFakeProvider{}
+		r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+		r.SchedulerProvider = provider
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("initial Reconcile() = %v, want nil", err)
+		}
+
+		sts := ackLeaderStatefulSet(t, ctx, k8sClient, client.ObjectKeyFromObject(lws))
+		rev1 := revisionutils.GetRevisionKey(sts)
+
+		// Combined scale-up (2 -> 3) and template update (rev2): baseline = 2, floor = 1.
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws: %v", err)
+		}
+		fetched.Generation = 2
+		fetched.Spec.Replicas = ptr.To[int32](3)
+		fetched.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "new-image"
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("publish rev2 Reconcile() = %v, want nil", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, k8sClient, client.ObjectKeyFromObject(lws))
+		rev2 := revisionutils.GetRevisionKey(sts)
+
+		// A0 is Ready on rev1, B1 is Pending on rev2, B2 is Ready on rev2 -> partition drops to 0.
+		for _, obj := range append(
+			makeOwnedGroupObjects(fetched, sts, 0, 1, rev1, "sts-"+rev1, true, true, true),
+			append(
+				makeOwnedGroupObjects(fetched, sts, 1, 1, rev2, "sts-"+rev2, false, false, false),
+				makeOwnedGroupObjects(fetched, sts, 2, 1, rev2, "sts-"+rev2, true, true, true)...,
+			)...,
+		) {
+			if err := k8sClient.Create(ctx, obj); err != nil {
+				t.Fatalf("creating pod: %v", err)
+			}
+		}
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("advance partition Reconcile() = %v, want nil", err)
+		}
+		sts = ackLeaderStatefulSet(t, ctx, k8sClient, client.ObjectKeyFromObject(lws))
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 0 {
+			t.Fatalf("partition before scale-down = %d, want 0", got)
+		}
+
+		// Scale down 3 -> 2 while scheduling prerequisites fail: shrinking removes Ready B2,
+		// so Partition must rise to 1 to protect Ready A0 on rev1.
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws for scale-down: %v", err)
+		}
+		fetched.Generation = 3
+		fetched.Spec.Replicas = ptr.To[int32](2)
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("scaling down lws: %v", err)
+		}
+		provider.reconcileErr = schedulerprovider.NewReconcileError(
+			schedulerprovider.ReasonPodGroupCreateFailed,
+			errors.New("transient scheduling failure"),
+		)
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+			t.Fatal("Reconcile() = nil, want scheduling error")
+		}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), sts); err != nil {
+			t.Fatalf("getting sts after scheduling-error scale-down: %v", err)
+		}
+		if got := *sts.Spec.Replicas; got != 2 {
+			t.Fatalf("sts.Spec.Replicas = %d, want 2", got)
+		}
+		if got := *sts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 1 {
+			t.Fatalf("sts partition = %d, want 1 to protect A0 after retiring Ready B2", got)
+		}
+	})
+
+	t.Run("a scheduling error during a hash rollout scale-down tightens deployment maxUnavailable", func(t *testing.T) {
+		lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(1).MaxUnavailable(0).MaxSurge(1).Obj()
+		lws.UID = "lws-sched-hash-floor"
+		lws.Spec.GroupIdentity = leaderworkerset.GroupIdentityHash
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{}
+		provider := &lwsSchedFakeProvider{}
+		r, k8sClient, _ := lwsSchedNewReconciler(t, interceptor.Funcs{}, lws)
+		r.SchedulerProvider = provider
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("initial Reconcile() = %v, want nil", err)
+		}
+
+		// Combined scale-up (2 -> 4) and template update: baseline = 2, floor = 2, deploy maxUnavailable = 2.
+		fetched := &leaderworkerset.LeaderWorkerSet{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws: %v", err)
+		}
+		fetched.Generation = 2
+		fetched.Spec.Replicas = ptr.To[int32](4)
+		fetched.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "new-image"
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("updating lws: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err != nil {
+			t.Fatalf("rollout Reconcile() = %v, want nil", err)
+		}
+
+		deploy := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), deploy); err != nil {
+			t.Fatalf("getting deployment: %v", err)
+		}
+		if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 2 {
+			t.Fatalf("deploy maxUnavailable during 2 -> 4 rollout = %d, want 2", got)
+		}
+
+		// Scale down 4 -> 2 (and then 2 -> 1) while scheduling fails:
+		// MaxUnavailable must tighten back to 0 (keeping minAvailable=2, then clamped baseline=1).
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws for 4 -> 2 scale-down: %v", err)
+		}
+		fetched.Generation = 3
+		fetched.Spec.Replicas = ptr.To[int32](2)
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("scaling lws 4 -> 2: %v", err)
+		}
+		provider.reconcileErr = schedulerprovider.NewReconcileError(
+			schedulerprovider.ReasonPodGroupCreateFailed,
+			errors.New("transient scheduling failure"),
+		)
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+			t.Fatal("Reconcile() = nil, want scheduling error")
+		}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), deploy); err != nil {
+			t.Fatalf("getting deployment after 4 -> 2 scale-down: %v", err)
+		}
+		if got := *deploy.Spec.Replicas; got != 2 {
+			t.Fatalf("deploy.Spec.Replicas = %d, want 2", got)
+		}
+		if got := deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 0 {
+			t.Fatalf("deploy maxUnavailable after 4 -> 2 scale-down = %d, want 0 to preserve floor=2", got)
+		}
+		if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != "2" {
+			t.Fatalf("deploy baseline annotation = %q, want %q", got, "2")
+		}
+
+		// Scale further down 2 -> 1 while scheduling still fails: baseline clamps to 1.
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), fetched); err != nil {
+			t.Fatalf("getting lws for 2 -> 1 scale-down: %v", err)
+		}
+		fetched.Generation = 4
+		fetched.Spec.Replicas = ptr.To[int32](1)
+		if err := k8sClient.Update(ctx, fetched); err != nil {
+			t.Fatalf("scaling lws 2 -> 1: %v", err)
+		}
+		if _, err := r.Reconcile(ctx, lwsSchedRequest(lws)); err == nil {
+			t.Fatal("Reconcile() = nil, want scheduling error")
+		}
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), deploy); err != nil {
+			t.Fatalf("getting deployment after 2 -> 1 scale-down: %v", err)
+		}
+		if got := deploy.Annotations[rolloutBaselineAnnotationKey]; got != "1" {
+			t.Fatalf("deploy clamped baseline annotation = %q, want %q", got, "1")
 		}
 	})
 
