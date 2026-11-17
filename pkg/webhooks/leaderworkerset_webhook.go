@@ -136,7 +136,7 @@ var _ admission.Validator[*v1.LeaderWorkerSet] = &LeaderWorkerSetWebhook{}
 
 // ValidateCreate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.LeaderWorkerSet) (admission.Warnings, error) {
-	allErrs := r.generalValidate(lws, nil)
+	allErrs := r.generalValidate(lws)
 	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), nil, &lws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, nil, lws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
@@ -150,7 +150,7 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 
 // ValidateUpdate implements admission.Validator[*v1.LeaderWorkerSet] so a webhook will be registered for the type
 func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, newLws *v1.LeaderWorkerSet) (admission.Warnings, error) {
-	allErrs := r.generalValidate(newLws, oldLws)
+	allErrs := r.generalValidate(newLws)
 	allErrs = append(allErrs, ValidateTPUSubGroupOnWrite(field.NewPath("spec"), &oldLws.Spec, &newLws.Spec)...)
 	allErrs = append(allErrs, r.validateScheduling(ctx, oldLws, newLws)...)
 	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
@@ -345,7 +345,7 @@ func (r *LeaderWorkerSetWebhook) ValidateDelete(ctx context.Context, lws *v1.Lea
 	return nil, nil
 }
 
-func (r *LeaderWorkerSetWebhook) generalValidate(lws, oldLws *v1.LeaderWorkerSet) field.ErrorList {
+func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.ErrorList {
 	specPath := field.NewPath("spec")
 	metadataPath := field.NewPath("metadata")
 
@@ -353,7 +353,7 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws, oldLws *v1.LeaderWorkerSet
 	ValidateName := apivalidation.NameIsDNS1035Label
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(ptr.Deref(lws.Spec.Replicas, 1)), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1))...)
-	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws, oldLws)...)
+	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws)...)
 	allErrs = append(allErrs, ValidateRollingUpdateBudget(
 		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
 		ptr.Deref(lws.Spec.Replicas, 1),
@@ -393,7 +393,7 @@ func ValidatePodTerminationPolicy(specPath *field.Path, spec *v1.LeaderWorkerSet
 // ValidateLeaderWorkerSetTemplate validates static constraints shared by LWS
 // objects and embedded templates. Callers validate replica limits, rollout
 // budgets, object metadata, scheduler support, and update transitions separately.
-func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws, oldLws *v1.LeaderWorkerSet) field.ErrorList {
+func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	var allErrs field.ErrorList
 	if ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) < 1 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("leaderWorkerTemplate", "size"), lws.Spec.LeaderWorkerTemplate.Size, "size must be equal or greater than 1"))
@@ -405,7 +405,7 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws, ol
 		}
 	}
 	allErrs = append(allErrs, validatePlacementPolicy(specPath, lws)...)
-	allErrs = append(allErrs, validatePlacementPolicyAnnotations(specPath.Child("placementPolicy"), lws, oldLws)...)
+	allErrs = append(allErrs, validatePlacementPolicyAnnotations(specPath.Child("placementPolicy"), lws)...)
 	allErrs = append(allErrs, ValidateMaxGroupRestarts(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateRestartBackoff(specPath, &lws.Spec)...)
 	allErrs = append(allErrs, ValidateGroupIdentity(specPath, &lws.Spec)...)
@@ -986,125 +986,63 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 }
 
 // validatePlacementPolicyAnnotations rejects an exclusive placement that
-// disagrees with the exclusive-topology annotation of the same level, wherever
-// the annotation takes effect from: the LWS metadata or the pod templates. A
-// matching ExclusiveTopology pair is accepted so a value can be moved from the
-// annotation to the field in two steps. A level whose type is None falls back
-// to the annotation, since the API server defaults the type whenever
-// placementPolicy is set. An ExclusiveSet field is rejected while the
+// disagrees with the exclusive-topology annotation of the same level on the LWS
+// metadata. A matching ExclusiveTopology pair is accepted so a value can be
+// moved from the annotation to the field in two steps. A level whose type is
+// None falls back to the annotation, since the API server defaults the type
+// whenever placementPolicy is set. An ExclusiveSet field is rejected while the
 // annotation of the same level is set at all: the annotation is globally
 // scoped, so keeping it would silently change which pods the domain is
 // exclusive against.
 //
-// A pair that is unchanged from oldLws is accepted even when it conflicts:
-// objects admitted before the template sources were validated may already carry
-// a template annotation the controller overrides, and they must stay updatable
-// for changes that do not touch placement. Changing either side of the pair
-// still revalidates it.
-func validatePlacementPolicyAnnotations(policyPath *field.Path, lws, oldLws *v1.LeaderWorkerSet) field.ErrorList {
+// An annotation on a pod template is not a source here: whenever the field sets
+// the level, the controller stamps the field topology over the template's
+// annotation, so the template value never reaches a pod.
+func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	policy := lws.Spec.PlacementPolicy
 	if policy == nil {
 		return nil
 	}
-	var oldPolicy *v1.PlacementPolicy
-	if oldLws != nil {
-		oldPolicy = oldLws.Spec.PlacementPolicy
-	}
-	sources := exclusiveAnnotationSources(lws, oldLws)
-	var allErrs field.ErrorList
-	for _, where := range sources {
-		allErrs = append(allErrs, validatePlacementPolicyAnnotation(placementLevel{Type: policy.Type, Topology: policy.Topology}, oldPlacementLevel(oldPolicy, false),
-			where.Annotations[v1.ExclusiveKeyAnnotationKey], where.OldAnnotations[v1.ExclusiveKeyAnnotationKey],
-			v1.ExclusiveKeyAnnotationKey, where.Name, policyPath.Child("topology"))...)
-	}
+	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
+		v1.ExclusiveKeyAnnotationKey, policyPath.Child("topology"))
 	if policy.SubGroup != nil {
-		for _, where := range sources {
-			allErrs = append(allErrs, validatePlacementPolicyAnnotation(placementLevel{Type: policy.SubGroup.Type, Topology: policy.SubGroup.Topology}, oldPlacementLevel(oldPolicy, true),
-				where.Annotations[v1.SubGroupExclusiveKeyAnnotationKey], where.OldAnnotations[v1.SubGroupExclusiveKeyAnnotationKey],
-				v1.SubGroupExclusiveKeyAnnotationKey, where.Name, policyPath.Child("subGroup", "topology"))...)
-		}
+		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
+			v1.SubGroupExclusiveKeyAnnotationKey, policyPath.Child("subGroup", "topology"))...)
 	}
 	return allErrs
 }
 
-// placementLevel is the field side of one placement level.
-type placementLevel struct {
-	Type     v1.PlacementType
-	Topology string
-}
-
-// oldPlacementLevel returns the level of oldPolicy, or its zero value when
-// oldPolicy or the level does not exist, so every new pair compares unequal.
-func oldPlacementLevel(oldPolicy *v1.PlacementPolicy, subGroup bool) placementLevel {
-	if oldPolicy == nil {
-		return placementLevel{}
-	}
-	if subGroup {
-		if oldPolicy.SubGroup == nil {
-			return placementLevel{}
-		}
-		return placementLevel{Type: oldPolicy.SubGroup.Type, Topology: oldPolicy.SubGroup.Topology}
-	}
-	return placementLevel{Type: oldPolicy.Type, Topology: oldPolicy.Topology}
-}
-
 // annotationSource is one place a deprecated exclusive-topology annotation can
-// live on. Name locates it in error messages; it is empty for the LWS metadata
-// so existing messages stay unchanged. OldAnnotations is the same source on the
-// previous object, nil when there is none.
+// live on. Name locates it in warnings; it is empty for the LWS metadata so
+// existing messages stay unchanged.
 type annotationSource struct {
-	Name           string
-	Annotations    map[string]string
-	OldAnnotations map[string]string
+	Name        string
+	Annotations map[string]string
 }
 
 // exclusiveAnnotationSources returns every place a deprecated
-// exclusive-topology annotation takes effect from: the LWS metadata and the pod
-// templates. The effective leader template is the leader template, or the
-// worker template when no leader template is set, and workers always use the
-// worker template, so either template can carry the annotation to a pod; the
-// pod webhook then reads it off the pod and injects the placement affinities.
-func exclusiveAnnotationSources(lws, oldLws *v1.LeaderWorkerSet) []annotationSource {
+// exclusive-topology annotation can be read from for warnings: the LWS metadata
+// and the pod templates. The effective leader template is the leader template,
+// or the worker template when no leader template is set, and workers always use
+// the worker template.
+func exclusiveAnnotationSources(lws *v1.LeaderWorkerSet) []annotationSource {
 	template := lws.Spec.LeaderWorkerTemplate
-	var oldTemplate *v1.LeaderWorkerTemplate
-	if oldLws != nil {
-		oldTemplate = &oldLws.Spec.LeaderWorkerTemplate
-	}
 	sources := []annotationSource{{Annotations: lws.Annotations}}
-	if oldLws != nil {
-		sources[0].OldAnnotations = oldLws.Annotations
-	}
 	if template.LeaderTemplate != nil {
-		source := annotationSource{Name: "leader template", Annotations: template.LeaderTemplate.Annotations}
-		if oldTemplate != nil && oldTemplate.LeaderTemplate != nil {
-			source.OldAnnotations = oldTemplate.LeaderTemplate.Annotations
-		}
-		sources = append(sources, source)
+		sources = append(sources, annotationSource{Name: "leader template", Annotations: template.LeaderTemplate.Annotations})
 	}
-	source := annotationSource{Name: "worker template", Annotations: template.WorkerTemplate.Annotations}
-	if oldTemplate != nil {
-		source.OldAnnotations = oldTemplate.WorkerTemplate.Annotations
-	}
-	return append(sources, source)
+	sources = append(sources, annotationSource{Name: "worker template", Annotations: template.WorkerTemplate.Annotations})
+	return sources
 }
 
-func validatePlacementPolicyAnnotation(level placementLevel, oldLevel placementLevel, annotationValue, oldAnnotationValue, annotation, source string, fldPath *field.Path) field.ErrorList {
-	if level.Type == v1.PlacementExclusiveSet && annotationValue != "" {
-		return field.ErrorList{field.Invalid(fldPath, level.Topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
+func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
+	if placementType == v1.PlacementExclusiveSet && annotationValue != "" {
+		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation is globally scoped", annotation))}
 	}
-	if !utils.IsExclusivePlacement(level.Type) || annotationValue == "" || level.Topology == annotationValue {
+	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {
 		return nil
 	}
-	if level == oldLevel && annotationValue == oldAnnotationValue {
-		// The conflicting pair predates this validation; keep the object
-		// updatable until the user removes the annotation or changes the field.
-		return nil
-	}
-	message := fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue)
-	if source != "" {
-		message += " on the " + source
-	}
-	return field.ErrorList{field.Invalid(fldPath, level.Topology, message)}
+	return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue))}
 }
 
 // kueueTopologyAnnotations are the pod template annotations that request Kueue
@@ -1124,7 +1062,7 @@ func placementPolicyWarnings(lws *v1.LeaderWorkerSet) admission.Warnings {
 		{v1.ExclusiveKeyAnnotationKey, "spec.placementPolicy"},
 		{v1.SubGroupExclusiveKeyAnnotationKey, "spec.placementPolicy.subGroup"},
 	}
-	for _, where := range exclusiveAnnotationSources(lws, nil) {
+	for _, where := range exclusiveAnnotationSources(lws) {
 		for _, dep := range deprecated {
 			annotation, field := dep[0], dep[1]
 			if value, found := where.Annotations[annotation]; found {
