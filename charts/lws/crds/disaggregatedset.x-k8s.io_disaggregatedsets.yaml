@@ -18145,9 +18145,10 @@ spec:
                         Auto chooses groups unless a positive role/sub-role has only one group and
                         at least two slices exist; then it chooses slices. This choice is recorded
                         when the canary starts and retained across percentage and template changes.
-                        Dimensions cannot change during a partial canary. Slice-count changes are
-                        not supported during a slices or auto canary; finish or remove the hold first.
-                        This field has no effect when CanaryPercent is omitted or 100.
+                        Dimensions cannot change while CanaryPercent is set, including at 100.
+                        Slice-count changes are not supported during a slices or auto canary;
+                        remove CanaryPercent to finalize the canary first.
+                        This field has no effect when CanaryPercent is omitted.
                       enum:
                         - groups
                         - slices
@@ -18157,7 +18158,11 @@ spec:
                       description: |-
                         CanaryPercent is the new revision's requested share, using CanaryDimension
                         as the unit. By default, split each role/sub-role's groups independently in
-                        every slice. Omitted or 100 applies no hold.
+                        every slice. Omitted disables canarying and allows old history to be cleaned
+                        up. An explicit 100 runs all groups on the new revision but retains the
+                        baseline LWS objects at zero replicas, so lowering the percentage can
+                        restore them. Remove the field to finalize the canary and accept the new
+                        revision as the baseline for a subsequent canary.
                         The oldest revision with surviving groups is recorded as the baseline;
                         that choice survives controller restarts. A later template update replaces
                         the canary within its share while retaining the recorded baseline's share.
@@ -18180,7 +18185,9 @@ spec:
                         An ambiguous initial choice or conflicting recorded baselines also blocks.
                         Existing roles can scale to and from zero. Scaling the whole set to zero
                         retains the marked baseline's LWS templates; scale-up restores the split.
-                        Completing the canary retires that baseline and its rollback history.
+                        Finalizing the canary by removing the field retires that baseline and its
+                        rollback history. Keeping 100 does not automatically hold the next template
+                        update below 100%; set its starting percentage with the new templates.
                       format: int32
                       maximum: 100
                       minimum: 0

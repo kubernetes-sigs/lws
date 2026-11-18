@@ -574,16 +574,19 @@ const reasonCanaryHeld = "CanaryHeld"
 func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus, available bool, unresolvedRoles []string, canaryHeld bool) metav1.Condition {
 	condType := disaggregatedsetv1.DisaggregatedSetProgressing
 	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
+	percent, canary := canaryPercent(disaggregatedSet)
+	held, ready := canaryHold(roleStatuses)
 	if len(unresolvedRoles) > 0 {
 		reason = "ReplicaTargetsUnresolved"
 		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", listRoles(unresolvedRoles))
+	} else if canary && canaryHeld && ready && (percent < 100 || available) {
+		reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canaryPercent %d; %s", percent, held)
+		if percent == 100 {
+			message += "; remove canaryPercent to finalize"
+		}
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
-	} else if percent, active := canaryPercent(disaggregatedSet); active && canaryHeld {
-		if held, ok := canaryHold(roleStatuses); ok {
-			reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canaryPercent %d; %s", percent, held)
-		}
 	}
 
 	return metav1.Condition{
@@ -596,14 +599,13 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 }
 
 // canaryHold reports a rolling update that has stopped at the requested
-// percentage: every role has exactly its desired groups, all Ready, and some
-// role has fewer than all of them on the current revision. The message lists
+// percentage: every role has exactly its desired groups, all Ready. This also
+// includes 100%, before the user finalizes the canary. The message lists
 // each role's groups on the current revision. Counts alone can briefly match
 // while a new LWS's status lags its groups, or one slice's progress can mask
 // another's, so the caller also requires the executor to have found every
 // rolling slice held.
 func canaryHold(roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
-	held := false
 	counts := make([]string, 0, len(roleStatuses))
 	for _, status := range roleStatuses {
 		if status.DesiredReplicas == nil {
@@ -613,10 +615,9 @@ func canaryHold(roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
 		if status.Replicas != desired || status.ReadyReplicas != desired {
 			return "", false
 		}
-		held = held || status.UpdatedReplicas < desired
 		counts = append(counts, fmt.Sprintf("%s %d/%d", status.Name, status.UpdatedReplicas, desired))
 	}
-	if !held {
+	if len(counts) == 0 {
 		return "", false
 	}
 	return "groups on the current revision: " + strings.Join(counts, ", "), true

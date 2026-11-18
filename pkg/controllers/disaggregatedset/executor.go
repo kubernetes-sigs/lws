@@ -218,7 +218,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 		}
 		if inputs.proportionalCanary {
-			executor.heldSlices++ // Zero demand keeps the baseline for resumption.
+			executor.heldSlices++ // Keep the baseline at zero demand or 100% until finalized.
 			return ctrl.Result{}, false, nil
 		}
 		for _, revision := range append(slices.Clone(oldRevisions), targetRevision) {
@@ -310,7 +310,7 @@ func buildRolloutInputs(
 	removedRoleNames := sets.List(oldRoles.Difference(desiredRoles))
 	allRoleNames := append(slices.Clone(targetRoleNames), removedRoleNames...)
 	config := extractRollingUpdateConfig(disaggregatedSet, allRoleNames, desiredReplicasByRole)
-	_, canary := canaryPercent(disaggregatedSet)
+	percent, canary := canaryPercent(disaggregatedSet)
 	stable := canaryStableRevision(append(slices.Clone(oldRevisions), targetRevision), allRoleNames, readiness)
 	noBaseline := !slices.ContainsFunc(oldRevisions, isCanaryStable) && !slices.ContainsFunc(allRoleNames, func(name string) bool { return readiness.totalReplicas(oldRevisions, name) > 0 })
 	if canary && (stable.Revision == targetRevision.Revision || noBaseline) {
@@ -329,7 +329,7 @@ func buildRolloutInputs(
 				config[i].CanaryOldReplicas = desiredReplicasByRole[name]
 			}
 		}
-	} else if canary && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
+	} else if canary && percent < 100 && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
 		// A slice serves only with every required role on the same revision.
 		// Keep it on A while indivisible, but continue all requested scaling.
 		for i, name := range allRoleNames {
