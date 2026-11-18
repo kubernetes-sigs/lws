@@ -190,7 +190,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
 				subGroupKeyInput = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 			}
-			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+			leaderExcluded := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] == string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)
+			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex, leaderExcluded)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
@@ -331,7 +332,11 @@ func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
 	return hasAffinity && hasAntiAffinity
 }
 
-func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int, leaderExcluded bool) string {
+	// LeaderExcluded: workers alone fill subgroups starting at 0 (see KEP-257).
+	if leaderExcluded {
+		return fmt.Sprint((workerIndex - 1) / subGroupSize)
+	}
 	if (podCount-1)%subGroupSize == 0 && podCount%subGroupSize != 0 {
 		// Leader is considered as extra pod, it is part of the first group
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)

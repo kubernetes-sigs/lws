@@ -263,6 +263,42 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("LeaderExcluded with SubGroupSize 1, expect worker subgroup index to start at 0", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test",
+							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:               "4",
+							leaderworkerset.SubGroupSizeAnnotationKey:       "1",
+							leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
+						},
+					},
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "1",
+					leaderworkerset.SubGroupIndexLabelKey:      "0",
+					leaderworkerset.GroupIndexLabelKey:         "1",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Pod requesting TPUs which doesn't belong to LWS will not have TPU env vars populated", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
