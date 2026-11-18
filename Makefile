@@ -33,6 +33,9 @@ DOCKER_BUILDX_CMD ?= docker buildx
 IMAGE_BUILD_CMD ?= $(DOCKER_BUILDX_CMD) build
 IMAGE_BUILD_EXTRA_OPTS ?=
 STAGING_IMAGE_REGISTRY := us-central1-docker.pkg.dev/k8s-staging-images
+# Production registry used as the chart's default image repository; keep in
+# sync with charts/lws/values.yaml.
+PROD_IMAGE_REGISTRY ?= registry.k8s.io/lws
 IMAGE_REGISTRY ?= ${STAGING_IMAGE_REGISTRY}/lws
 IMAGE_NAME := lws
 IMAGE_REPO := $(IMAGE_REGISTRY)/$(IMAGE_NAME)
@@ -447,7 +450,7 @@ artifacts: kustomize helm yq
 	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
 	# Revert the image changes
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
+	$(YQ)  e  '.image.manager.repository = "$(PROD_IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
 
 .PHONY: prepare-release-branch
 prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.
