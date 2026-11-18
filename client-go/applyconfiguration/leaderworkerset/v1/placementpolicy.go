@@ -33,6 +33,12 @@ type PlacementPolicyApplyConfiguration struct {
 	// group, for example a rack, a block or a zone. Required when type is
 	// ExclusiveTopology.
 	Topology *string `json:"topology,omitempty"`
+	// scope selects the pods the exclusive anti-affinity repels. All keeps
+	// every other group out of the domain, matching the deprecated annotations
+	// and the physical exclusivity hardware-sliced accelerators need; Own keeps
+	// only the groups of this LeaderWorkerSet out, so groups of other
+	// LeaderWorkerSets may share the domain. Defaults to All.
+	Scope *leaderworkersetv1.PlacementScope `json:"scope,omitempty"`
 	// enforcement selects how the exclusive placement is enforced. Required
 	// keeps the injected anti-affinity required, so a group without a free
 	// domain stays Pending; Preferred makes it a scheduling preference, so
@@ -64,6 +70,14 @@ func (b *PlacementPolicyApplyConfiguration) WithType(value leaderworkersetv1.Pla
 // If called multiple times, the Topology field is set to the value of the last call.
 func (b *PlacementPolicyApplyConfiguration) WithTopology(value string) *PlacementPolicyApplyConfiguration {
 	b.Topology = &value
+	return b
+}
+
+// WithScope sets the Scope field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scope field is set to the value of the last call.
+func (b *PlacementPolicyApplyConfiguration) WithScope(value leaderworkersetv1.PlacementScope) *PlacementPolicyApplyConfiguration {
+	b.Scope = &value
 	return b
 }
 

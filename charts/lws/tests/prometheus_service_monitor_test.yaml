@@ -25,6 +25,9 @@ tests:
       - equal:
           path: spec.endpoints[0].scheme
           value: https
+      - equal:
+          path: spec.endpoints[0].honorLabels
+          value: true
 
   - it: adds serviceMonitor.extraLabels
     set:

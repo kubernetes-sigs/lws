@@ -6,3 +6,4 @@ resources:
 
 patches:
 - path: image_pull_policy.yaml
+- path: pod_security.yaml
