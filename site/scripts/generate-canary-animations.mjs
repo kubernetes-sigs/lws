@@ -80,7 +80,8 @@ class Scene {
         }
         const pending = counts[revision][i] - ready[revision][i];
         const count = counts[revision][i];
-        const label = zero && revision === target && !count ? 'LWS retained · replicas: 0' : `${count} ${count === 1 ? 'group' : 'groups'} · ${ready[revision][i]} Ready${pending ? ` · ${pending} starting` : ''}`;
+        const retained = !count && ((zero && revision === target) || (percent === 100 && revision === 0));
+        const label = retained ? 'LWS retained · replicas: 0' : `${count} ${count === 1 ? 'group' : 'groups'} · ${ready[revision][i]} Ready${pending ? ` · ${pending} starting` : ''}`;
         this.text(x, y + 74, label, 24, muted);
       });
     });
@@ -104,7 +105,7 @@ class Scene {
         `${total[i]} groups requested; current ceiling ${desired[i] + 1}. Existing excess after a demand reduction drains safely; the new ceiling does not require instant deletion.`);
     });
     this.text(60, 760, `${String.fromCharCode(65 + target)} · Ready groups / desired`, 29, ink, true);
-    this.text(1845, 760, percent === 100 ? 'Complete at 100%' : `Hold at ${percent}%`, 29, ink, true, 'right');
+    this.text(1845, 760, `Hold at ${percent}%`, 29, ink, true, 'right');
     roles.forEach((role, i) => {
       const y = 818 + i * 86, width = 1180;
       this.text(60, y, role, 28, ink, true);
@@ -159,8 +160,8 @@ promote(100, [1, 2], [4, 7], 'Start the next B Decode.', [0, 1]);
 promote(100, [1, 2], [4, 7], 'The new Decode becomes Ready.');
 promote(100, [1, 1], [4, 7], 'One old group remains in each role.');
 promote(100, [1, 1], [4, 8], 'Start the final B Decode.', [0, 1]);
-promote(100, [1, 1], [4, 8], 'B is fully Ready; A can now retire.');
-promote(100, [0, 0], [4, 8], 'Complete: B serves the full desired workload.', [0, 0], 3, '100% completes the rollout; readiness and budgets still apply.');
+promote(100, [1, 1], [4, 8], 'B is fully Ready; A’s last groups can leave.');
+promote(100, [0, 0], [4, 8], 'Hold at 100%: B serves all groups; A’s templates stay.', [0, 0], 3, 'Lower the percentage to restore A; remove the field to finalize.');
 await promotion.save('canary-promotion');
 
 const replacement = new Scene('Replace canary B with C · keep baseline A', true);

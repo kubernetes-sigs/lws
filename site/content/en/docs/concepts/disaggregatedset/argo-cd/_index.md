@@ -67,7 +67,7 @@ kubectl --context YOUR_CONTEXT -n argocd patch configmap argocd-cm \
 
 Argo CD loads the ConfigMap change automatically. Refresh the Application to re-evaluate its health. The customization only accepts status and conditions observed for the current resource generation:
 
-- `CanaryHeld` becomes Healthy: the requested intermediate state has settled, not the whole rollout.
+- `CanaryHeld` becomes Healthy: the requested state has settled, including 100% before finalization. This does not accept the release on your behalf.
 - `Available=True` becomes Healthy on completion.
 - Missing or stale status, an active rollout, or a canary that cannot yet run remains Progressing, with the controller's explanation when available.
 
@@ -157,8 +157,14 @@ Commit and push the change, then sync the Application. Once Argo CD shows Health
 
 Argo CD does not choose the next percentage or judge the model's answers: you or your release automation make that decision. Healthy means the requested groups are Ready. Readiness and rollout budgets still govern every transition; temporary surge groups are not shown in the table. If autoscaling changes demand, LWS recalculates both shares.
 
+**100% is still reversible.** B serves the full desired workload, but A's LWS objects stay at zero replicas. You can lower the percentage again, including after a controller restart. For ten groups, `100 → 90` restores one A group and leaves nine B groups; rounding still applies for smaller counts. Restoring A requires starting its groups, so it is not an instantaneous switch.
+
+After checking B at 100%, **remove `canaryPercent` in Git and sync to finalize the canary**. Wait for `Available=True` with reason `AllRolesReady` for that generation before starting another canary. Both a hold and a finalized rollout appear Healthy with the configuration above; their condition reasons distinguish them. Finalization allows A's empty LWS objects to be cleaned up and makes B the baseline for the next release. Set the next starting percentage together with its new templates.
+
+Until you finalize, A remains the baseline even if B reaches 100% and you then deploy C. Keeping `100` does not automatically pause the next template update below 100%.
+
 {{< canvas-animation data="/animations/canary-promotion.json" title="Promote a canary: 0 → 25 → 50 → 100%" >}}
-Four Prefill and eight Decode groups move from A to B. Each role has `maxSurge: 1` and `maxUnavailable: 0`: new groups become Ready before old groups leave. The marker shows the requested hold; the bars show Ready groups on B. Timing is illustrative.
+Four Prefill and eight Decode groups move from A to B. Each role has `maxSurge: 1` and `maxUnavailable: 0`: new groups become Ready before old groups leave. At 100%, A's LWS objects remain at zero replicas until you remove the field. The marker shows the requested hold; the bars show Ready groups on B. Timing is illustrative.
 {{< /canvas-animation >}}
 
 Initial creation without an old revision starts the full workload, even with `0`. A positive partial group canary (`1`–`99`) needs at least two groups in each active logical role. If one role has only one group, the whole slice stays on A and continues scaling; its status explains why it cannot yet run a canary. A Ready hold confirms replica readiness, not the quality of the model's answers or its latency: your checks or analysis must decide whether to promote.
@@ -181,7 +187,7 @@ For eight slices of 1 Prefill + 1 Decode, two complete slices roll to B and six 
 
 Omitting the dimension means `groups`. `auto` chooses groups unless a positive role/sub-role has only one group and there are at least two slices, then records `slices`. The choice is made once for the canary and survives restarts and later percentage/template changes; it is not recalculated to chase rounding differences. Role scaling does not change that choice.
 
-Finish or remove the partial hold before changing dimension. Slice-count changes are also rejected during `slices` or `auto` canaries. This does not add slice autoscaling, and the existing restriction on External scaling with multiple slices still applies.
+Remove `canaryPercent` to finalize before changing dimension; reaching 100% does not unlock it. Slice-count changes are also rejected during `slices` or `auto` canaries. This does not add slice autoscaling, and the existing restriction on External scaling with multiple slices still applies.
 
 ## Replace the canary while keeping its baseline
 
@@ -204,7 +210,7 @@ The [companion canary harness in #1309](https://github.com/kubernetes-sigs/lws/p
 
 ## Reduce a canary or change demand
 
-Before completion, lowering the percentage restores the baseline share and reduces the canary share. For the same four Prefill and eight Decode groups, `50 → 25 → 0` returns through the table above in reverse. LWS waits for restored baseline capacity to become Ready before deleting canary groups when availability requires it. At `0`, the target revision's LWS objects remain with `spec.replicas: 0`, so a later promotion can reuse them.
+Until you finalize by removing the field, lowering the percentage restores the baseline share and reduces the canary share, even after reaching 100%. For the same four Prefill and eight Decode groups, `100 → 50 → 25 → 0` returns through the table above in reverse. LWS waits for restored baseline capacity to become Ready before deleting canary groups when availability requires it. At `0`, the target revision's LWS objects remain with `spec.replicas: 0`, so a later promotion can reuse them.
 
 {{< canvas-animation data="/animations/canary-reversal.json" title="Reduce a canary: 50 → 25 → 0%" >}}
 A regains its share before B shrinks. At zero, B's LWS objects and desired templates remain. A durable rollback restores A's templates in Git. Timing is illustrative.
@@ -220,7 +226,7 @@ Canary mode also preserves the requested proportion when demand changes. At 25%,
 
 **During an active canary hold, the `Deferred` / `Immediate` settings in `spec.scalingPolicy.scaleUpDuringRollout` and `spec.scalingPolicy.scaleDownDuringRollout` are ignored.** Both settings produce the same behavior: LWS resizes the old and new revisions to preserve the requested percentage. For example, at 25%, scaling from 8 groups down to 4 changes 6 old + 2 new into 3 old + 1 new, even with `Deferred`.
 
-Readiness, `maxSurge`, `maxUnavailable`, and safe group deletion still govern every change; preserving the percentage does not mean resizing instantly. The configured Deferred/Immediate behavior resumes when `canaryPercent` is `100` or unset. Without an active canary hold, including initial creation without an old revision, the ordinary scaling policies apply.
+Readiness, `maxSurge`, `maxUnavailable`, and safe group deletion still govern every change; preserving the percentage does not mean resizing instantly. At `100`, scaling changes only B's share and A's LWS objects remain at zero. The configured Deferred/Immediate behavior resumes when `canaryPercent` is removed. Without an active canary, including initial creation without an old revision, the ordinary scaling policies apply.
 
 {{< canvas-animation data="/animations/canary-scaling.json" title="Autoscale both revisions at 25%" >}}
 Double desired capacity from four Prefill / eight Decode to eight / sixteen, then halve it again. Both revisions resize to preserve the 25% split, including with `Deferred`. A higher availability floor takes time to fill; existing excess after a reduction drains safely. Timing and intermediate changes are illustrative.
@@ -228,7 +234,7 @@ Double desired capacity from four Prefill / eight Decode to eight / sixteen, the
 
 LWS chooses the **oldest revision with surviving groups** as the baseline and records that choice across template updates and controller restarts. Its role/sub-role templates must match the requested layout, but its replica counts may reach zero. If a required template is missing or the baseline identity is ambiguous, LWS explains the problem through `Progressing` rather than silently treating a younger canary as the baseline. This selection does not determine whether the revision passed your application checks.
 
-An existing role can scale to zero and grow back from its saved templates. At whole-set zero, both the baseline and target LWS objects remain at zero; resuming restores the split. In slice mode, role resizing keeps the same selected slices. Only finishing the canary retires the baseline; lowering the percentage afterward cannot recreate its deleted templates. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
+An existing role can scale to zero and grow back from its saved templates. At whole-set zero, both the baseline and target LWS objects remain at zero; resuming restores the split. In slice mode, role resizing keeps the same selected slices. Only finalizing the canary by removing the field retires the baseline; lowering the percentage afterward cannot recreate its deleted templates. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
 
 The [companion harness in #1309](https://github.com/kubernetes-sigs/lws/pull/1309) covers Ordinal and Hash groups, ordinary roles and sub-roles, both scaling policies, and a Static-to-External handoff followed by real scaler updates. Recorded traces require that separate contribution; the animations above illustrate expected behavior and are included with this guide.
 
@@ -281,7 +287,7 @@ kubectl --context YOUR_CONTEXT -n argocd patch configmap argocd-cm \
   --type merge --patch-file argocd-canary-actions.yaml
 ```
 
-The first action asks for `percent`, an integer from 0 to 100. The second sets an existing percentage to 100. Neither bypasses readiness or availability budgets. Users still need Argo CD permission to run the respective resource action. As with the health patch, this replaces the action customization for this kind, not other ConfigMap entries.
+The first action asks for `percent`, an integer from 0 to 100; it also allows reducing a canary from 100%. The second sets an existing percentage to 100 **without finalizing the canary**. Finalize by removing `canaryPercent` from the source of truth. Neither action bypasses readiness or availability budgets. Users still need Argo CD permission to run the respective resource action. As with the health patch, this replaces the action customization for this kind, not other ConfigMap entries.
 
 Use the Argo CD resource menu for the parameterized action. In the tested releases, the ordinary `argocd app actions run` command has no parameter flag; the API also supports parameters from 3.1 onward.
 

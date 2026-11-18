@@ -68,6 +68,13 @@ test('documentation animations appear in their pages and the visualizer', async 
   }
 });
 
+test('100% canary animation retains rollback history until explicit finalization', async () => {
+  const scene = JSON.parse(await read('../static/animations/canary-promotion.json'));
+  assert.match(scene.frames.at(-1).caption, /Hold at 100%.*templates stay/);
+  assert.match(scene.frames.at(-1).caption, /remove the field to finalize/);
+  assert.doesNotMatch(JSON.stringify(scene), /Complete at 100%|100% completes/);
+});
+
 test('all deployment contexts gate snapshots and the Hugo build on integration tests', async () => {
   const netlify = await read('../../netlify.toml');
   for (const context of ['build', 'context.deploy-preview', 'context.branch-deploy']) {
