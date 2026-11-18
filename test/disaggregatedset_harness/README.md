@@ -89,7 +89,7 @@ outage covers integer and percentage budgets.
 | `native-restart` | Worker and leader crashes recreate only their affected group. | 2 |
 | `outage` | 1/2 in three slots, zero surge, explicit allowed downtime without losing another role's protection. | 4 |
 | `emergency` | Interrupted history, one bootstrap group, real ≥60-second Unschedulable timeout and bounded availability fallback. | 2 |
-| `canary` | 4 Prefill/8 Decode: 25→50→25→0→25, desired 4/8→8/16→4/8, then 100%. Both scaling policies; retain target LWS UIDs at 0%. | 4 |
+| `canary` | 4 Prefill/8 Decode: 25→50→25→0→25, resize at 25% and 100%, then 100→90→100 and remove the field to finalize. Both scaling policies; retain both LWS identities until finalization. | 4 |
 | `canary-subroles` | The same forward/reverse/resizing sequence with Prefill and Decode sharing a physical LWS. Both identities and policies. | 4 |
 | `canary-chain` | Hold A at 50%, then replace B with C in the other half. A's spec and Pod UIDs must stay unchanged. Ordinal and Hash. | 2 |
 | `canary-chain-subroles` | The same A→B→C sequence with shared physical LWSs; also preserve A's child assignments. | 2 |
@@ -105,6 +105,13 @@ replacement A groups first remain scheduled but unready, proving that needed
 Ready B capacity is retained until the gates are opened. At 0%, B has no Pods but
 its original LWS objects remain, and returning to 25% reuses them. Percentage and
 replica-only changes must not create another revision.
+
+At 100%, A has no Pods but its LWS objects remain. The scenario resizes B at
+100%, returns to 90% (one A Prefill and one A Decode after rounding), and then
+promotes to 100% again. Only removing `canaryPercent` finalizes the canary and
+permits A's LWS objects to be cleaned up. The checked-in traces predate these
+additional steps; they remain historical recordings, not evidence of this new
+100%-to-90% sequence.
 
 Before resizing, the reversible canary cases switch both roles (or subroles) to External
 scaling. The handoff must preserve all Pod/LWS identities and seed scalers from

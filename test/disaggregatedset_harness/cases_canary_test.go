@@ -68,6 +68,18 @@ func TestCanarySafetyChecksPhysicalSurgeAndReadyFloor(t *testing.T) {
 	require.NotEqual(t, frozen, canaryStableIdentity(chain), "A replacement must not pass just because its Ready count is unchanged")
 }
 
+func TestCanaryFullHoldIsNotFinalization(t *testing.T) {
+	s := fleet(map[string]map[string]Counts{"B": {"prefill": {4, 4, 4}, "decode": {8, 8, 8}}}, 1)
+	s.DS["spec"] = Object{"rolloutStrategy": Object{"canaryPercent": 100}}
+	condition := Object{"type": "Progressing", "reason": "CanaryHeld", "status": "True", "observedGeneration": 2}
+	obj(s.DS["status"])["conditions"] = []any{condition}
+	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), 100, false))
+	condition["type"], condition["reason"] = "Available", "AllRolesReady"
+	require.False(t, canarySettled(s, pair(0, 0), pair(4, 8), 100, false))
+	delete(obj(at(s.DS, "spec", "rolloutStrategy")), "canaryPercent")
+	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), -1, false))
+}
+
 func TestCanaryUpdatePatchesControlsCountsAndTemplateTogether(t *testing.T) {
 	parent := RoleSpec("model", 1, "Hash", "A", 1, 0, 1, false)
 	delete(obj(parent["spec"]), "replicas")

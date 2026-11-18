@@ -57,6 +57,10 @@ func percentageCanary(l *Lab) {
 		{25, 8, 16, 2, 4},
 		{25, 4, 8, 1, 2},
 		{100, 4, 8, 4, 8},
+		{100, 8, 16, 8, 16},
+		{100, 4, 8, 4, 8},
+		{90, 4, 8, 3, 7}, // Rounding keeps one baseline group in each role.
+		{100, 4, 8, 4, 8},
 	} {
 		if index == 6 {
 			canaryExternalHandoff(l, canaryTargets(l, 4, 8))
@@ -78,7 +82,7 @@ func percentageCanary(l *Lab) {
 			update.Version = "B"
 		}
 		l.Update(update)
-		if external && stage.percent < 100 {
+		if external {
 			l.Checkpoint("Resize both External role targets to "+describe(desired)+".", "Write each real RoleScaler /scale subresource; templates and canaryPercent stay unchanged.")
 			for _, role := range keys(desired) {
 				l.K("-n", Namespace, "scale", "dsrs/"+canaryScalerName(role), fmt.Sprintf("--replicas=%d", desired[role]))
@@ -112,7 +116,7 @@ func percentageCanary(l *Lab) {
 				want = 2
 			}
 			l.Assert(len(workloads) == want, "First 25% hold did not have both physical revisions")
-		} else if index > 1 && stage.percent < 100 {
+		} else if index > 1 {
 			l.Assert(sameSet(workloads, uidSet(s.LWS)), "Percentage/count edit replaced or deleted a physical revision")
 		}
 		if stage.percent == 0 {
@@ -121,11 +125,25 @@ func percentageCanary(l *Lab) {
 				l.Note("B's physical LWS objects are retained at replicas=0; returning to 25% reuses their UIDs.")
 			}
 		}
+		if stage.percent == 100 {
+			l.Assert(len(Pods(s, "A", "")) == 0, "100% hold retained baseline Pods")
+			l.Note("A's LWS objects remain at replicas=0; lowering the percentage can restore A until finalization.")
+		}
 		l.Hold("Observed split remains Ready without another trigger", 3, func(s Snapshot) bool {
 			return guard(s) && canarySettled(s, old, updated, stage.percent, l.virtual)
 		})
 		previousPercent = stage.percent
 	}
+	l.Checkpoint("Accept B and finalize the canary.", "Remove canaryPercent; allow the empty baseline LWS objects to be cleaned up.")
+	l.Patch(Object{"spec": Object{"rolloutStrategy": Object{"canaryPercent": nil}}})
+	l.WaitFor("B is available and A's empty LWS objects have been removed", func(s Snapshot) bool {
+		for _, lws := range s.LWS {
+			if VersionOf(lws) == "A" {
+				return false
+			}
+		}
+		return canarySettled(s, canaryTargets(l, 0, 0), canaryTargets(l, 4, 8), -1, l.virtual)
+	})
 }
 
 // At a held 50% canary, introducing C replaces B within the experimental half.
@@ -295,7 +313,7 @@ func canaryVersionsSettled(s Snapshot, versions map[string]Targets, percent int,
 		return false
 	}
 	want, kind := "CanaryHeld", "Progressing"
-	if percent == 100 {
+	if percent < 0 { // The absent field finalizes; explicit 100 remains held.
 		want, kind = "AllRolesReady", "Available"
 	}
 	for _, condition := range objects(at(s.DS, "status", "conditions")) {
