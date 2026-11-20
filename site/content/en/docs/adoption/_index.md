@@ -38,6 +38,11 @@ aliases:
 [**Axlearn**](https://github.com/apple/axlearn): Axlearn is a library built on top of JAX and XLA to support the development of large-scale deep learning models. It uses LeaderWorkerSet to deploy multi-host
 inference workloads to use during training workflows.
 
+[**KServe**](https://github.com/kserve/kserve): KServe is a Kubernetes-native platform for serving predictive and generative AI models.
+Its LLMInferenceService, built on the llm-d framework, uses LeaderWorkerSet and DisaggregatedSet
+to deploy and manage multi-node and disaggregated LLM inference workloads. See the
+[documentation](https://kserve.github.io/website/docs/model-serving/generative-inference/llmisvc/llmisvc-dependencies).
+
 [**Kubeflow Trainer**](https://github.com/kubeflow/trainer): Kubeflow Trainer is a Kubernetes-native
 project designed for scalable LLMs fine-tuning and distributed AI model training. Kubeflow Trainer
 uses the LeaderWorkerSet API to orchestrate an in-memory,
