@@ -195,11 +195,13 @@ func TestMatrixParity(t *testing.T) {
 		s    Selection
 		want int
 	}{
-		{Selection{}, 26},
-		{Selection{IncludeLarge: true}, 28},
+		{Selection{}, 38},
+		{Selection{IncludeLarge: true}, 40},
 		{Selection{Names: []string{"large-all"}}, 20},
-		{Selection{Names: []string{"all", "large-all"}}, 46},
-		{Selection{Names: []string{"all", "all"}}, 26},
+		{Selection{Names: []string{"all", "large-all"}}, 58},
+		{Selection{Names: []string{"all", "all"}}, 38},
+		{Selection{Names: []string{"canary", "canary-subroles"}}, 8},
+		{Selection{Names: []string{"canary-chain", "canary-chain-subroles"}}, 4},
 	} {
 		m, err := Matrix(test.s)
 		require.NoError(t, err)

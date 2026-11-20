@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -87,4 +88,40 @@ func TestHarnessObserveIndependentScalingPolicies(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHarnessCanaryShowsEffectivePoliciesAndSeparatesReversePreview(t *testing.T) {
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 8}, [2]int{1, 1}, [2]int{})
+	ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
+	ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25)}
+	ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: disaggv1.RolloutScalingDeferred, ScaleDownDuringRollout: disaggv1.RolloutScalingDeferred}
+	for i := range ds.Spec.Roles {
+		ds.Spec.Roles[i].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+	}
+	revision := disaggutils.ComputeDisaggregatedSetRevision(ds)
+	objects := []client.Object{ds}
+	for i, role := range testRoleNames() {
+		count := int32(2 * (i + 1))
+		for _, version := range []string{"old", revision} {
+			lws := revisionLWS(version, role, count, count, time.Unix(1000, 0), count*2)
+			if version == revision {
+				lws.CreationTimestamp = metav1.NewTime(time.Unix(2000, 0))
+			}
+			lws.Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)
+			objects = append(objects, replicaGroupObjects(lws, count, count)...)
+		}
+	}
+	report, err := HarnessObserve(t.Context(), struct{ client.Reader }{newTestClient(objects...)}, client.ObjectKeyFromObject(ds))
+	require.NoError(t, err)
+	slice := report["slices"].([]map[string]any)[0]
+	forward := slice["candidates"].([]map[string]any)[0]["state"].(RolloutState)
+	require.True(t, forward.ProportionalCanary)
+	require.True(t, forward.ScaleUpDuringRollout)
+	require.True(t, forward.ScaleDownDuringRollout)
+	require.Equal(t, "old", slice["stableRevision"])
+	reverse := slice["canaryRestoration"].([]map[string]any)[0]
+	require.Equal(t, "restore-stable-share", reverse["direction"])
+	require.Equal(t, "old", reverse["growingRevision"])
+	require.Equal(t, revision, reverse["drainingRevision"])
+	require.Equal(t, RoleReplicaState{2, 4}, reverse["state"].(RolloutState).Target.SpecReplicas)
 }

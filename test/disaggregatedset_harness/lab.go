@@ -504,6 +504,7 @@ func budget(v any, role string) any {
 type Update struct {
 	Version            string
 	Counts             Targets
+	CanaryPercent      *int
 	Ready              *bool
 	Names              []string
 	Surge, Unavailable any
@@ -516,6 +517,7 @@ func (l *Lab) Update(u Update) {
 	defer l.action("update", nil, Object{
 		"version":        u.Version,
 		"counts":         u.Counts,
+		"canary_percent": u.CanaryPercent,
 		"policy":         "",
 		"ready":          u.Ready,
 		"names":          u.Names,
@@ -533,6 +535,16 @@ func (l *Lab) Update(u Update) {
 		spec := obj(r["spec"])
 		if n, ok := u.Counts[role]; ok {
 			spec["replicas"] = n
+		}
+		for _, child := range objects(r["subRoles"]) {
+			key := role + "/" + str(child["name"])
+			if n, ok := u.Counts[key]; ok {
+				child["replicas"] = n
+			}
+			if slices.Contains(u.ExternalRoles, key) {
+				child["scaling"] = Object{"mode": "External"}
+				delete(child, "replicas")
+			}
 		}
 		if slices.Contains(u.ExternalRoles, role) {
 			r["scaling"] = Object{"mode": "External"}
@@ -578,9 +590,11 @@ func (l *Lab) Update(u Update) {
 			}
 		}
 	}
-	l.Patch(Object{
-		"spec": Object{"roles": roles},
-	})
+	spec := Object{"roles": roles}
+	if u.CanaryPercent != nil {
+		spec["rolloutStrategy"] = Object{"canaryPercent": *u.CanaryPercent}
+	}
+	l.Patch(Object{"spec": spec})
 }
 
 func (l *Lab) Release(version, role string, count int, s *Snapshot) {
