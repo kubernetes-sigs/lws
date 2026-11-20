@@ -299,7 +299,7 @@ try {
   assert.equal(await page.locator('[data-trace-export-status]').isVisible(), false, 'No export indicator before an export starts');
   await assertResponsiveSizing();
   const catalog = JSON.parse(await page.locator('#trace-player-catalog').textContent());
-  assert.deepEqual(catalog.map(group => group.scenarios.length), [28, 20, 4]);
+  assert.deepEqual(catalog, JSON.parse(await readFile(new URL('../data/trace_player.json', import.meta.url), 'utf8')), 'The served catalog matches this checkout');
   for(const group of catalog.slice(0,2)) await assertStableScenarioSwitch(group);
   for (const group of catalog) {
     await page.locator(`[data-trace-suite="${group.id}"]`).click();
