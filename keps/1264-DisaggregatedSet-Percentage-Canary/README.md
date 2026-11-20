@@ -12,6 +12,7 @@
   - [Replace B with C while keeping A](#replace-b-with-c-while-keeping-a)
 - [Remember which version to keep](#remember-which-version-to-keep)
 - [Safety and limitations](#safety-and-limitations)
+- [Upgrade and downgrade safety](#upgrade-and-downgrade-safety)
 - [Status and Argo CD](#status-and-argo-cd)
 - [Implementation outline](#implementation-outline)
 - [Test plan](#test-plan)
@@ -209,6 +210,18 @@ Ordinary replica-count changes do not stop reconciliation. Some template changes
 | The canary was finalized by removing the field and its baseline was retired. | Percentage changes alone cannot recreate deleted templates. The current revision scales normally. |
 
 Small replica counts can differ substantially from the requested percentage because groups cannot be divided. Rollout progress also still depends on readiness, cross-role coordination, and enough schedulable capacity.
+
+## Upgrade and downgrade safety
+
+**Upgrade both the LWS controller and its CRDs before using canary fields.** An older controller does not enforce the hold, and older CRDs can discard unsupported fields. Either mismatch can turn an intended canary pause into a full rollout. Do not start a canary until the upgraded controller is running and the API preserves the configured `canaryPercent` and, if used, `canaryDimension`.
+
+Before downgrading to a version without this support, use the supporting controller to finish every active canary:
+
+1. **Choose which version to keep.** To keep B, set `canaryPercent: 100` and wait until all desired groups are Ready on B. To return to A, restore A's templates in Git and wait until the rollback finishes. Setting the percentage to `0` alone does not restore the desired templates.
+2. **Finalize before downgrading.** Remove `canaryPercent` and, if present, `canaryDimension` from Git or the other source of truth. Wait for the controller to apply that change and report `Available=True` with reason `AllRolesReady` for the current generation and replica demand.
+3. Only then downgrade the controller and CRDs. Keep canary fields out of subsequent updates until both support them again.
+
+**An explicit `100` is not finalization:** it retains A's templates and permits reversal. Removing the field ends that canary session. Do not downgrade while relying on a hold or on retained templates for a later reversal.
 
 ## Status and Argo CD
 
