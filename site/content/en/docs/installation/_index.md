@@ -34,6 +34,18 @@ Make sure the following conditions are met:
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
+- Metadata protection is enabled by default, so installers need permission to create
+  `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` resources.
+  To disable it, set `metadataProtection.enabled=false` in Helm or remove the
+  `../components/metadata-protection` component from `config/default/kustomization.yaml`
+  when building manifests with Kustomize.
+  Before installing or upgrading a cluster using the shared `system:kube-controller-manager`
+  identity (`--use-service-account-credentials=false`), switch to separate controller credentials
+  or include that identity in `metadataProtection.podControllerUsernames`,
+  `metadataProtection.deploymentControllerUsernames` and
+  `metadataProtection.statefulSetControllerUsernames` (the corresponding policy variables
+  for Kustomize); otherwise LWS Pod creation is denied. Trusting the shared identity also
+  allows protected metadata from uninspected Job, CronJob, DaemonSet and ReplicationController templates.
 
 {{% if-main %}}
 <div id="install-a-released-version"></div>

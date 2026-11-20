@@ -1,0 +1,9 @@
+# Admission-only verb. This does not grant permission to update workload objects.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metadata-writer
+rules:
+- apiGroups: [leaderworkerset.x-k8s.io]
+  resources: [leaderworkersets]
+  verbs: [manage-metadata]
