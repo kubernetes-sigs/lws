@@ -35,6 +35,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// until the rolling update is completely done and the partition field is reset to 0.
 	// This is as expected to reduce the reconciling complexity.
 	// The default value is 0.
+	//
 	Partition *int32 `json:"partition,omitempty"`
 	// maxUnavailable is the maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
@@ -56,6 +57,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// grant replacement credit. A superseding template update raises
 	// baselineReplicas to the count of Ready groups (up to spec.replicas) to protect
 	// Ready additions.
+	//
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 	// maxSurge is the maximum number of replicas that can be scheduled above the original number of
 	// replicas.
@@ -67,6 +69,7 @@ type RollingUpdateConfigurationApplyConfiguration struct {
 	// new replicas can be scaled up further, ensuring that total number of replicas running
 	// at any time during the update is at most 130% of original replicas.
 	// When rolling update completes, replicas will fall back to the original replicas.
+	//
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 

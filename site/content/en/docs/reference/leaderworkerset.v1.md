@@ -609,6 +609,22 @@ the headless service, defaults to shared</p>
 </tbody>
 </table>
 
+## `PlacementEnforcement`     {#leaderworkerset-x-k8s-io-v1-PlacementEnforcement}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [PlacementPolicy](#leaderworkerset-x-k8s-io-v1-PlacementPolicy)
+
+- [SubGroupPlacementPolicy](#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy)
+
+
+<p>PlacementEnforcement defines how an exclusive placement is enforced.</p>
+
+
+
+
 ## `PlacementPolicy`     {#leaderworkerset-x-k8s-io-v1-PlacementPolicy}
     
 
@@ -642,6 +658,29 @@ group, for example a rack, a block or a zone. Required when type is
 ExclusiveTopology.</p>
 </td>
 </tr>
+<tr><td><code>scope</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementScope"><code>PlacementScope</code></a>
+</td>
+<td>
+   <p>scope selects the pods the exclusive anti-affinity repels. All keeps
+every other group out of the domain, matching the deprecated annotations
+and the physical exclusivity hardware-sliced accelerators need; Own keeps
+only the groups of this LeaderWorkerSet out, so groups of other
+LeaderWorkerSets may share the domain. Defaults to All.</p>
+</td>
+</tr>
+<tr><td><code>enforcement</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementEnforcement"><code>PlacementEnforcement</code></a>
+</td>
+<td>
+   <p>enforcement selects how the exclusive placement is enforced. Required
+keeps the injected anti-affinity required, so a group without a free
+domain stays Pending; Preferred makes it a scheduling preference, so
+the scheduler spreads the groups across domains but may co-locate them
+once it runs out, trading the isolation guarantee for capacity.
+Defaults to Required.</p>
+</td>
+</tr>
 <tr><td><code>subGroup</code><br/>
 <a href="#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy"><code>SubGroupPlacementPolicy</code></a>
 </td>
@@ -652,6 +691,22 @@ It requires leaderWorkerTemplate.subGroupPolicy.</p>
 </tr>
 </tbody>
 </table>
+
+## `PlacementScope`     {#leaderworkerset-x-k8s-io-v1-PlacementScope}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [PlacementPolicy](#leaderworkerset-x-k8s-io-v1-PlacementPolicy)
+
+- [SubGroupPlacementPolicy](#leaderworkerset-x-k8s-io-v1-SubGroupPlacementPolicy)
+
+
+<p>PlacementScope selects the pods an exclusive placement repels.</p>
+
+
+
 
 ## `PlacementType`     {#leaderworkerset-x-k8s-io-v1-PlacementType}
     
@@ -896,6 +951,22 @@ subgroup.</p>
 <td>
    <p>topology is the node label key that defines the topology domain of a
 subgroup. Required when type is ExclusiveTopology.</p>
+</td>
+</tr>
+<tr><td><code>scope</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementScope"><code>PlacementScope</code></a>
+</td>
+<td>
+   <p>scope selects the pods the exclusive anti-affinity repels, as at the
+group level. Defaults to All.</p>
+</td>
+</tr>
+<tr><td><code>enforcement</code><br/>
+<a href="#leaderworkerset-x-k8s-io-v1-PlacementEnforcement"><code>PlacementEnforcement</code></a>
+</td>
+<td>
+   <p>enforcement selects how the exclusive placement is enforced, as at the
+group level. Defaults to Required.</p>
 </td>
 </tr>
 </tbody>

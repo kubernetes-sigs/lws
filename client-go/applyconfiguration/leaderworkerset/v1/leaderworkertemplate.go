@@ -42,6 +42,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// The minimum is 1 which represent the leader. When set to 1, the leader
 	// pod is created for each group as well as a 0-replica StatefulSet for the workers.
 	// Default to 1.
+	//
 	Size *int32 `json:"size,omitempty"`
 	// restartPolicy defines the restart policy when pod failures happen.
 	// The former named Default policy is deprecated, will be removed in the future,
@@ -58,6 +59,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// Budget exhaustion handling requires Kubernetes 1.27 or later because it
 	// relies on deleted Pods reaching a terminal phase while finalizers retain
 	// their API objects.
+	//
 	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 	// restartBackoff bounds group restart frequency under RecreateGroupOnPodRestart
 	// or RecreateGroupAfterStart. When specified, the controller applies an exponential
@@ -67,6 +69,7 @@ type LeaderWorkerTemplateApplyConfiguration struct {
 	// not from the failure time, so a group that has run stably for longer than the backoff
 	// delay recovers immediately on failure.
 	// It is opt-in: when unset (nil), group recreation happens immediately.
+	//
 	RestartBackoff *RestartBackoffApplyConfiguration `json:"restartBackoff,omitempty"`
 	// subGroupPolicy describes the policy that will be applied when creating subgroups
 	// in each replica.
