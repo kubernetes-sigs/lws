@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -50,7 +51,8 @@ func TestCreateUpdatedRevisionOnRollback(t *testing.T) {
 			lws := wrappers.BuildLeaderWorkerSet("default").Obj()
 			lws.UID = types.UID("lws-uid")
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
-			r := NewLeaderWorkerSetReconciler(c, scheme, events.NewFakeRecorder(16), nil)
+			recorder := events.NewFakeRecorder(16)
+			r := NewLeaderWorkerSetReconciler(c, scheme, recorder, nil)
 
 			revisionA := createTestRevision(t, ctx, c, lws)
 			if tc.legacyA {
@@ -81,6 +83,16 @@ func TestCreateUpdatedRevisionOnRollback(t *testing.T) {
 			}
 			if reused := got.Name == revisionA.Name; reused != tc.wantReuse {
 				t.Fatalf("reused revision %s = %v, want %v (got %s)", revisionA.Name, reused, tc.wantReuse, got.Name)
+			}
+			// A CreatingRevision event is recorded only when a revision is created, not when one is reused.
+			created := 0
+			for len(recorder.Events) > 0 {
+				if strings.Contains(<-recorder.Events, "Normal "+CreatingRevision) {
+					created++
+				}
+			}
+			if wantCreated := map[bool]int{true: 0, false: 1}[tc.wantReuse]; created != wantCreated {
+				t.Fatalf("got %d %s events, want %d", created, CreatingRevision, wantCreated)
 			}
 			var revisions appsv1.ControllerRevisionList
 			if err := c.List(ctx, &revisions, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
