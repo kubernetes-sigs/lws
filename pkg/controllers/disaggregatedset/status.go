@@ -117,9 +117,9 @@ func (r *DisaggregatedSetReconciler) publishStatus(ctx context.Context, ds *disa
 	return nil
 }
 
-// collectRoleStatuses aggregates all slices and revisions. Only current roles
-// and children are published, in spec order; removed children still count toward
-// their parent's total while their old groups drain.
+// collectRoleStatuses aggregates non-terminating workloads across all slices and
+// revisions. Only current roles and children are published, in spec order; removed
+// children still count toward their parent's total while their old groups drain.
 func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, error) {
 	all, err := m.ListAll(ctx, ds, "")
 	if err != nil {
@@ -127,6 +127,10 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	}
 	byRole := make(map[string][]*leaderworkersetv1.LeaderWorkerSet)
 	for _, lws := range all {
+		// Match the rollout planner: terminating workloads are no longer usable capacity.
+		if !lws.DeletionTimestamp.IsZero() {
+			continue
+		}
 		role := lws.Labels[disaggregatedsetv1.RoleLabelKey]
 		byRole[role] = append(byRole[role], lws)
 	}
