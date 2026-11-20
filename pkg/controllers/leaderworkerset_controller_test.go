@@ -2869,3 +2869,58 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveRollingUpdateBudget(t *testing.T) {
+	tests := []struct {
+		name                       string
+		surge, unavailable         intstr.IntOrString
+		replicas                   int
+		wantSurge, wantUnavailable int
+	}{
+		{name: "percentage that rounds to zero is raised to one", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 4, wantSurge: 0, wantUnavailable: 1},
+		{name: "percentage at the rounding threshold", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 5, wantSurge: 0, wantUnavailable: 1},
+		{name: "percentage above the rounding threshold", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 45, wantSurge: 0, wantUnavailable: 9},
+		{name: "surge carries progress", surge: intstr.FromString("10%"), unavailable: intstr.FromString("20%"), replicas: 4, wantSurge: 1, wantUnavailable: 0},
+		{name: "explicit surge only", surge: intstr.FromInt32(1), unavailable: intstr.FromInt32(0), replicas: 4, wantSurge: 1, wantUnavailable: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			surge, unavailable, err := resolveRollingUpdateBudget(&leaderworkerset.RollingUpdateConfiguration{MaxSurge: tc.surge, MaxUnavailable: tc.unavailable}, tc.replicas)
+			if err != nil {
+				t.Fatalf("resolveRollingUpdateBudget() unexpected error: %v", err)
+			}
+			if surge != tc.wantSurge || unavailable != tc.wantUnavailable {
+				t.Fatalf("resolveRollingUpdateBudget() = (%d, %d), want (%d, %d)", surge, unavailable, tc.wantSurge, tc.wantUnavailable)
+			}
+		})
+	}
+}
+
+// A percentage maxUnavailable that rounds down to 0 with maxSurge=0 must still
+// let one group roll at a time instead of pinning the floor at the baseline.
+func TestRolloutFloorPercentageRoundsToZero(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(4).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromString("20%"),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+
+	floor, err := rolloutFloor(lws, 4, 4)
+	if err != nil {
+		t.Fatalf("rolloutFloor() unexpected error: %v", err)
+	}
+	if floor != 3 {
+		t.Fatalf("rolloutFloor() = %d, want 3", floor)
+	}
+
+	states := []replicaState{{ready: true}, {ready: true}, {ready: true}, {ready: true}}
+	if partition := rollingUpdatePartitionWithFloor(states, floor, 4, 0); partition != 3 {
+		t.Fatalf("rollingUpdatePartitionWithFloor() = %d, want 3", partition)
+	}
+}

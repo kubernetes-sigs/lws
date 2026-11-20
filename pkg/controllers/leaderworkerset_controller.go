@@ -761,6 +761,25 @@ func raiseBaselineToReady(baseline int32, states []replicaState, lwsReplicas int
 	return min(lwsReplicas, max(baseline, countReadyStates(states)))
 }
 
+// resolveRollingUpdateBudget resolves maxSurge (rounded up) and maxUnavailable
+// (rounded down) against replicas. Like Deployments, when both resolve to 0,
+// e.g. maxUnavailable=20% with maxSurge=0 below 5 replicas, maxUnavailable is
+// raised to 1 so the rollout can still make progress.
+func resolveRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfiguration, replicas int) (maxSurge, maxUnavailable int, err error) {
+	maxSurge, err = intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, replicas, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxUnavailable, err = intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, replicas, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	if maxSurge == 0 && maxUnavailable == 0 {
+		maxUnavailable = 1
+	}
+	return maxSurge, maxUnavailable, nil
+}
+
 // rolloutFloor returns the number of Ready groups that controller-authorized
 // disruption keeps during a rollout: max(0, min(baseline, lwsReplicas) -
 // maxUnavailable). A percentage maxUnavailable resolves against the baseline
@@ -768,7 +787,7 @@ func raiseBaselineToReady(baseline int32, states []replicaState, lwsReplicas int
 // does not widen the disruption of the existing groups.
 func rolloutFloor(lws *leaderworkerset.LeaderWorkerSet, baseline, lwsReplicas int32) (int32, error) {
 	effectiveBaseline := min(baseline, lwsReplicas)
-	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(effectiveBaseline), false)
+	_, maxUnavailable, err := resolveRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, int(effectiveBaseline))
 	if err != nil {
 		return 0, err
 	}
@@ -851,11 +870,7 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	}
 
 	stsReplicas := *sts.Spec.Replicas
-	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), true)
-	if err != nil {
-		return rollingUpdatePlan{}, err
-	}
-	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	maxSurge, maxUnavailable, err := resolveRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, int(lwsReplicas))
 	if err != nil {
 		return rollingUpdatePlan{}, err
 	}
@@ -2467,11 +2482,7 @@ func constructLeaderStatefulSetApplyConfigurationWithBaseline(lws *leaderworkers
 	}
 
 	lwsReplicas := int(*lws.Spec.Replicas)
-	lwsMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, lwsReplicas, false)
-	if err != nil {
-		return nil, err
-	}
-	lwsMaxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, lwsReplicas, true)
+	lwsMaxSurge, lwsMaxUnavailable, err := resolveRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, lwsReplicas)
 	if err != nil {
 		return nil, err
 	}
@@ -2483,9 +2494,8 @@ func constructLeaderStatefulSetApplyConfigurationWithBaseline(lws *leaderworkers
 		extraSlots = max(extraSlots, replicas-*rolloutBaseline)
 	}
 	stsMaxUnavailableInt := int32(lwsMaxUnavailable) + extraSlots
-	// lwsMaxUnavailable=0 and lwsMaxSurge=0 together should be blocked by webhook,
-	// but just in case, we'll make sure that stsMaxUnavailable is at least 1.
-	// This also handles the case when lws.Spec.Replicas is 0.
+	// resolveRollingUpdateBudget keeps the budget nonzero; this clamp still covers
+	// lws.Spec.Replicas=0, where the cap above can drop a nonzero maxSurge to 0.
 	if stsMaxUnavailableInt < 1 {
 		stsMaxUnavailableInt = 1
 	}

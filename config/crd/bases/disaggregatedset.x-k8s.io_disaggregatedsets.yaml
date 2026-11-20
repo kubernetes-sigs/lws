@@ -19184,7 +19184,8 @@ spec:
                                     maxUnavailable is the maximum number of replicas that can be unavailable during the update.
                                     Value can be an absolute number (ex: 5) or a percentage of desired spec.replicas (ex: 10%).
                                     Absolute number is calculated from percentage by rounding down.
-                                    This can not be 0 if MaxSurge is 0.
+                                    This can not be 0 if MaxSurge is 0. If a percentage rounds down to 0 while
+                                    MaxSurge also resolves to 0, a value of 1 is used.
                                     By default, a fixed value of 1 is used.
                                     Example: when this is set to 30%, the old replicas can be scaled down by 30%
                                     immediately when the rolling update starts. Once new replicas are ready, old replicas
