@@ -88,12 +88,11 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 		}
 	}
 	if updatedRevision != nil {
-		revision, err = revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+		revision, err = r.createUpdatedRevision(ctx, lws, updatedRevision)
 		if err != nil {
 			log.Error(err, "Creating revision for updated LWS")
 			return ctrl.Result{}, err
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(revision)))
 	}
 
 	targetRevisionKey := revisionutils.GetRevisionKey(revision)
