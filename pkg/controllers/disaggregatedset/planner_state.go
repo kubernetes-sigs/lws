@@ -16,7 +16,10 @@ limitations under the License.
 
 package disaggregatedset
 
-import "slices"
+import (
+	"math"
+	"slices"
+)
 
 // Every per-role slice uses the same role index, resolved by the executor.
 type RoleReplicaState = []int
@@ -24,6 +27,12 @@ type RoleReplicaState = []int
 type RollingUpdateConfig struct {
 	MaxSurge       int
 	MaxUnavailable int
+	// CanaryOldReplicas is derived from the set-wide percentage, never from
+	// an LWS partition. The remainder caps the growing revision.
+	CanaryOldReplicas int
+	// MinOldReplicas protects this candidate's share. Intermediate canary
+	// revisions have no protected share while replacing B with C.
+	MinOldReplicas int
 }
 
 // RawReadyReplicas includes pending deletions; ReadyReplicas excludes them.
@@ -64,6 +73,9 @@ type RolloutState struct {
 	ScaleDownDuringRollout bool
 	// Opt-in growth fills the gap between desired and already-requested groups.
 	ScaleUpDuringRollout bool
+	// Percentage canaries replenish old capacity as demand changes. Coordinate
+	// their share against current demand, not a frozen old size.
+	ProportionalCanary bool
 }
 
 // A live required role whose budget permits zero Ready groups explicitly
@@ -199,6 +211,32 @@ func (snapshot rolloutSnapshot) surgeCeiling(role int) int {
 		baseline = max(baseline, snapshot.ActiveOld.InitialReplicas[role])
 	}
 	return baseline + snapshot.Config[role].MaxSurge
+}
+
+// A canary caps growth at the groups it does not hold. Reverse planning uses
+// the same cap with the two sides exchanged.
+func (snapshot rolloutSnapshot) canaryTargetLimit(role int) (int, bool) {
+	old := snapshot.Config[role].CanaryOldReplicas
+	if old <= 0 {
+		return 0, false
+	}
+	return max(0, snapshot.Target.DesiredReplicas[role]-old), true
+}
+
+// Protect the selected revision itself, not interchangeable historical groups.
+// A deficit is restored separately; a drain must never grow its candidate.
+func (snapshot rolloutSnapshot) canaryOldFloor(role int) int {
+	return min(snapshot.ActiveOld.SpecReplicas[role], snapshot.Config[role].MinOldReplicas)
+}
+
+// The most target groups a canary admits: its limit, or the current Spec
+// when the target already holds more.
+func (snapshot rolloutSnapshot) canaryCeiling(role int) int {
+	limit, held := snapshot.canaryTargetLimit(role)
+	if !held {
+		return math.MaxInt
+	}
+	return max(snapshot.Target.SpecReplicas[role], limit)
 }
 
 func (snapshot rolloutSnapshot) availabilityFloor(role int) int {

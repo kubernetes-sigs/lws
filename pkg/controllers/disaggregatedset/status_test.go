@@ -29,8 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,7 +41,103 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
+
+func TestCanaryHoldSurvivesControllerTakeover(t *testing.T) {
+	for _, change := range []string{"none", "generation", "scaler", "other slice", "pending split"} {
+		t.Run(change, func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{1, 1}, [2]int{})
+			ds.Generation = 1
+			ds.Annotations = map[string]string{disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion}
+			setCanaryPercent(ds, 25)
+			if change == "scaler" {
+				ds.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+				ds.Spec.Roles[0].Spec.Replicas = nil
+			}
+			revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+			objects := []client.Object{ds}
+			for _, role := range testRoleNames() {
+				old := revisionLWS("old", role, 6, 6, time.Unix(1, 0), 8)
+				old.Annotations[canaryStableAnnotation] = "true"
+				target := revisionLWS(revision, role, 2, 2, time.Unix(2, 0), 8)
+				target.Status.UpdatedReplicas = 2
+				objects = append(objects, old, target)
+			}
+			if change == "other slice" {
+				ds.Spec.Slices = ptr.To[int32](2)
+				for _, object := range objects[1:] {
+					lws := object.DeepCopyObject().(*leaderworkersetv1.LeaderWorkerSet)
+					lws.Name += "-slice1"
+					lws.UID = types.UID(lws.Name)
+					lws.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+					objects = append(objects, lws)
+				}
+			}
+			c := newTestClient(objects...)
+			r := newTestReconciler(c)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
+			for range 2 {
+				_, err := r.Reconcile(t.Context(), request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds))
+			if change == "generation" {
+				setCanaryPercent(ds, 50)
+				ds.Generation++ // The fake client does not advance generations.
+				require.NoError(t, c.Update(t.Context(), ds))
+			} else if change == "scaler" {
+				scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+				require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: ds.Namespace, Name: ScalerName(ds.Name, "prefill")}, scaler))
+				scaler.Spec.Replicas = 12
+				require.NoError(t, c.Update(t.Context(), scaler))
+			}
+
+			// Restart loses the in-memory receipts and first performs metadata-only takeover.
+			r = newTestReconciler(c)
+			r.LWSManager.pending = testPendingWrites(c)
+			if change == "other slice" || change == "pending split" {
+				// 5/3 needs to return to 6/2, even though all eight groups are Ready.
+				workloads := objects[1:]
+				if change == "other slice" {
+					// This slice is evaluated while the other is pending takeover.
+					require.ErrorIs(t, r.LWSManager.prepareSlice(t.Context(), ds, 1), errReplicaGroupsPending)
+					require.NoError(t, r.LWSManager.prepareSlice(t.Context(), ds, 1))
+					workloads = objects[5:]
+				}
+				for _, object := range workloads {
+					lws := &leaderworkersetv1.LeaderWorkerSet{}
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(object), lws))
+					count := int32(3)
+					if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == "old" {
+						count = 5
+					}
+					lws.Spec.Replicas = ptr.To(count)
+					require.NoError(t, c.Update(t.Context(), lws))
+					lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = count, count, count
+					require.NoError(t, c.Status().Update(t.Context(), lws))
+				}
+			}
+			result, err := r.Reconcile(t.Context(), request)
+			require.NoError(t, err)
+			require.Equal(t, time.Second, result.RequeueAfter)
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			if change != "none" {
+				require.Equal(t, "RolloutInProgress", progressingReason(ds), "an old hold cannot hide a new request or observed progress")
+				return
+			}
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds), "takeover is not rollout movement")
+			for range 2 {
+				_, err := r.Reconcile(t.Context(), request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds))
+			require.Empty(t, r.Record.(*events.FakeRecorder).Events, "observing the same hold again must not emit another event")
+		})
+	}
+}
 
 func TestStatusWriteCacheLifecycle(t *testing.T) {
 	ds := newDSWithRoles("ds", staticRole("prefill"))
@@ -58,7 +156,7 @@ func TestStatusWriteCacheLifecycle(t *testing.T) {
 	r.staleStatusVersions = utilcache.NewLRUExpireCacheWithClock(maxStaleStatusVersions, clock)
 	desired := map[string]int{"prefill": 1}
 	publish := func() error {
-		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil)
+		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil, ptr.To(false), "")
 	}
 	require.NoError(t, publish())
 	desired["prefill"] = 2
@@ -667,7 +765,7 @@ func TestUpdateStatusReportsMissingWorkloadOfCurrentRevision(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	r := newTestReconciler(c)
 	desired := map[string]int{"prefill": 2, "decode": 1}
-	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil))
+	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil, ptr.To(false), ""))
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	assert.Zero(t, ds.Status.RoleStatuses[0].AvailableReplicas)
 	condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
@@ -915,7 +1013,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			key := client.ObjectKeyFromObject(ds)
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			r := newTestReconciler(c)
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, ptr.To(false), ""))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			require.Equal(t, tc.decode, ds.Status.RoleStatuses[1])
 			require.False(t, meta.IsStatusConditionTrue(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "the change has not completed")
@@ -926,7 +1024,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(decode), decode))
 			decode.Status.ReadyReplicas = 2
 			require.NoError(t, c.Status().Update(t.Context(), decode))
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, ptr.To(false), ""))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
 			require.NotNil(t, condition)
@@ -959,6 +1057,6 @@ func TestUpdateStatusReplicaGroupsPending(t *testing.T) {
 	})
 	r := newTestReconciler(c)
 
-	err := r.updateStatus(t.Context(), ds, []string{"prefill"}, "current", map[string]int{"prefill": 1}, nil)
+	err := r.updateStatus(t.Context(), ds, []string{"prefill"}, "current", map[string]int{"prefill": 1}, nil, ptr.To(false), "")
 	require.ErrorIs(t, err, errReplicaGroupsPending)
 }
