@@ -141,7 +141,11 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 	}
 	tpuWorkerId := (workerIndex) % subGroupSize
 
-	if workerIndex != 0 && pod.Annotations[LeaderRequestsTPUsAnnotationKey] != "true" {
+	// LeaderExcluded keeps the leader out of every subgroup, so workers alone
+	// fill them even when the leader requests TPUs.
+	leaderInSubGroup := pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" &&
+		pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] != string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)
+	if workerIndex != 0 && !leaderInSubGroup {
 		tpuWorkerId = (workerIndex - 1) % subGroupSize
 		subGroupIndex = (workerIndex - 1) / subGroupSize
 	}
@@ -168,13 +172,13 @@ func addTPUVariablesSubGroup(pod *corev1.Pod) error {
 		if leaderHostname == "" {
 			return fmt.Errorf("parsing parent name from pod %s", pod.Name)
 		}
-		if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" && subGroupIndex == 0 {
+		if leaderInSubGroup && subGroupIndex == 0 {
 			// SubGroup 0 contains the leader, and the leader is requesting TPU resources, so
 			// the hostname list should shift to the left by one
 			end -= 1
 			hostnames = append(hostnames, fmt.Sprintf("%s.%s", leaderHostname, pod.Spec.Subdomain))
 			hostnamesAddresses = append(hostnamesAddresses, fmt.Sprintf("%s.%s:%s", leaderHostname, pod.Spec.Subdomain, tpuProcessPort))
-		} else if pod.Annotations[LeaderRequestsTPUsAnnotationKey] == "true" {
+		} else if leaderInSubGroup {
 			// Since the first subGroup has been shifted to the left by one, all other subsequent
 			// subGroups should be shifted as well
 			start -= 1

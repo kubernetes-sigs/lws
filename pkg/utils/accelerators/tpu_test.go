@@ -964,3 +964,81 @@ func TestPodRequestsTPUs(t *testing.T) {
 		})
 	}
 }
+
+// With LeaderExcluded the leader is never in a TPU subgroup, so a worker's TPU
+// env must not depend on whether the leader requests TPUs.
+func TestAddTPUVariablesSubGroupLeaderExcludedWorkers(t *testing.T) {
+	const size = 5
+	type want struct {
+		workerID  string
+		hostnames string
+	}
+	// expected[subGroupSize][workerIndex]
+	expected := map[int]map[int]want{
+		1: {
+			1: {"0", "test-sample-1.default"},
+			2: {"0", "test-sample-2.default"},
+			3: {"0", "test-sample-3.default"},
+			4: {"0", "test-sample-4.default"},
+		},
+		2: {
+			1: {"0", "test-sample-1.default,test-sample-2.default"},
+			2: {"1", "test-sample-1.default,test-sample-2.default"},
+			3: {"0", "test-sample-3.default,test-sample-4.default"},
+			4: {"1", "test-sample-3.default,test-sample-4.default"},
+		},
+	}
+
+	type testCase struct {
+		name string
+		pod  *corev1.Pod
+		want want
+	}
+	var tests []testCase
+	for _, s := range []int{1, 2} {
+		for _, leaderRequestsTPUs := range []bool{false, true} {
+			for w := 1; w < size; w++ {
+				annotations := map[string]string{
+					leaderworkerset.SubGroupSizeAnnotationKey:       strconv.Itoa(s),
+					leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
+				}
+				if leaderRequestsTPUs {
+					annotations[LeaderRequestsTPUsAnnotationKey] = "true"
+				}
+				tests = append(tests, testCase{
+					name: "subGroupSize=" + strconv.Itoa(s) + "/leaderRequestsTPUs=" + strconv.FormatBool(leaderRequestsTPUs) + "/worker=" + strconv.Itoa(w),
+					pod: &corev1.Pod{
+						Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+						ObjectMeta: v1.ObjectMeta{
+							Name:      "test-sample-" + strconv.Itoa(w),
+							Namespace: "default",
+							Labels: map[string]string{
+								leaderworkerset.WorkerIndexLabelKey:   strconv.Itoa(w),
+								leaderworkerset.SubGroupIndexLabelKey: strconv.Itoa((w - 1) / s),
+							},
+							Annotations: annotations,
+						},
+					},
+					want: expected[s][w],
+				})
+			}
+		}
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := AddTPUVariables(tc.pod, size); err != nil {
+				t.Fatalf("AddTPUVariables: %v", err)
+			}
+			container := &tc.pod.Spec.Containers[0]
+			_, gotID := podutils.GetEnvVarValueIfInContainer(container, TpuWorkerId)
+			if diff := cmp.Diff(tc.want.workerID, gotID); diff != "" {
+				t.Errorf("unexpected %s (-want +got):\n%s", TpuWorkerId, diff)
+			}
+			_, gotHostnames := podutils.GetEnvVarValueIfInContainer(container, TpuWorkerHostNames)
+			if diff := cmp.Diff(tc.want.hostnames, gotHostnames); diff != "" {
+				t.Errorf("unexpected %s (-want +got):\n%s", TpuWorkerHostNames, diff)
+			}
+		})
+	}
+}
