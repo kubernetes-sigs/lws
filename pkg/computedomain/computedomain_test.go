@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -228,6 +229,67 @@ func TestTargetedContainerNamesAndSpecInjection(t *testing.T) {
 	ok, err = InjectPodSpecClaims(cpuOnly, nil, "cd-unused")
 	if err != nil || ok || len(cpuOnly.ResourceClaims) != 0 {
 		t.Fatalf("expected zero-GPU podSpec to remain untouched, ok=%v err=%v claims=%+v", ok, err, cpuOnly.ResourceClaims)
+	}
+}
+
+func TestTargetedContainerNamesExplicitList(t *testing.T) {
+	restartAlways := corev1.ContainerRestartPolicyAlways
+	podSpec := &corev1.PodSpec{
+		InitContainers: []corev1.Container{
+			{Name: "model-loader"},
+			{Name: "proxy-sidecar", RestartPolicy: &restartAlways},
+		},
+		Containers: []corev1.Container{
+			{Name: "vllm", Resources: gpuResources("4")},
+			{Name: "metrics"},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "restartable sidecar initContainer",
+			raw:  "proxy-sidecar",
+			want: []string{"proxy-sidecar"},
+		},
+		{
+			name: "list replaces GPU auto-detection",
+			raw:  "metrics,proxy-sidecar",
+			want: []string{"metrics", "proxy-sidecar"},
+		},
+		{
+			name:    "regular initContainer is rejected",
+			raw:     "model-loader",
+			wantErr: "model-loader",
+		},
+		{
+			name:    "empty value is rejected",
+			raw:     "",
+			wantErr: "empty entry",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := TargetedContainerNames(podSpec, map[string]string{
+				leaderworkersetv1.ComputeDomainContainersAnnotationKey: tc.raw,
+			})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("TargetedContainerNames(%q) = %v, %v, want an error containing %q", tc.raw, sets.List(got), err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("TargetedContainerNames(%q) returned error: %v", tc.raw, err)
+			}
+			if diff := cmp.Diff(tc.want, sets.List(got)); diff != "" {
+				t.Fatalf("TargetedContainerNames(%q) (-want +got):\n%s", tc.raw, diff)
+			}
+		})
 	}
 }
 
