@@ -692,15 +692,16 @@ func TestCombinedRolloutScaleDownPercentageRoundsToZeroAndPrunesCounts(t *testin
 		t.Fatalf("group restart counts after shrink = %q, want %q", got, `{"rev-1/0":1}`)
 	}
 
-	// Pass 2: 25% of 3 rounds down to 0, so floor = 3 - 0 = 3; healthy groups 0..2 stay protected (partition=3)!
+	// Pass 2: 25% of 3 rounds down to 0. Apply the one-group fencepost so
+	// the rollout can continue instead of leaving the partition stuck at 3.
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("pass 2 Reconcile() error = %v", err)
 	}
 	if err := c.Get(ctx, req.NamespacedName, &updatedSts); err != nil {
 		t.Fatalf("reading sts after pass 2: %v", err)
 	}
-	if got := *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 3 {
-		t.Fatalf("partition when maxUnavailable rounds to 0 = %d, want 3", got)
+	if got := *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 2 {
+		t.Fatalf("partition when maxUnavailable rounds to 0 = %d, want 2", got)
 	}
 }
 

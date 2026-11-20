@@ -348,11 +348,17 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(ptr.Deref(lws.Spec.Replicas, 1)), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1))...)
 	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws)...)
-	allErrs = append(allErrs, ValidateRollingUpdateBudget(
-		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
-		ptr.Deref(lws.Spec.Replicas, 1),
-		specPath.Child("rolloutStrategy", "rollingUpdateConfiguration"),
-	)...)
+	rolloutPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration")
+	if ptr.Deref(lws.Spec.Replicas, 1) == 0 {
+		// Zero-replica children may intentionally pause with both budgets at zero.
+		allErrs = append(allErrs, ValidateRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, 0, rolloutPath)...)
+	} else {
+		// Standalone LWS replicas can also change through the scale subresource,
+		// which bypasses this webhook. Validate that at least one configured budget
+		// is intrinsically non-zero rather than resolving percentages at today's
+		// replica count; the controller applies the rollout fencepost at runtime.
+		allErrs = append(allErrs, ValidateUnknownTargetRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, rolloutPath)...)
+	}
 	if rollout := lws.Spec.RolloutStrategy.RollingUpdateConfiguration; rollout != nil && rollout.Partition != nil {
 		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
 		allErrs = append(allErrs, validateNonnegativeField(int64(*rollout.Partition), partitionPath)...)

@@ -772,6 +772,19 @@ func rolloutFloor(lws *leaderworkerset.LeaderWorkerSet, baseline, lwsReplicas in
 	if err != nil {
 		return 0, err
 	}
+	desiredMaxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable, int(lwsReplicas), false)
+	if err != nil {
+		return 0, err
+	}
+	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, int(lwsReplicas), true)
+	if err != nil {
+		return 0, err
+	}
+	// Keep the floor consistent with the Deployment fencepost rule used by the
+	// rollout plan when positive percentages round both budgets down to zero.
+	if effectiveBaseline > 0 && desiredMaxUnavailable == 0 && maxSurge == 0 {
+		maxUnavailable = 1
+	}
 	return utils.NonZeroValue(effectiveBaseline - int32(min(maxUnavailable, int(effectiveBaseline)))), nil
 }
 
@@ -859,6 +872,13 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 	if err != nil {
 		return rollingUpdatePlan{}, err
 	}
+	// A positive percentage can round down to zero after the scale subresource
+	// shrinks an LWS. Match the Deployment fencepost rule so the stored rollout
+	// strategy still makes progress when surge also resolves to zero.
+	if lwsReplicas > 0 && maxSurge == 0 && maxUnavailable == 0 {
+		maxUnavailable = 1
+	}
+	// No need to burst more than the replicas.
 	if maxSurge > int(lwsReplicas) {
 		maxSurge = int(lwsReplicas)
 	}
