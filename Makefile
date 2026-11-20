@@ -143,10 +143,13 @@ HELM_RBAC_GENERATED_FILES := \
 	$(HELM_RBAC_DIR)/role_binding.yaml \
 	$(HELM_RBAC_DIR)/service_account.yaml
 
+# Use module mode to be compatible with checkouts that vendor their
+# dependencies: vendor mode fails with "inconsistent vendoring" for
+# modules not listed in vendor/modules.txt.
 .PHONY: update-helm
 update-helm: manifests ## Generate Helm RBAC templates from config/rbac.
 	rm -f $(HELM_RBAC_GENERATED_FILES)
-	$(GO_CMD) run -modfile=$(PROJECT_DIR)/hack/tools/yaml-processor/go.mod \
+	$(GO_CMD) run -mod=mod -modfile=$(PROJECT_DIR)/hack/tools/yaml-processor/go.mod \
 		sigs.k8s.io/kueue/hack/tools/yaml-processor \
 		-zap-log-level=$(YAML_PROCESSOR_LOG_LEVEL) $(PROJECT_DIR)/hack/processing-plan.yaml
 	@for file in $(HELM_RBAC_GENERATED_FILES); do \
