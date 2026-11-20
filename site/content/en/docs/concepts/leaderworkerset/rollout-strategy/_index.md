@@ -80,29 +80,31 @@ Below is a trace in `Hash` mode (`groupReplacementPolicy: PostTermination`) for 
 
 ## Combined Template Update and Scale-Up
 
-When `.spec.leaderWorkerTemplate` and `.spec.replicas` (scaling up from `oldReplicas` to `newReplicas`) are updated together—or when `spec.replicas` is scaled up mid-rollout—both modes follow the same rules:
+When one update changes `.spec.leaderWorkerTemplate` and increases `.spec.replicas` from `baseline`, or increases `spec.replicas` during an active rollout, both modes follow the same rules:
 
-1. **Added capacity comes up on the new revision**:
-   - In `Ordinal` mode, the controller sets `partition = oldReplicas` while scaling to `newReplicas`, so new ordinals (`oldReplicas .. newReplicas - 1`) are created directly with the new template.
-   - In `Hash` mode, although the Deployment controller briefly scales the old `ReplicaSet` before rolling to the new `ReplicaSet`, gating prevents outdated leader pods from ever scheduling or creating workers; they are immediately deleted as the new `ReplicaSet` scales up.
-2. **Unready scaled-up groups count against `maxUnavailable`** (evaluated relative to `newReplicas`):
-   - **If `newReplicas - oldReplicas >= maxUnavailable`**: No existing old-revision groups are disrupted initially. Existing groups keep running until enough new groups become ready to free room within `maxUnavailable`.
-   - **If `newReplicas - oldReplicas < maxUnavailable`**: Up to `maxUnavailable - (newReplicas - oldReplicas)` existing old-revision groups begin updating immediately alongside the newly added groups.
-
-### Resource Deadlock When Reducing Per-Group Resources During Scale-Up ([#717](https://github.com/kubernetes-sigs/lws/issues/717))
-
-On capacity-constrained clusters (for example, a fixed pool of 8 GPUs), a common operation is **halving per-group resources while doubling `spec.replicas` in a single update** (such as `1 × 8 GPUs -> 2 × 4 GPUs`, or `4 × 8 GPUs -> 8 × 4 GPUs`) with default rollout settings (`maxUnavailable: 1`, `maxSurge: 0`).
-
-Because `newReplicas - oldReplicas >= maxUnavailable`, this update **deadlocks in both modes**: the controller refuses to terminate any old `8`-GPU group until a new `4`-GPU group becomes ready, but the new `4`-GPU groups stay `Pending` because the existing `8`-GPU groups still occupy all cluster GPUs.
-
-To avoid or recover from this state:
-
-1. **Update in two steps (recommended)**:
-   - First update `.spec.leaderWorkerTemplate` to the smaller per-group resource request while keeping `spec.replicas` unchanged. Once existing groups roll and free capacity, scale `spec.replicas` up.
-2. **Increase `maxUnavailable` above the scale-up delta (`maxUnavailable > newReplicas - oldReplicas`)**:
-   - **In `Hash` mode**: Setting `maxUnavailable` to at least `(newReplicas - oldReplicas) + 1` (e.g. `2` for `1 -> 2`, or `5` for `4 -> 8`) lets the Deployment immediately terminate one old `8`-GPU group. Once it exits, two new `4`-GPU groups fit into the freed capacity, and because any ready group increases Deployment availability regardless of order, the remaining old groups cascade through the rollout.
-   - **In `Ordinal` mode**: Because `partition` only steps down as tail ordinals become contiguously ready from the highest ordinal (`newReplicas - 1`) downward, freeing capacity for a lower pending ordinal (such as `R-4` while `R-7` stays `Pending`) does not advance `partition`. When multiple scaled-up ordinals are `Pending`, single-step recovery requires setting `maxUnavailable: 100%` (or `newReplicas`) so `partition` drops to `0` immediately.
+1. **Added capacity starts on the new revision**:
+   - In `Ordinal` mode, the controller sets `partition = baseline` and scales to `spec.replicas` plus any `maxSurge`. New ordinals (`baseline .. spec.replicas - 1`) start directly with the new template.
+   - In `Hash` mode, `group-replacement` scheduling gates keep outdated leader pods unscheduled without workers while the new `ReplicaSet` adds pods.
+2. **Availability-floor pacing**:
+   - The controller paces disruption against the non-surge floor `max(0, min(baseline, spec.replicas) - maxUnavailable)`. For this floor, a percentage `maxUnavailable` resolves against `min(baseline, spec.replicas)`, so a large scale-up does not widen disruption on existing groups. Elsewhere, percentage `maxUnavailable` and `maxSurge` resolve against desired `spec.replicas`:
+     - **Capacity-constrained reconfiguration (`maxUnavailable >= 1`)**: `Pending` additions do not consume the `maxUnavailable` budget of existing groups. For example, an update from `1 × 8 GPUs` to `2 × 4 GPUs` with `maxUnavailable: 1, maxSurge: 0` replaces the old group immediately. The two `4`-GPU groups then schedule into the freed capacity.
+     - **Zero-downtime growth (`maxUnavailable: 0, maxSurge > 0`)**: With `maxUnavailable: 0`, the floor equals `baseline`, so the controller disrupts no existing group while new groups start. Each added or surge group that reaches whole-group `Ready` (leader and all workers) grants credit to replace one old group. At least `baseline` `Ready` groups stay available throughout the rollout.
+     - **Superseding updates and scale-down**: A superseding template update raises `baseline` to the current count of whole-group `Ready` groups, up to `spec.replicas`. This update protects `Ready` additions and ignores `Pending` additions. The rollout stays active until every group runs the target revision (and, with a user `partition`, groups at or above it are `Ready`). A scale-down clamps the floor to `max(0, min(baseline, spec.replicas) - maxUnavailable)`. In `Ordinal` mode, a scale-down during an active rollout can keep `Ready` extra ordinals and raise `partition` to hold the floor. A scale-down with no active rollout removes excess groups immediately, even when some remaining groups are not `Ready`.
 
 ## MaxUnavailable Feature Gate
 
-`MaxUnavailable` for StatefulSets graduated to Beta in Kubernetes [1.35](https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/#maxunavailable-for-statefulsets), meaning it is enabled by default in supported Kubernetes clusters. This feature gate applies to `Ordinal` mode (which uses a leader `StatefulSet`) and to worker StatefulSets; in `Hash` mode, leader rollout availability is managed by the leader `Deployment`.
+In `Ordinal` mode, the controller sets `maxUnavailable` on the leader `StatefulSet`. The StatefulSet controller applies that field only when the Kubernetes [`MaxUnavailableStatefulSet`](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods) feature gate is enabled. The default of the gate depends on the Kubernetes version:
+
+| Kubernetes version | `MaxUnavailableStatefulSet` default |
+| :--- | :--- |
+| 1.34 | Disabled (Alpha) |
+| 1.35.0 through 1.35.3 | Enabled (Beta) |
+| 1.35.4 and later 1.35 patches, 1.36 | Disabled (Beta, see [kubernetes#137904](https://github.com/kubernetes/kubernetes/pull/137904)) |
+| 1.37 and later | Enabled (Beta) |
+
+LeaderWorkerSet does not need the feature gate. A rolling update replaces up to `maxUnavailable` groups at a time with the gate enabled or disabled:
+
+- **Gate enabled**: the StatefulSet controller replaces the outdated leaders.
+- **Gate disabled**: the StatefulSet controller replaces one leader at a time and waits at a leader that is not `Ready`. The LeaderWorkerSet controller then deletes the next outdated leader pods itself, as far as `maxUnavailable` and the availability floor allow. It records a `GroupsUpdating` event on the LeaderWorkerSet for each leader pod that it deletes.
+
+The controller does not set `maxUnavailable` on worker StatefulSets. In `Hash` mode, the leader `Deployment` manages rollout availability and the feature gate has no effect.

@@ -30,7 +30,7 @@ description: >
 Make sure the following conditions are met:
 
 - A Kubernetes cluster with version >= 1.34 is **required** (officially supported and tested on Kubernetes 1.34 through 1.37), or it may behave unexpectedly. Learn how to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
-    - On Kubernetes 1.34, enable the [MaxUnavailableStatefulSet][max_unavailable] feature gate for rolling updates with max unavailable Pods. It is enabled by default in Kubernetes 1.35 and later; see discussion [here][max_unavailable_enhancement].
+    - LeaderWorkerSet does not require the [MaxUnavailableStatefulSet][max_unavailable] feature gate. Rolling updates honor `maxUnavailable` with the gate enabled or disabled. The default of the gate differs between Kubernetes versions. See [MaxUnavailable Feature Gate](../concepts/leaderworkerset/rollout-strategy/#maxunavailable-feature-gate) and the discussion [here][max_unavailable_enhancement].
 - Your cluster has at least 1 node with 1+ CPUs and 1G of memory available for the LeaderWorkerSet controller manager Deployment to run on. **NOTE: On some cloud providers, the default node machine type will not have sufficient resources to run the LeaderWorkerSet controller manager and all the required kube-system pods, so you'll need to use a larger
 machine type for your nodes.**
 - The kubectl command-line tool has communication with your cluster.
