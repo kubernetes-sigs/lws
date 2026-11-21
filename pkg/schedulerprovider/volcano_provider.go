@@ -157,9 +157,10 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		},
 		Spec: volcanov1beta1.PodGroupSpec{
 			// Default startupPolicy is LeaderCreated, Leader and Workers Pods are scheduled together, so MinAvailable is set to size
-			MinMember:       ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1),
-			MinResources:    &minResources,
-			NetworkTopology: networkTopology,
+			MinMember:         ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1),
+			MinResources:      &minResources,
+			NetworkTopology:   networkTopology,
+			PriorityClassName: podGroupPriorityClassName(lws),
 		},
 	}
 
@@ -190,6 +191,20 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	log.V(2).Info("Created PodGroup for LeaderWorkerSet")
 
 	return nil
+}
+
+// podGroupPriorityClassName returns the PodGroup priority class, or "" when the
+// leader and worker templates disagree and no single class describes the group.
+func podGroupPriorityClassName(lws *leaderworkerset.LeaderWorkerSet) string {
+	// A size 1 group has only the leader, so the unused worker template does not matter.
+	if ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1) == 1 && lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		return lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.PriorityClassName
+	}
+	priorityClassName, consistent := workloadPriorityClassName(lws)
+	if !consistent {
+		return ""
+	}
+	return priorityClassName
 }
 
 func (v *VolcanoProvider) InjectPodGroupMetadata(pod *corev1.Pod) error {
