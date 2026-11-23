@@ -2882,6 +2882,7 @@ func TestResolveRollingUpdateBudget(t *testing.T) {
 		{name: "percentage above the rounding threshold", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 45, wantSurge: 0, wantUnavailable: 9},
 		{name: "surge carries progress", surge: intstr.FromString("10%"), unavailable: intstr.FromString("20%"), replicas: 4, wantSurge: 1, wantUnavailable: 0},
 		{name: "explicit surge only", surge: intstr.FromInt32(1), unavailable: intstr.FromInt32(0), replicas: 4, wantSurge: 1, wantUnavailable: 0},
+		{name: "zero replicas keep a zero budget", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 0, wantSurge: 0, wantUnavailable: 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

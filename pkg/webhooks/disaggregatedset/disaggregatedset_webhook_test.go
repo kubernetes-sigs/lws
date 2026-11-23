@@ -944,7 +944,7 @@ func TestValidateSubRoleRolloutOverrides(t *testing.T) {
 		{name: "explicit zero overrides default unavailable", unavailable: &zero, wantError: "maxUnavailable"},
 		{name: "override both", surge: &zero, unavailable: &one},
 		{name: "inherit unavailable", parent: parent, surge: &one},
-		{name: "partial inherited pair rounds to zero", parent: parent, unavailable: &quarter, wantError: "maxUnavailable"},
+		{name: "partial inherited pair that rounds to zero", parent: parent, unavailable: &quarter},
 		{name: "percent uses child count", replicas: ptr.To[int32](4), surge: &zero, unavailable: &quarter},
 		{name: "zero child permits zero pair", replicas: ptr.To[int32](0), surge: &zero, unavailable: &zeroPercent},
 		{name: "external unknown target permits positive percentage", external: true, surge: &zero, unavailable: &quarter},
@@ -1213,15 +1213,13 @@ func TestValidateUpdate(t *testing.T) {
 			wantError   bool
 		}{
 			{
-				name:        "partial scale to zero invalidates parent budget",
+				name:        "partial scale to zero keeps a parent percentage that rounds to zero",
 				oldReplicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](1)},
 				replicas:    [2]*int32{ptr.To[int32](0), ptr.To[int32](1)},
-				wantError:   true,
 			},
 			{
-				name:      "partial scale to zero uses defaulted targets",
-				replicas:  [2]*int32{ptr.To[int32](0), nil},
-				wantError: true,
+				name:     "partial scale to zero with defaulted targets",
+				replicas: [2]*int32{ptr.To[int32](0), nil},
 			},
 			{
 				name:        "partial scale to zero preserves valid parent budget",
@@ -1430,7 +1428,8 @@ func TestValidateExternalScalingRules(t *testing.T) {
 			{name: "External percentage with replicas above one", replicas: 3, external: true, unavailable: quarter},
 			{name: "External zero percentage", replicas: 1, external: true, unavailable: zeroPercent, wantError: true},
 			{name: "External zero integer", replicas: 3, external: true, unavailable: zero, wantError: true},
-			{name: "Static percentage that rounds to zero", replicas: 3, unavailable: quarter, wantError: true},
+			{name: "Static percentage that rounds to zero", replicas: 3, unavailable: quarter},
+			{name: "Static zero percentage", replicas: 3, unavailable: zeroPercent, wantError: true},
 			{name: "Static percentage that resolves to one", replicas: 4, unavailable: quarter},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

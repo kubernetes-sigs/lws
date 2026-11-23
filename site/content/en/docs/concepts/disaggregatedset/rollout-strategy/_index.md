@@ -30,7 +30,7 @@ rolloutStrategy:
 ```
 
 - `maxSurge` allows extra groups above the desired count, including groups still starting. Percentages round **up**.
-- `maxUnavailable` allows Ready capacity to fall below the desired count. Percentages round **down**.
+- `maxUnavailable` allows Ready capacity to fall below the desired count. Percentages round **down**. If both budgets resolve to `0` (for example, `20%` with `maxSurge: 0` below 5 groups), the controller uses `maxUnavailable: 1`.
 
 The minimum Ready count is `desired - maxUnavailable`; the maximum requested count is `desired + maxSurge`. Both count across old and new revisions of the role. Terminating Pods can take time to disappear.
 

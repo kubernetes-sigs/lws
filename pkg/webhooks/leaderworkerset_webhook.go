@@ -348,15 +348,11 @@ func (r *LeaderWorkerSetWebhook) generalValidate(lws *v1.LeaderWorkerSet) field.
 	allErrs := apivalidation.ValidateObjectMeta(&lws.ObjectMeta, true, apivalidation.ValidateNameFunc(ValidateName), field.NewPath("metadata"))
 	allErrs = append(allErrs, ValidateReplicaCount(specPath.Child("replicas"), int64(ptr.Deref(lws.Spec.Replicas, 1)), ptr.Deref(lws.Spec.LeaderWorkerTemplate.Size, 1))...)
 	allErrs = append(allErrs, ValidateLeaderWorkerSetTemplate(specPath, metadataPath, lws)...)
-	// Above 0 replicas, reject only budgets that are zero at every size: the
-	// controller raises a percentage that rounds down to 0 to 1, so a scale-down
-	// through /scale below the rounding threshold must not block later updates.
-	rolloutPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration")
-	if replicas := ptr.Deref(lws.Spec.Replicas, 1); replicas == 0 {
-		allErrs = append(allErrs, ValidateRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, replicas, rolloutPath)...)
-	} else {
-		allErrs = append(allErrs, ValidateUnknownTargetRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, rolloutPath)...)
-	}
+	allErrs = append(allErrs, ValidateRollingUpdateBudget(
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration,
+		ptr.Deref(lws.Spec.Replicas, 1),
+		specPath.Child("rolloutStrategy", "rollingUpdateConfiguration"),
+	)...)
 	if rollout := lws.Spec.RolloutStrategy.RollingUpdateConfiguration; rollout != nil && rollout.Partition != nil {
 		partitionPath := specPath.Child("rolloutStrategy", "rollingUpdateConfiguration", "partition")
 		allErrs = append(allErrs, validateNonnegativeField(int64(*rollout.Partition), partitionPath)...)
@@ -411,14 +407,16 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1
 	return allErrs
 }
 
-// ValidateRollingUpdateBudget validates rollout budgets for a resolved replica count.
+// ValidateRollingUpdateBudget validates rollout budgets for a replica count. As
+// for Deployments, only budgets that are zero at every size are rejected: the
+// controller raises a percentage that rounds down to 0 to 1, so a scale-down
+// through /scale below the rounding threshold must not block later updates.
+// At 0 replicas only the format is checked.
 func ValidateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, replicas int32, path *field.Path) field.ErrorList {
 	if replicas == 0 {
 		return validateRollingUpdateBudget(rollout, path, nil)
 	}
-	return validateRollingUpdateBudget(rollout, path, func(value *intstr.IntOrString, roundUp bool) (int, error) {
-		return intstr.GetScaledValueFromIntOrPercent(value, int(replicas), roundUp)
-	})
+	return ValidateUnknownTargetRollingUpdateBudget(rollout, path)
 }
 
 // ValidateUnknownTargetRollingUpdateBudget validates rollout budgets whose replica

@@ -761,11 +761,9 @@ func raiseBaselineToReady(baseline int32, states []replicaState, lwsReplicas int
 	return min(lwsReplicas, max(baseline, countReadyStates(states)))
 }
 
-// resolveRollingUpdateBudget resolves maxSurge (rounded up) and maxUnavailable
-// (rounded down) against replicas. Like Deployments, when both resolve to 0,
-// e.g. maxUnavailable=20% with maxSurge=0 below 5 replicas, maxUnavailable is
-// raised to 1 so the rollout can still make progress.
-func resolveRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfiguration, replicas int) (maxSurge, maxUnavailable int, err error) {
+// scaleRollingUpdateBudget resolves maxSurge (rounded up) and maxUnavailable
+// (rounded down) against replicas, without the zero-budget fallback.
+func scaleRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfiguration, replicas int) (maxSurge, maxUnavailable int, err error) {
 	maxSurge, err = intstr.GetScaledValueFromIntOrPercent(&config.MaxSurge, replicas, true)
 	if err != nil {
 		return 0, 0, err
@@ -774,7 +772,19 @@ func resolveRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfigurati
 	if err != nil {
 		return 0, 0, err
 	}
-	if maxSurge == 0 && maxUnavailable == 0 {
+	return maxSurge, maxUnavailable, nil
+}
+
+// resolveRollingUpdateBudget is scaleRollingUpdateBudget with the Deployment
+// fallback: when both budgets resolve to 0 for a nonzero replica count, e.g.
+// maxUnavailable=20% with maxSurge=0 below 5 replicas, maxUnavailable is raised
+// to 1 so the rollout can still make progress.
+func resolveRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfiguration, replicas int) (maxSurge, maxUnavailable int, err error) {
+	maxSurge, maxUnavailable, err = scaleRollingUpdateBudget(config, replicas)
+	if err != nil {
+		return 0, 0, err
+	}
+	if replicas > 0 && maxSurge == 0 && maxUnavailable == 0 {
 		maxUnavailable = 1
 	}
 	return maxSurge, maxUnavailable, nil
@@ -784,12 +794,23 @@ func resolveRollingUpdateBudget(config *leaderworkerset.RollingUpdateConfigurati
 // disruption keeps during a rollout: max(0, min(baseline, lwsReplicas) -
 // maxUnavailable). A percentage maxUnavailable resolves against the baseline
 // here, not against desired spec.replicas, so a scale-up during the rollout
-// does not widen the disruption of the existing groups.
+// does not widen the disruption of the existing groups. The zero-budget
+// fallback applies only when both budgets are 0 at lwsReplicas (e.g. after a
+// scale-down below the rounding threshold), so a scale-up does not disrupt the
+// baseline while additions are still Pending.
 func rolloutFloor(lws *leaderworkerset.LeaderWorkerSet, baseline, lwsReplicas int32) (int32, error) {
 	effectiveBaseline := min(baseline, lwsReplicas)
-	_, maxUnavailable, err := resolveRollingUpdateBudget(lws.Spec.RolloutStrategy.RollingUpdateConfiguration, int(effectiveBaseline))
+	config := lws.Spec.RolloutStrategy.RollingUpdateConfiguration
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&config.MaxUnavailable, int(effectiveBaseline), false)
 	if err != nil {
 		return 0, err
+	}
+	desiredSurge, desiredUnavailable, err := scaleRollingUpdateBudget(config, int(lwsReplicas))
+	if err != nil {
+		return 0, err
+	}
+	if lwsReplicas > 0 && desiredSurge == 0 && desiredUnavailable == 0 {
+		maxUnavailable = max(maxUnavailable, 1)
 	}
 	return utils.NonZeroValue(effectiveBaseline - int32(min(maxUnavailable, int(effectiveBaseline)))), nil
 }

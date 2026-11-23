@@ -3772,8 +3772,8 @@ func TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor(t *testing.T) {
 		wantFloor      int32
 		wantPartition  int32
 	}{
-		// Both budgets resolve to 0, so maxUnavailable is raised to 1.
-		{name: "25% of baseline 2 rounds down to 0", maxUnavailable: intstr.FromString("25%"), wantFloor: 1, wantPartition: 1},
+		// 25% of the desired 10 is 2, so no fallback: the baseline stays protected.
+		{name: "25% of baseline 2 rounds down to 0", maxUnavailable: intstr.FromString("25%"), wantFloor: 2, wantPartition: 2},
 		{name: "50% of baseline 2 is 1", maxUnavailable: intstr.FromString("50%"), wantFloor: 1, wantPartition: 1},
 		{name: "absolute value is unchanged", maxUnavailable: intstr.FromInt32(1), wantFloor: 1, wantPartition: 1},
 	} {
@@ -3825,10 +3825,9 @@ func TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("constructLeaderDeploymentApplyConfiguration() error = %v", err)
 		}
-		// 25% of 2 rounds down to 0 and is raised to 1, so floor = 2 - 1 = 1 and
-		// maxUnavailable = 10 - 1 = 9, not 10.
-		if got := cfg.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 9 {
-			t.Fatalf("deploy maxUnavailable = %d, want 9", got)
+		// floor = 2 - (25% of 2 = 0) = 2, so maxUnavailable = 10 - 2 = 8, not 10.
+		if got := cfg.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal; got != 8 {
+			t.Fatalf("deploy maxUnavailable = %d, want 8", got)
 		}
 	})
 }

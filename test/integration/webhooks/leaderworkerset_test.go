@@ -571,8 +571,6 @@ var _ = ginkgo.Describe("leaderworkerset defaulting, creation and update", func(
 			lwsCreationShouldFail: false,
 		}),
 		ginkgo.Entry("set maxSurge to 0 and a percentage maxUnavailable that rounds to 0 should succeed", &testValidationCase{
-			// DisaggregatedSet Static roles still validate against the resolved replica count.
-			dsTemplateError: "maxUnavailable",
 			makeLeaderWorkerSet: func(ns *corev1.Namespace) *wrappers.LeaderWorkerSetWrapper {
 				lws := wrappers.BuildLeaderWorkerSet(ns.Name)
 				lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("25%")
