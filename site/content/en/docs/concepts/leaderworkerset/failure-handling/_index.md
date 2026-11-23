@@ -56,9 +56,11 @@ The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
 
 For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, a worker that disappears while the controller process is down would otherwise leave no failure for the next process to see: the deleted Pod is already gone, and a StatefulSet replacement has the same name but a new UID and no restart count.
 
-Once every worker of the leader's current revision exists, LWS writes that revision and those workers' Pod UIDs to the leader Pod annotation `leaderworkerset.sigs.k8s.io/worker-uids`. A later reconcile, including the first after the controller starts, treats a missing worker or a worker whose UID is not in that set as a failure and applies the group's restart policy, including `maxGroupRestarts` and `restartBackoff`. A rolling update that keeps the leader pod replaces the record after the new revision's workers exist; workers removed because their revision no longer matches the leader are not a failure. Recreating the group replaces the leader, and the new leader records its own workers. Workers do not get a finalizer for this, so deleting one does not wait on the controller and uninstalling LWS does not leave Pods in `Terminating`.
+LWS stores the revision, worker count, and a digest of the worker Pod UIDs in the leader Pod annotation `leaderworkerset.sigs.k8s.io/worker-uids`. With `RecreateGroupOnPodRestart`, it records the group once all its workers exist. With `RecreateGroupAfterStart`, it waits until every member has left `Pending`.
 
-A group that has not yet formed has no record. A worker lost in that window is handled when the controller sees the deletion itself.
+A later reconcile, including the first after the controller starts, checks the record for missing or replaced workers and applies the group's restart policy, including `maxGroupRestarts` and `restartBackoff`. With `RecreateGroupAfterStart`, a current member in `Pending` still defers recreation. Each replacement leader establishes its own record. Worker Pods can be deleted independently of the record.
+
+The controller needs a prior record to recover a missed deletion. Before that record is written, worker deletions are handled when the controller observes them.
 
 ## Limit Automatic Group Recreation
 

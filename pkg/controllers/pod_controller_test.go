@@ -1804,12 +1804,12 @@ func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
 	handler.Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: replacementPod}, queue)
 	oldPod.Labels[leaderworkerset.SetNameLabelKey] = "mutated-after-enqueue"
 
-	if got := queue.Len(); got != 2 {
-		t.Fatalf("queue length = %d, want 2 distinct requests", got)
+	if got := queue.Len(); got != 3 {
+		t.Fatalf("queue length = %d, want two worker requests and one deduplicated leader request", got)
 	}
 
-	requests := make(map[types.UID]podReconcileRequest, 2)
-	for range 2 {
+	requests := make(map[types.UID]podReconcileRequest, 3)
+	for range 3 {
 		request, shutdown := queue.Get()
 		if shutdown {
 			t.Fatal("queue shut down before returning both requests")
@@ -1818,6 +1818,9 @@ func TestPodEventHandlerKeepsDeletedPodIdentity(t *testing.T) {
 		queue.Done(request)
 	}
 
+	if got := requests[""]; got.Name != "test-sample-0" || got.Namespace != oldPod.Namespace {
+		t.Fatalf("unexpected leader request: %#v", got)
+	}
 	gotDeleted := requests[oldPod.UID]
 	if gotDeleted.DeletedPod == nil {
 		t.Fatal("deleted Pod request does not contain a Pod snapshot")

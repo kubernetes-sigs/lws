@@ -17,6 +17,11 @@ limitations under the License.
 package managerrestart
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -29,22 +34,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
 	"sigs.k8s.io/lws/test/wrappers"
 )
 
-// recreateTimeout bounds how long a running controller may take to start
-// recreating the group. A healthy controller does so within a few seconds.
-const recreateTimeout = 30 * time.Second
+type testGroup struct {
+	lws       *leaderworkerset.LeaderWorkerSet
+	leader    corev1.Pod
+	workerSet appsv1.StatefulSet
+	workers   []corev1.Pod
+}
 
-// createGroup creates a one-group LWS with RecreateGroupOnPodRestart and its
-// leader and worker Pods (envtest runs no StatefulSet controller). It returns
-// the leader as created.
-func createGroup(prefix string) (*leaderworkerset.LeaderWorkerSet, corev1.Pod) {
+// createGroup emulates both StatefulSet controllers. The workers are owned
+// by the worker StatefulSet, just as they are in a cluster.
+func createGroup(prefix string, policy leaderworkerset.RestartPolicyType, size int) testGroup {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: prefix}}
 	gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-	lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(2).
-		RestartPolicy(leaderworkerset.RecreateGroupOnPodRestart).Obj()
+	lws := wrappers.BuildLeaderWorkerSet(ns.Name).Replica(1).Size(size).RestartPolicy(policy).Obj()
 	gomega.Expect(k8sClient.Create(ctx, lws)).To(gomega.Succeed())
 
 	var leaderSts appsv1.StatefulSet
@@ -52,113 +59,179 @@ func createGroup(prefix string) (*leaderworkerset.LeaderWorkerSet, corev1.Pod) {
 		return k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &leaderSts)
 	}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 	gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)).To(gomega.Succeed())
-	var leader corev1.Pod
-	gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}, &leader)).To(gomega.Succeed())
-	testing.CreateWorkerPodsForLeaderPod(ctx, leader, k8sClient, *lws)
-	return lws, leader
+
+	group := testGroup{lws: lws}
+	key := types.NamespacedName{Namespace: ns.Name, Name: lws.Name + "-0"}
+	gomega.Expect(k8sClient.Get(ctx, key, &group.leader)).To(gomega.Succeed())
+	gomega.Eventually(func() error {
+		return k8sClient.Get(ctx, key, &group.workerSet)
+	}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+	for ordinal := 1; ordinal < size; ordinal++ {
+		group.workers = append(group.workers, createWorker(group.workerSet, ordinal))
+	}
+	return group
 }
 
-// deleteWorker deletes worker 1 of the group and waits until the API server
-// has accepted the deletion: the Pod is gone, or terminating if a finalizer
-// holds it. The Pod has no node, so without a finalizer it is removed at
-// once, as it would be after a worker's graceful termination ends or on a
-// force delete.
-func deleteWorker(leader corev1.Pod) {
-	worker := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: leader.Namespace, Name: leader.Name + "-1"}}
-	gomega.Expect(k8sClient.Delete(ctx, worker)).To(gomega.Succeed())
+func createWorker(sts appsv1.StatefulSet, ordinal int) corev1.Pod {
+	worker := corev1.Pod{
+		ObjectMeta: *sts.Spec.Template.ObjectMeta.DeepCopy(),
+		Spec:       *sts.Spec.Template.Spec.DeepCopy(),
+	}
+	worker.Name = sts.Name + "-" + strconv.Itoa(ordinal)
+	worker.Namespace = sts.Namespace
+	worker.Labels[leaderworkerset.WorkerIndexLabelKey] = strconv.Itoa(ordinal)
+	worker.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(&sts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+	gomega.Expect(k8sClient.Create(ctx, &worker)).To(gomega.Succeed())
+	return worker
+}
+
+// deleteWorker waits until the Pod is absent, as after its termination grace
+// period. This ensures a restart cannot recover by observing a terminating Pod.
+func deleteWorker(worker corev1.Pod) {
+	gomega.Expect(k8sClient.Delete(ctx, &worker)).To(gomega.Succeed())
+	gomega.Eventually(func() bool {
+		return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(&worker), &corev1.Pod{}))
+	}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
+}
+
+func expectWorkerRecord(group testGroup, started bool) {
+	uids := make([]string, len(group.workers))
+	for i := range group.workers {
+		uids[i] = string(group.workers[i].UID)
+	}
+	slices.Sort(uids)
+	sum := sha256.Sum256([]byte(strings.Join(uids, ",")))
+	want := fmt.Sprintf("%s|sha256:%x:%d", revisionutils.GetRevisionKey(&group.leader), sum, len(uids))
+	if started {
+		want += ":started"
+	}
 	gomega.Eventually(func(g gomega.Gomega) {
 		var current corev1.Pod
-		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(worker), &current)
-		if apierrors.IsNotFound(err) {
-			return
-		}
-		g.Expect(err).NotTo(gomega.HaveOccurred())
-		g.Expect(current.DeletionTimestamp).NotTo(gomega.BeNil())
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&group.leader), &current)).To(gomega.Succeed())
+		g.Expect(current.Annotations[leaderworkerset.WorkerUIDsAnnotationKey]).To(gomega.Equal(want))
 	}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 }
 
-// replaceWorkerIfGone recreates worker 1 with the same name and a new UID,
-// as its StatefulSet would, if the deleted Pod is already gone. A Pod that is
-// still terminating keeps its name, so no replacement can be created yet.
-func replaceWorkerIfGone(lws *leaderworkerset.LeaderWorkerSet, leader corev1.Pod) {
-	var current corev1.Pod
-	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: leader.Namespace, Name: leader.Name + "-1"}, &current)
-	if !apierrors.IsNotFound(err) {
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		return
-	}
-	testing.CreateWorkerPodsForLeaderPod(ctx, leader, k8sClient, *lws)
-}
-
-// expectGroupRecreation waits for the controller to start recreating the
-// group: the original leader is deleted (envtest has no garbage collector,
-// so it stays terminating) or already replaced.
 func expectGroupRecreation(leader corev1.Pod) {
 	gomega.Eventually(func(g gomega.Gomega) {
 		var current corev1.Pod
 		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&leader), &current)
-		if client.IgnoreNotFound(err) == nil && err != nil {
+		if apierrors.IsNotFound(err) {
 			return
 		}
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		if current.UID != leader.UID {
 			return
 		}
-		g.Expect(current.DeletionTimestamp).NotTo(gomega.BeNil(),
-			"leader %s was not deleted after its worker was deleted", leader.Name)
-	}, recreateTimeout, testing.Interval).Should(gomega.Succeed())
+		// Envtest has no garbage collector, so the original leader can
+		// stay terminating until its dependents have been removed.
+		g.Expect(current.DeletionTimestamp).NotTo(gomega.BeNil())
+	}, 30*time.Second, testing.Interval).Should(gomega.Succeed())
+}
+
+func expectLeaderKept(leader corev1.Pod) {
+	gomega.Consistently(func(g gomega.Gomega) {
+		var current corev1.Pod
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&leader), &current)).To(gomega.Succeed())
+		g.Expect(current.UID).To(gomega.Equal(leader.UID))
+		g.Expect(current.DeletionTimestamp).To(gomega.BeNil())
+	}, 3*time.Second, testing.Interval).Should(gomega.Succeed())
 }
 
 var _ = ginkgo.Describe("Worker deletion across a controller manager restart", func() {
 	ginkgo.It("recreates the group when a worker is deleted while the manager runs", func() {
 		startManager()
-		_, leader := createGroup("worker-delete-running-")
-		deleteWorker(leader)
-		expectGroupRecreation(leader)
+		group := createGroup("worker-delete-running-", leaderworkerset.RecreateGroupOnPodRestart, 2)
+		deleteWorker(group.workers[0])
+		expectGroupRecreation(group.leader)
 	})
 
-	// Control: a restarted manager handles deletions it observes. This shows
-	// that the specs below exercise a working replacement manager.
 	ginkgo.It("recreates the group when a worker is deleted after the manager restarted", func() {
 		stop := startManager()
-		_, leader := createGroup("worker-delete-restarted-")
+		group := createGroup("worker-delete-restarted-", leaderworkerset.RecreateGroupOnPodRestart, 2)
 		stop()
 		startManager()
-		deleteWorker(leader)
-		expectGroupRecreation(leader)
+		deleteWorker(group.workers[0])
+		expectGroupRecreation(group.leader)
 	})
 
 	ginkgo.It("recreates the group when a worker was deleted while the manager was down", func() {
 		stop := startManager()
-		_, leader := createGroup("worker-delete-down-")
-		// Let the running manager observe the healthy group before it stops.
-		gomega.Consistently(func(g gomega.Gomega) {
-			var current corev1.Pod
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&leader), &current)).To(gomega.Succeed())
-			g.Expect(current.DeletionTimestamp).To(gomega.BeNil())
-		}, 2*time.Second, testing.Interval).Should(gomega.Succeed())
+		group := createGroup("worker-delete-down-", leaderworkerset.RecreateGroupOnPodRestart, 2)
+		expectWorkerRecord(group, false)
 		stop()
 
-		deleteWorker(leader)
+		deleteWorker(group.workers[0])
 		startManager()
-		expectGroupRecreation(leader)
+		expectGroupRecreation(group.leader)
 	})
 
 	ginkgo.It("recreates the group when a worker was replaced while the manager was down", func() {
 		stop := startManager()
-		lws, leader := createGroup("worker-replace-down-")
-		gomega.Consistently(func(g gomega.Gomega) {
-			var current corev1.Pod
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&leader), &current)).To(gomega.Succeed())
-			g.Expect(current.DeletionTimestamp).To(gomega.BeNil())
-		}, 2*time.Second, testing.Interval).Should(gomega.Succeed())
+		group := createGroup("worker-replace-down-", leaderworkerset.RecreateGroupOnPodRestart, 2)
+		expectWorkerRecord(group, false)
 		stop()
 
-		deleteWorker(leader)
-		// A worker StatefulSet recreates a removed Pod with the same name and a
-		// new UID, and the replacement has no restarts or deletion timestamp.
-		replaceWorkerIfGone(lws, leader)
+		deleteWorker(group.workers[0])
+		replacement := createWorker(group.workerSet, 1)
+		gomega.Expect(replacement.Name).To(gomega.Equal(group.workers[0].Name))
+		gomega.Expect(replacement.UID).NotTo(gomega.Equal(group.workers[0].UID))
 		startManager()
-		expectGroupRecreation(leader)
+		expectGroupRecreation(group.leader)
+	})
+
+	ginkgo.It("keeps an AfterStart group whose Pending worker was deleted while the manager was down", func() {
+		stop := startManager()
+		group := createGroup("pending-worker-down-", leaderworkerset.RecreateGroupAfterStart, 2)
+		testing.SetPodToRunning(ctx, k8sClient, group.leader.Name, group.lws)
+		gomega.Expect(group.workers[0].Status.Phase).To(gomega.Equal(corev1.PodPending))
+		gomega.Consistently(func(g gomega.Gomega) {
+			var current corev1.Pod
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&group.leader), &current)).To(gomega.Succeed())
+			g.Expect(current.Annotations[leaderworkerset.WorkerUIDsAnnotationKey]).To(gomega.BeEmpty())
+		}, time.Second, testing.Interval).Should(gomega.Succeed())
+		stop()
+
+		deleteWorker(group.workers[0])
+		startManager()
+		expectLeaderKept(group.leader)
+	})
+
+	ginkgo.DescribeTable("recreates an AfterStart group that lost running workers while the manager was down", func(lostWorkers int) {
+		stop := startManager()
+		group := createGroup("running-workers-down-", leaderworkerset.RecreateGroupAfterStart, 3)
+		testing.SetPodToRunning(ctx, k8sClient, group.leader.Name, group.lws)
+		for _, worker := range group.workers {
+			testing.SetPodToRunning(ctx, k8sClient, worker.Name, group.lws)
+		}
+		expectWorkerRecord(group, true)
+		stop()
+
+		for _, worker := range group.workers[:lostWorkers] {
+			deleteWorker(worker)
+		}
+		startManager()
+		expectGroupRecreation(group.leader)
+	},
+		ginkgo.Entry("with one worker missing and another still running", 1),
+		ginkgo.Entry("with both workers missing", 2),
+	)
+
+	ginkgo.It("waits for an AfterStart replacement worker to leave Pending", func() {
+		stop := startManager()
+		group := createGroup("pending-replacement-", leaderworkerset.RecreateGroupAfterStart, 2)
+		testing.SetPodToRunning(ctx, k8sClient, group.leader.Name, group.lws)
+		testing.SetPodToRunning(ctx, k8sClient, group.workers[0].Name, group.lws)
+		expectWorkerRecord(group, true)
+		stop()
+
+		deleteWorker(group.workers[0])
+		replacement := createWorker(group.workerSet, 1)
+		gomega.Expect(replacement.UID).NotTo(gomega.Equal(group.workers[0].UID))
+		startManager()
+		expectLeaderKept(group.leader)
+
+		testing.SetPodToRunning(ctx, k8sClient, replacement.Name, group.lws)
+		expectGroupRecreation(group.leader)
 	})
 })

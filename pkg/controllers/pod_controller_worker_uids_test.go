@@ -18,6 +18,8 @@ package controllers
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,8 +28,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -42,64 +44,115 @@ const (
 	workerUIDNew      = types.UID("22222222-2222-2222-2222-222222222222")
 )
 
-func TestFormatWorkerUIDRecordUsesHashPastTheLimit(t *testing.T) {
-	previous := workerUIDListMax
-	workerUIDListMax = 1
-	t.Cleanup(func() { workerUIDListMax = previous })
-
-	formatted := formatWorkerUIDRecord("rev", []types.UID{workerUIDOld, workerUIDNew})
-	parsed, err := parseWorkerUIDRecord(formatted)
-	if err != nil {
-		t.Fatalf("parseWorkerUIDRecord(%q) error = %v", formatted, err)
+func TestWorkerUIDRecordFormat(t *testing.T) {
+	record := workerUIDRecord{revision: workerUIDRevision, digest: digestUIDs([]string{string(workerUIDNew), string(workerUIDOld)}), count: 2, started: true}
+	if got := parseWorkerUIDRecord(record.String()); got != record {
+		t.Fatalf("record after round trip = %+v, want %+v", got, record)
 	}
-	if !parsed.hashed || parsed.count != 2 || parsed.revision != "rev" {
-		t.Fatalf("parsed record = %+v, want a hash of 2 UIDs for revision rev", parsed)
-	}
-	if !parsed.matches([]types.UID{workerUIDNew, workerUIDOld}) {
-		t.Fatal("hash record does not match the same UIDs in a different order")
-	}
-	if parsed.matches([]types.UID{workerUIDNew}) {
-		t.Fatal("hash record matched a smaller set")
+	oldRecord := record
+	oldRecord.started = false
+	for _, value := range []string{oldRecord.String(), workerUIDRevision + "|" + string(workerUIDOld) + "," + string(workerUIDNew)} {
+		if got := parseWorkerUIDRecord(value); got != oldRecord {
+			t.Fatalf("parsing previous record %q = %+v, want %+v", value, got, oldRecord)
+		}
 	}
 }
 
-func TestEnsureWorkerUIDRecordWritesOnceWhenTheGroupForms(t *testing.T) {
+func TestWorkerUIDRecordWritesOnceWhenTheGroupForms(t *testing.T) {
+	ctx := context.Background()
+	lws := workerUIDLWS()
 	leader := workerUIDLeader()
 	worker := workerUIDPod(leader, workerUIDOld)
 	counter := &workerUIDPatchCounter{}
-	r := workerUIDReconciler(t, counter, leader, worker)
+	r := workerUIDReconciler(t, counter, lws, leader, worker)
 
-	pending, err := r.ensureWorkerUIDRecord(context.Background(), leader, 2)
-	if err != nil || pending {
-		t.Fatalf("ensureWorkerUIDRecord() = %t, %v, want written", pending, err)
+	for range 2 {
+		leader = readWorkerUIDLeader(t, r, leader)
+		if err := r.recordWorkerUIDs(ctx, leader, lws); err != nil {
+			t.Fatal(err)
+		}
 	}
 	want := workerUIDRecordValue(workerUIDRevision, workerUIDOld)
-	if leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] != want {
-		t.Fatalf("annotation = %q, want %q", leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey], want)
+	if got := readWorkerUIDLeader(t, r, leader).Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; got != want {
+		t.Fatalf("record = %q, want %q", got, want)
 	}
 	if counter.patches != 1 {
-		t.Fatalf("patches after record = %d, want 1", counter.patches)
-	}
-
-	pending, err = r.ensureWorkerUIDRecord(context.Background(), leader, 2)
-	if err != nil || pending {
-		t.Fatalf("second ensureWorkerUIDRecord() = %t, %v, want a no-op", pending, err)
-	}
-	if counter.patches != 1 {
-		t.Fatalf("patches after second ensure = %d, want 1", counter.patches)
+		t.Fatalf("patches = %d, want 1", counter.patches)
 	}
 }
 
-func TestEnsureWorkerUIDRecordWaitsUntilEveryWorkerExists(t *testing.T) {
+func TestWorkerUIDRecordWaitsUntilEveryWorkerExists(t *testing.T) {
+	lws := workerUIDLWS()
 	leader := workerUIDLeader()
-	r := workerUIDReconciler(t, nil, leader)
+	r := workerUIDReconciler(t, nil, lws, leader)
 
-	pending, err := r.ensureWorkerUIDRecord(context.Background(), leader, 2)
-	if err != nil || !pending {
-		t.Fatalf("ensureWorkerUIDRecord() = %t, %v, want pending", pending, err)
+	if err := r.recordWorkerUIDs(context.Background(), readWorkerUIDLeader(t, r, leader), lws); err != nil {
+		t.Fatal(err)
 	}
-	if leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] != "" {
-		t.Fatalf("annotation = %q, want empty while the group is forming", leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey])
+	if got := readWorkerUIDLeader(t, r, leader).Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; got != "" {
+		t.Fatalf("record = %q while the group is still forming", got)
+	}
+}
+
+func TestWorkerUIDRecordProtectsAgainstStaleWrites(t *testing.T) {
+	ctx := context.Background()
+	for _, replaceLeader := range []bool{false, true} {
+		t.Run(strconv.FormatBool(replaceLeader), func(t *testing.T) {
+			lws := workerUIDLWS()
+			leader := workerUIDLeader()
+			worker := workerUIDPod(leader, workerUIDOld)
+			r := workerUIDReconciler(t, nil, lws, leader, worker)
+			stale := readWorkerUIDLeader(t, r, leader)
+			want := workerUIDRecordValue(workerUIDRevision, workerUIDOld)
+			if replaceLeader {
+				if err := r.Delete(ctx, leader); err != nil {
+					t.Fatal(err)
+				}
+				replacement := workerUIDLeader()
+				replacement.UID = "new-leader-uid"
+				want = workerUIDRecordValue(workerUIDRevision, workerUIDNew)
+				replacement.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = want
+				if err := r.Create(ctx, replacement); err != nil {
+					t.Fatal(err)
+				}
+				leader = replacement
+			} else {
+				if err := r.recordWorkerUIDs(ctx, readWorkerUIDLeader(t, r, leader), lws); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Delete(ctx, worker); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Create(ctx, workerUIDPod(leader, workerUIDNew)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := r.recordWorkerUIDs(ctx, stale, lws); !apierrors.IsConflict(err) {
+				t.Fatalf("error writing a stale record = %v, want Conflict", err)
+			}
+			if got := readWorkerUIDLeader(t, r, leader).Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; got != want {
+				t.Fatalf("record = %q after stale write, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestWorkerUIDRecordFitsBesideExistingAnnotations(t *testing.T) {
+	lws := workerUIDLWS()
+	leader := workerUIDLeader()
+	leader.Annotations["example.com/metadata"] = strings.Repeat("a", 255*1024)
+	r := workerUIDReconciler(t, nil, lws, leader, workerUIDPod(leader, workerUIDOld))
+
+	if err := r.recordWorkerUIDs(context.Background(), readWorkerUIDLeader(t, r, leader), lws); err != nil {
+		t.Fatal(err)
+	}
+	stored := readWorkerUIDLeader(t, r, leader)
+	if got := stored.Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; !strings.Contains(got, "|sha256:") || len(got) > 128 {
+		t.Fatalf("record = %q, want a compact digest", got)
+	}
+	if got := stored.Annotations["example.com/metadata"]; got != leader.Annotations["example.com/metadata"] {
+		t.Fatal("record patch changed an existing annotation")
 	}
 }
 
@@ -132,6 +185,28 @@ func TestHandleRestartPolicyRecreatesWhenRecordedWorkerIsGone(t *testing.T) {
 	got := podCtrlReadCounters(lws)
 	if got.recreations-before.recreations != 1 {
 		t.Fatalf("recreation counter increment = %v, want 1", got.recreations-before.recreations)
+	}
+}
+
+func TestHandleRestartPolicyReportsTheMissingWorkerName(t *testing.T) {
+	lws := workerUIDLWS()
+	leader := workerUIDLeader()
+	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = workerUIDRecordValue(workerUIDRevision, workerUIDOld)
+	r := workerUIDReconciler(t, nil, lws, leader)
+	recorder := events.NewFakeRecorder(1)
+	r.Record = recorder
+
+	deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
+	if err != nil || !deleted {
+		t.Fatalf("handleRestartPolicy() = %t, %v, want recreation", deleted, err)
+	}
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "Worker pod "+leader.Name+"-1 failed") {
+			t.Fatalf("event = %q, want the missing worker's Pod name", event)
+		}
+	default:
+		t.Fatal("no recreation event")
 	}
 }
 
@@ -208,7 +283,9 @@ func TestHandleRestartPolicyAfterStartWaitsForAPendingReplacement(t *testing.T) 
 	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).RestartGroupAfterStart().Obj()
 	leader := workerUIDLeader()
 	leader.Status.Phase = corev1.PodRunning
-	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = workerUIDRecordValue(workerUIDRevision, workerUIDOld)
+	record := parseWorkerUIDRecord(workerUIDRecordValue(workerUIDRevision, workerUIDOld))
+	record.started = true
+	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = record.String()
 	replacement := workerUIDPod(leader, workerUIDNew)
 	replacement.Status.Phase = corev1.PodPending
 	r := workerUIDReconciler(t, nil, lws, leader, replacement)
@@ -228,48 +305,53 @@ func TestHandleRestartPolicyAfterStartWaitsForAPendingReplacement(t *testing.T) 
 	}
 }
 
-func TestWorkerFollowsRestartPolicySkipsRevisionLookupOnceRecorded(t *testing.T) {
+func TestReconcileWorkerSkipsUIDChecksOnRoutineUpdates(t *testing.T) {
 	lws := workerUIDLWS()
 	leader := workerUIDLeader()
 	worker := workerUIDPod(leader, workerUIDOld)
 	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = workerUIDRecordValue(workerUIDRevision, workerUIDOld)
-	counter := &workerUIDListCounter{}
-	base := workerUIDReconciler(t, nil, lws, leader, worker)
-	counter.Client = base.Client
-	base.Client = counter
+	r := workerUIDReconciler(t, nil, lws, leader, worker)
+	counter := &workerUIDListCounter{Client: r.Client}
+	r.Client = counter
 
-	follow, err := base.workerFollowsRestartPolicy(context.Background(), worker, lws)
-	if err != nil || follow {
-		t.Fatalf("workerFollowsRestartPolicy() = %t, %v, want false", follow, err)
+	if _, err := r.reconcilePod(context.Background(), podReconcileRequestForPod(worker, false)); err != nil {
+		t.Fatal(err)
 	}
-	if counter.revisionLists != 0 {
-		t.Fatalf("ControllerRevision lists = %d, want 0 for a recorded worker", counter.revisionLists)
+	if counter.lists != 0 {
+		t.Fatalf("routine worker update made %d List calls, want 0", counter.lists)
 	}
 }
 
-func TestWorkerFollowsRestartPolicyIgnoresAStaleWorker(t *testing.T) {
+func TestWorkerUIDRecordIgnoresStaleWorkers(t *testing.T) {
 	lws := workerUIDLWS()
 	leader := workerUIDLeader()
 	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = workerUIDRecordValue(workerUIDRevision, workerUIDOld)
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name: leader.Name, Namespace: leader.Namespace, UID: "current-worker-sts",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+	}}
 	current := workerUIDPod(leader, workerUIDOld)
-	stale := workerUIDPod(leader, workerUIDNew)
-	stale.Name = leader.Name + "-stale"
-	stale.Labels[leaderworkerset.RevisionKey] = "previous-revision"
-	r := workerUIDReconciler(t, nil, lws, leader, current, stale)
+	current.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(sts, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))}
+	stale := current.DeepCopy()
+	stale.Name = leader.Name + "-2"
+	stale.UID = workerUIDNew
+	stale.OwnerReferences[0].UID = "old-worker-sts"
+	oldRevision := current.DeepCopy()
+	oldRevision.Name = leader.Name + "-3"
+	oldRevision.UID = "old-revision-worker"
+	oldRevision.Labels[leaderworkerset.RevisionKey] = "old-revision"
+	r := workerUIDReconciler(t, nil, lws, leader, sts, current, stale, oldRevision)
 
-	follow, err := r.workerFollowsRestartPolicy(context.Background(), stale, lws)
-	if err != nil || follow {
-		t.Fatalf("workerFollowsRestartPolicy(stale) = %t, %v, want false", follow, err)
-	}
 	deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
 	if err != nil || deleted {
-		t.Fatalf("handleRestartPolicy() = %t, %v, want the recorded worker to keep the group", deleted, err)
+		t.Fatalf("handleRestartPolicy() = %t, %v, want only current workers to count", deleted, err)
 	}
 }
 
 func TestReconcilePodRecordsWorkerUIDsAndRecreatesAfterRestart(t *testing.T) {
 	scheme := podCtrlTestScheme(t)
 	lws := workerUIDLWS()
+	lws.Spec.StartupPolicy = leaderworkerset.LeaderReadyStartupPolicy
 	lws.UID = "lws-uid"
 	lws.Kind = "LeaderWorkerSet"
 	lws.APIVersion = leaderworkerset.GroupVersion.String()
@@ -291,6 +373,7 @@ func TestReconcilePodRecordsWorkerUIDsAndRecreatesAfterRestart(t *testing.T) {
 
 	r := &PodReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&corev1.Pod{}).
+			WithIndex(&corev1.Pod{}, workerPodGroupIndex, indexWorkerPodGroup).
 			WithObjects(lws.DeepCopy(), revision.DeepCopy(), leader.DeepCopy(), worker.DeepCopy()).Build(),
 		Scheme: scheme,
 		Record: fakeEventRecorder{},
@@ -336,37 +419,61 @@ func TestRevisionChangeReplacesTheRecordWithoutRecreating(t *testing.T) {
 	if err := r.Create(context.Background(), next); err != nil {
 		t.Fatal(err)
 	}
-	// ensure compares against the client copy of the leader.
-	var stored corev1.Pod
-	if err := r.Get(context.Background(), client.ObjectKeyFromObject(leader), &stored); err != nil {
+	if err := r.recordWorkerUIDs(context.Background(), readWorkerUIDLeader(t, r, leader), lws); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := r.ensureWorkerUIDRecord(context.Background(), &stored, 2)
-	if err != nil || pending {
-		t.Fatalf("ensureWorkerUIDRecord() = %t, %v, want the new revision recorded", pending, err)
-	}
-	if stored.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] != workerUIDRecordValue("next-revision", workerUIDNew) {
-		t.Fatalf("annotation = %q, want the next revision's worker", stored.Annotations[leaderworkerset.WorkerUIDsAnnotationKey])
+	if got := readWorkerUIDLeader(t, r, leader).Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; got != workerUIDRecordValue("next-revision", workerUIDNew) {
+		t.Fatalf("annotation = %q, want the next revision's worker", got)
 	}
 }
 
-func TestFinishLeaderReconcileDoesNotShortenBackoff(t *testing.T) {
-	leader := workerUIDLeader()
-	lws := workerUIDLWS()
-	r := workerUIDReconciler(t, nil, lws, leader)
-	backoff := ctrl.Result{RequeueAfter: 8 * time.Second}
+func TestWorkerUIDRecordStartsFreshAfterLeaderReplacement(t *testing.T) {
+	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		t.Run(string(identity), func(t *testing.T) {
+			ctx := context.Background()
+			lws := workerUIDLWS()
+			lws.Spec.GroupIdentity = identity
+			oldLeader := workerUIDLeader()
+			oldWorker := workerUIDPod(oldLeader, workerUIDOld)
+			oldWorker.Name = oldLeader.Name + "-2"
+			newLeader := workerUIDLeader()
+			newLeader.UID = "replacement-leader"
+			newLeader.Labels[leaderworkerset.RevisionKey] = "smaller-group-revision"
+			if identity == leaderworkerset.GroupIdentityHash {
+				newLeader.Name = "test-sample-9d55c5fbc-s6msg"
+				newLeader.Spec.Hostname = "test-sample-9212d4c0"
+				newLeader.Labels[leaderworkerset.GroupIndexLabelKey] = "9212d4c0"
+			}
+			newWorker := workerUIDPod(newLeader, workerUIDNew)
+			newWorker.Name = workerStatefulSetName(newLeader) + "-1"
+			r := workerUIDReconciler(t, nil, lws, newLeader, newWorker, oldWorker)
 
-	result, err := r.finishLeaderReconcile(context.Background(), leader, lws, backoff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.RequeueAfter != backoff.RequeueAfter {
-		t.Fatalf("RequeueAfter = %s, want the backoff delay %s kept", result.RequeueAfter, backoff.RequeueAfter)
+			if err := r.recordWorkerUIDs(ctx, readWorkerUIDLeader(t, r, newLeader), lws); err != nil {
+				t.Fatal(err)
+			}
+			stored := readWorkerUIDLeader(t, r, newLeader)
+			want := workerUIDRecordValue(newLeader.Labels[leaderworkerset.RevisionKey], workerUIDNew)
+			if got := stored.Annotations[leaderworkerset.WorkerUIDsAnnotationKey]; got != want {
+				t.Fatalf("replacement leader record = %q, want %q", got, want)
+			}
+			if lost, err := r.detectWorkerUIDLoss(ctx, stored); err != nil || lost != nil {
+				t.Fatalf("worker loss = %+v, error = %v with the replacement group intact", lost, err)
+			}
+		})
 	}
 }
 
 func workerUIDRecordValue(revision string, uid types.UID) string {
-	return revision + "|" + string(uid)
+	return (workerUIDRecord{revision: revision, digest: digestUIDs([]string{string(uid)}), count: 1}).String()
+}
+
+func readWorkerUIDLeader(t *testing.T, r *PodReconciler, leader *corev1.Pod) *corev1.Pod {
+	t.Helper()
+	var stored corev1.Pod
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(leader), &stored); err != nil {
+		t.Fatal(err)
+	}
+	return &stored
 }
 
 func workerUIDLWS() *leaderworkerset.LeaderWorkerSet {
@@ -377,6 +484,7 @@ func workerUIDLWS() *leaderworkerset.LeaderWorkerSet {
 func workerUIDLeader() *corev1.Pod {
 	leader := wrappers.MakePodWithLabels("test-sample", "0", "0", "default", 2)
 	leader.UID = "leader-uid"
+	leader.Status.Phase = corev1.PodPending
 	leader.Labels[leaderworkerset.RevisionKey] = workerUIDRevision
 	return leader
 }
@@ -384,6 +492,7 @@ func workerUIDLeader() *corev1.Pod {
 func workerUIDPod(leader *corev1.Pod, uid types.UID) *corev1.Pod {
 	worker := wrappers.MakePodWithLabels(leader.Labels[leaderworkerset.SetNameLabelKey], leader.Labels[leaderworkerset.GroupIndexLabelKey], "1", leader.Namespace, 2)
 	worker.UID = uid
+	worker.Status.Phase = corev1.PodPending
 	worker.Labels[leaderworkerset.RevisionKey] = leader.Labels[leaderworkerset.RevisionKey]
 	worker.Annotations[leaderworkerset.LeaderPodNameAnnotationKey] = leader.Name
 	worker.OwnerReferences = []metav1.OwnerReference{
@@ -395,7 +504,8 @@ func workerUIDPod(leader *corev1.Pod, uid types.UID) *corev1.Pod {
 func workerUIDReconciler(t *testing.T, counter *workerUIDPatchCounter, objects ...client.Object) *PodReconciler {
 	t.Helper()
 	scheme := podCtrlTestScheme(t)
-	builder := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&corev1.Pod{}).WithObjects(objects...)
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&corev1.Pod{}).
+		WithIndex(&corev1.Pod{}, workerPodGroupIndex, indexWorkerPodGroup).WithObjects(objects...)
 	var c client.Client = builder.Build()
 	if counter != nil {
 		counter.Client = c
@@ -416,12 +526,10 @@ func (c *workerUIDPatchCounter) Patch(ctx context.Context, obj client.Object, pa
 
 type workerUIDListCounter struct {
 	client.Client
-	revisionLists int
+	lists int
 }
 
 func (c *workerUIDListCounter) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	if _, ok := list.(*appsv1.ControllerRevisionList); ok {
-		c.revisionLists++
-	}
+	c.lists++
 	return c.Client.List(ctx, list, opts...)
 }
