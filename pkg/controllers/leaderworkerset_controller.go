@@ -2335,6 +2335,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, rev
 // A rollback during a rolling update returns to a template whose revision is still kept, because revisions are only truncated once an update completes.
 // That revision is reused, so that a revision key does not get a second revision.
 // Only a revision with the same data that records placement is reused.
+// A revision with the same data that does not record placement is replaced by a new one, as recordPlacementInRevision does.
 // Any other revision under the key keeps the previous behavior, a new revision.
 func (r *LeaderWorkerSetReconciler) createUpdatedRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, updatedRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	revisionKey := revisionutils.GetRevisionKey(updatedRevision)
@@ -2342,6 +2343,7 @@ func (r *LeaderWorkerSetReconciler) createUpdatedRevision(ctx context.Context, l
 	if err != nil {
 		return nil, err
 	}
+	var unmarkedRevision *appsv1.ControllerRevision
 	if existingRevision != nil && revisionutils.EqualRevision(existingRevision, updatedRevision) {
 		recorded, err := revisionutils.RecordsPlacement(existingRevision)
 		if err != nil {
@@ -2351,12 +2353,20 @@ func (r *LeaderWorkerSetReconciler) createUpdatedRevision(ctx context.Context, l
 			ctrl.LoggerFrom(ctx).V(2).Info("Reusing the existing revision for the updated LWS", "revisionKey", revisionKey, "revision", klog.KObj(existingRevision))
 			return existingRevision, nil
 		}
+		unmarkedRevision = existingRevision
 	}
 	revision, err := revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
 	if err != nil {
 		return nil, err
 	}
 	r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionKey))
+	if unmarkedRevision != nil {
+		// GetRevision returns the highest revision for a key, which is the new one.
+		// Removing the old one only avoids keeping two revisions for one key.
+		if err := r.Delete(ctx, unmarkedRevision); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	}
 	return revision, nil
 }
 
