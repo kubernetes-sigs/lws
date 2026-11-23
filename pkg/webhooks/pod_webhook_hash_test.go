@@ -141,13 +141,16 @@ func TestHashLeaderSubGroupLabels(t *testing.T) {
 	if got := pod.Labels[leaderworkerset.SubGroupIndexLabelKey]; got != "0" {
 		t.Errorf("expected leader subgroup index 0, got %q", got)
 	}
-	if got, want := pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey], genGroupUniqueKey(key, "0"); got != want {
-		t.Errorf("expected subgroup hash derived from the group key %q, got %q", want, got)
+	subGroupKey := genGroupUniqueKey(key, "0")
+	if got := pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey]; got != subGroupKey {
+		t.Errorf("expected subgroup hash derived from the group key %q, got %q", subGroupKey, got)
 	}
-	if !hasExclusiveTerm(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, "topo", leaderworkerset.SubGroupUniqueHashLabelKey) {
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		exclusiveAffinityTerm("topo", leaderworkerset.SubGroupUniqueHashLabelKey, subGroupKey), leaderworkerset.SubGroupUniqueHashLabelKey) {
 		t.Error("expected subgroup exclusive placement affinity to be applied")
 	}
-	if !hasExclusiveTerm(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, "topo", leaderworkerset.SubGroupUniqueHashLabelKey) {
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		exclusiveAntiAffinityTerm("topo", leaderworkerset.SubGroupUniqueHashLabelKey, subGroupKey, leaderworkerset.PlacementScopeAll, ""), leaderworkerset.SubGroupUniqueHashLabelKey) {
 		t.Error("expected subgroup exclusive placement anti-affinity to be applied")
 	}
 }

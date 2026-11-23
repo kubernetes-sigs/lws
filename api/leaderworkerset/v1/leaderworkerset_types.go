@@ -607,11 +607,13 @@ type PlacementPolicy struct {
 	// +optional
 	Topology string `json:"topology,omitempty"`
 
-	// scope selects the pods the exclusive anti-affinity repels. All keeps
-	// every other group out of the domain, matching the deprecated annotations
-	// and the physical exclusivity hardware-sliced accelerators need; Own keeps
-	// only the groups of this LeaderWorkerSet out, so groups of other
-	// LeaderWorkerSets may share the domain. Defaults to All.
+	// scope selects the pods the exclusive anti-affinity repels. The injected
+	// term omits the namespace fields, so both values apply within the pod's
+	// namespace. All keeps every other group in that namespace out of the
+	// domain, matching the deprecated annotations and the physical exclusivity
+	// hardware-sliced accelerators need; Own keeps only the groups of this
+	// LeaderWorkerSet out, so groups of other LeaderWorkerSets may share the
+	// domain. Defaults to All.
 	// +kubebuilder:default=All
 	// +kubebuilder:validation:Enum={All,Own}
 	// +optional
@@ -620,9 +622,9 @@ type PlacementPolicy struct {
 	// enforcement selects how the exclusive placement is enforced. Required
 	// keeps the injected anti-affinity required, so a group without a free
 	// domain stays Pending; Preferred makes it a scheduling preference, so
-	// the scheduler spreads the groups across domains but may co-locate them
-	// once it runs out, trading the isolation guarantee for capacity.
-	// Defaults to Required.
+	// the scheduler favors spreading the groups across domains. Co-location is
+	// best-effort: a group may share a domain even while a free domain
+	// remains, if the other scheduler scores favor it. Defaults to Required.
 	// +kubebuilder:default=Required
 	// +kubebuilder:validation:Enum={Required,Preferred}
 	// +optional
@@ -653,7 +655,8 @@ type SubGroupPlacementPolicy struct {
 	Topology string `json:"topology,omitempty"`
 
 	// scope selects the pods the exclusive anti-affinity repels, as at the
-	// group level. Defaults to All.
+	// group level, and likewise applies within the pod's namespace. Defaults
+	// to All.
 	// +kubebuilder:default=All
 	// +kubebuilder:validation:Enum={All,Own}
 	// +optional
@@ -676,10 +679,10 @@ const (
 
 	// PlacementExclusiveTopology places all pods of a group, or of a subgroup,
 	// in one topology domain. The scope decides which other pods are kept out
-	// of it: every LeaderWorkerSet pod, or only the groups of this
-	// LeaderWorkerSet. The default (All) is what the deprecated annotations
-	// always had, and what hardware-sliced accelerators (e.g. TPU slices)
-	// require.
+	// of it: every other group in the pod's namespace, or only the groups of
+	// this LeaderWorkerSet. The default (All) is what the deprecated
+	// annotations always had, and what hardware-sliced accelerators (e.g. TPU
+	// slices) require.
 	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
 )
 
@@ -688,8 +691,9 @@ type PlacementScope string
 
 const (
 	// PlacementScopeAll repels every LeaderWorkerSet and DisaggregatedSet pod
-	// from the domain. This is the behavior the deprecated annotations always
-	// had, and the one hardware-sliced accelerators (e.g. TPU slices) require.
+	// in the pod's namespace from the domain. This is the behavior the
+	// deprecated annotations always had, and the one hardware-sliced
+	// accelerators (e.g. TPU slices) require.
 	PlacementScopeAll PlacementScope = "All"
 
 	// PlacementScopeOwn repels only the groups of this LeaderWorkerSet, so
@@ -707,9 +711,9 @@ const (
 	PlacementRequired PlacementEnforcement = "Required"
 
 	// PlacementPreferred makes the injected anti-affinity a scheduling
-	// preference: the scheduler spreads the groups of the workload across
-	// domains, but once no free domain remains it co-locates them instead of
-	// leaving them Pending.
+	// preference: the scheduler favors spreading the groups of the workload
+	// across domains, but co-location is best-effort and may happen even while
+	// a free domain remains, rather than leaving the group Pending.
 	PlacementPreferred PlacementEnforcement = "Preferred"
 )
 

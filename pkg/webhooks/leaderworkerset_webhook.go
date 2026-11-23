@@ -882,12 +882,7 @@ func ValidateTemplateInternalComputeDomainAnnotations(templatePath *field.Path, 
 // configured. A value unchanged from oldTpl is allowed so objects that already
 // carry it remain updatable. Exported for DisaggregatedSet webhook reuse.
 func ValidateTemplateInternalPlacementAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
-	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl, []string{
-		v1.ExclusiveScopeAnnotationKey,
-		v1.ExclusiveEnforcementAnnotationKey,
-		v1.SubGroupExclusiveScopeAnnotationKey,
-		v1.SubGroupExclusiveEnforcementAnnotationKey,
-	})
+	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl, utils.ManagedPlacementAnnotationKeys())
 }
 
 // validateTemplateInternalAnnotations rejects the controller-managed

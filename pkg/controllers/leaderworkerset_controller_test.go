@@ -55,6 +55,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -2810,6 +2811,29 @@ func TestLeaderWorkerSetReconcilerInitializesMetrics(t *testing.T) {
 	} {
 		if !existed {
 			t.Errorf("the LeaderWorkerSet has no %s series", name)
+		}
+	}
+}
+
+func TestLeaderPodTemplateClearsLegacyPlacementAnnotations(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Size(2).ExclusivePlacementPolicy().Obj()
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations = map[string]string{
+		"user": "keep",
+		leaderworkerset.ExclusiveScopeAnnotationKey:               string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.ExclusiveEnforcementAnnotationKey:         string(leaderworkerset.PlacementPreferred),
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey:       string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey: string(leaderworkerset.PlacementPreferred),
+	}
+	podTemplate, err := buildLeaderPodTemplateApplyConfiguration(lws, "revision-1")
+	if err != nil {
+		t.Fatalf("failed with error: %s", err.Error())
+	}
+	if got := podTemplate.Annotations["user"]; got != "keep" {
+		t.Errorf("user annotation = %q, want %q", got, "keep")
+	}
+	for _, key := range utils.ManagedPlacementAnnotationKeys() {
+		if value, ok := podTemplate.Annotations[key]; ok {
+			t.Errorf("legacy managed annotation %s = %q, want it cleared by the All/Required policy", key, value)
 		}
 	}
 }

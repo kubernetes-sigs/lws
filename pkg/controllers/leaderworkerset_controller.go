@@ -2406,6 +2406,13 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
+	// The template may carry controller-managed placement annotations written
+	// before admission rejected them. A stale Own or Preferred value would
+	// otherwise survive the stamp below and make an All or Required policy run
+	// with the weaker placement it recorded. Clear all four keys from the
+	// template's annotations, which WithAnnotations below merges into; the
+	// non-default values of the resolved policy are stamped below.
+	utils.ClearManagedPlacementAnnotations(podTemplateApplyConfiguration.Annotations)
 	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
 		// A missing scope resolves as All, so only the Own scope is stamped:

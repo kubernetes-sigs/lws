@@ -662,11 +662,13 @@ ExclusiveTopology.</p>
 <a href="#leaderworkerset-x-k8s-io-v1-PlacementScope"><code>PlacementScope</code></a>
 </td>
 <td>
-   <p>scope selects the pods the exclusive anti-affinity repels. All keeps
-every other group out of the domain, matching the deprecated annotations
-and the physical exclusivity hardware-sliced accelerators need; Own keeps
-only the groups of this LeaderWorkerSet out, so groups of other
-LeaderWorkerSets may share the domain. Defaults to All.</p>
+   <p>scope selects the pods the exclusive anti-affinity repels. The injected
+term omits the namespace fields, so both values apply within the pod's
+namespace. All keeps every other group in that namespace out of the
+domain, matching the deprecated annotations and the physical exclusivity
+hardware-sliced accelerators need; Own keeps only the groups of this
+LeaderWorkerSet out, so groups of other LeaderWorkerSets may share the
+domain. Defaults to All.</p>
 </td>
 </tr>
 <tr><td><code>enforcement</code><br/>
@@ -676,9 +678,9 @@ LeaderWorkerSets may share the domain. Defaults to All.</p>
    <p>enforcement selects how the exclusive placement is enforced. Required
 keeps the injected anti-affinity required, so a group without a free
 domain stays Pending; Preferred makes it a scheduling preference, so
-the scheduler spreads the groups across domains but may co-locate them
-once it runs out, trading the isolation guarantee for capacity.
-Defaults to Required.</p>
+the scheduler favors spreading the groups across domains. Co-location is
+best-effort: a group may share a domain even while a free domain
+remains, if the other scheduler scores favor it. Defaults to Required.</p>
 </td>
 </tr>
 <tr><td><code>subGroup</code><br/>
@@ -958,7 +960,8 @@ subgroup. Required when type is ExclusiveTopology.</p>
 </td>
 <td>
    <p>scope selects the pods the exclusive anti-affinity repels, as at the
-group level. Defaults to All.</p>
+group level, and likewise applies within the pod's namespace. Defaults
+to All.</p>
 </td>
 </tr>
 <tr><td><code>enforcement</code><br/>

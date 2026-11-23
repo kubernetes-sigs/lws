@@ -33,7 +33,8 @@ type SubGroupPlacementPolicyApplyConfiguration struct {
 	// subgroup. Required when type is ExclusiveTopology.
 	Topology *string `json:"topology,omitempty"`
 	// scope selects the pods the exclusive anti-affinity repels, as at the
-	// group level. Defaults to All.
+	// group level, and likewise applies within the pod's namespace. Defaults
+	// to All.
 	Scope *leaderworkersetv1.PlacementScope `json:"scope,omitempty"`
 	// enforcement selects how the exclusive placement is enforced, as at the
 	// group level. Defaults to Required.

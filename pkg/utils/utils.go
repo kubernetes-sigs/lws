@@ -35,6 +35,29 @@ const (
 	defaultNamespace = "lws-system"
 )
 
+// ManagedPlacementAnnotationKeys returns the placement annotations the
+// controller writes on a pod template. Admission rejects user-set values, but
+// an object created by an older controller can still carry them, and a stale
+// value would otherwise outlive the placementPolicy it was written for.
+func ManagedPlacementAnnotationKeys() []string {
+	return []string{
+		leaderworkerset.ExclusiveScopeAnnotationKey,
+		leaderworkerset.ExclusiveEnforcementAnnotationKey,
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey,
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey,
+	}
+}
+
+// ClearManagedPlacementAnnotations removes the controller-managed placement
+// annotations from a pod template annotation map. Callers then stamp the values
+// the effective placement resolves to, so a stale Own or Preferred value cannot
+// relax an All or Required policy.
+func ClearManagedPlacementAnnotations(annotations map[string]string) {
+	for _, key := range ManagedPlacementAnnotationKeys() {
+		delete(annotations, key)
+	}
+}
+
 // Sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
 func Sha1Hash(s string) string {
 	h := sha1.New()
