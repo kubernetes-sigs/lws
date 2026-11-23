@@ -2835,6 +2835,71 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
+		ginkgo.Entry("rollback during a rolling update reuses the revision of the previous template", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Update group 3 to the new template.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-3")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Roll back to the previous template before the update completes.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func() error {
+							var leaderworkerset leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+								return err
+							}
+							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "worker"
+							return k8sClient.Update(ctx, &leaderworkerset)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// Group 3 still runs the new template, so the rollback is a rolling update.
+						// The previous template still has its revision, which is reused rather than created a second time.
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						// Truncation leaves a single revision for the restored template.
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
 		ginkgo.Entry("Not updated worker gets recreated with old worker spec if restarted during update", &testCase{
 			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
 				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
