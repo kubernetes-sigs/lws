@@ -74,6 +74,11 @@ type PodReconciler struct {
 	Record            events.EventRecorder
 	SchedulerProvider schedulerprovider.SchedulerProvider
 	counted           countedLeaders
+	// workerUIDPolicy remembers whether a leader's revision records worker
+	// UIDs. The revision of a leader pod does not change, so this only skips
+	// a ControllerRevision lookup on routine worker updates before the record
+	// exists. It is not the record itself: that is an annotation on the leader.
+	workerUIDPolicy sync.Map
 }
 
 // countedLeaders remembers the leader pods each metric has counted. A
@@ -243,15 +248,15 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		return ctrl.Result{}, nil
 	}
 	// Worker Pods need no reconciliation unless they triggered restart-policy
-	// handling or their group has a pending recreation. Avoid looking up a
-	// ControllerRevision on routine worker updates.
+	// handling, their group has a pending recreation, or the leader's worker
+	// UID record does not contain them. A worker whose UID is in the record
+	// returns here, without a ControllerRevision lookup.
 	if !podutils.LeaderPod(pod) && !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
-		leaderPodName := pod.Annotations[leaderworkerset.LeaderPodNameAnnotationKey]
-		if leaderPodName == "" {
-			leaderPodName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
+		follow, err := r.workerFollowsRestartPolicy(ctx, &pod, &leaderWorkerSet)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
-		var leader corev1.Pod
-		if leaderPodName == "" || r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader) != nil || leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+		if !follow {
 			return ctrl.Result{}, nil
 		}
 	}
@@ -477,7 +482,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create worker statefulset for leader pod %s: %v", pod.Name, err))
 				return ctrl.Result{}, err
 			}
-			return backoffResult, nil
+			return r.finishLeaderReconcile(ctx, &pod, groupLws, backoffResult)
 		}
 		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
 	} else {
@@ -496,7 +501,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 	}
 	log.V(2).Info("Worker Reconcile completed.")
-	return backoffResult, nil
+	return r.finishLeaderReconcile(ctx, &pod, groupLws, backoffResult)
 }
 
 // recreateGroupSplitByUpgrade recreates the group of leader if an LWS upgrade
@@ -621,12 +626,38 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 
 	isRecreatePending := leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] != ""
 
+	// A worker deleted or replaced while this process was down leaves no
+	// deletion timestamp and no container restart. The leader's worker UID
+	// record is what makes that visible. A pod that already carries a failure
+	// signal keeps its own identity so the event names that pod.
+	signaled := isRecreatePending || podutils.ContainerRestarted(pod) || podutils.PodDeleted(pod)
+	identityLost := false
+	if !signaled {
+		lostPod, missingUID, lost, err := r.workerIdentityLost(ctx, &leader)
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
+		if lost {
+			identityLost = true
+			if lostPod != nil {
+				pod = *lostPod.DeepCopy()
+			} else {
+				pod = missingWorkerPod(&leader, missingUID)
+			}
+			if pod.DeletionTimestamp == nil {
+				now := metav1.Now()
+				pod.DeletionTimestamp = &now
+			}
+			log.V(2).Info("Worker UID record does not match the group", "leader", leader.Name, "worker", pod.Name)
+		}
+	}
+
 	// the leader pod will be deleted if the worker pod is deleted or any container was restarted
 	if !isRecreatePending && !podutils.ContainerRestarted(pod) && !podutils.PodDeleted(pod) {
 		return false, ctrl.Result{}, nil
 	}
 
-	if !podutils.LeaderPod(pod) {
+	if !podutils.LeaderPod(pod) && !identityLost {
 		// Different revision key means that this pod will be deleted soon and alternative will be created with the matching key
 		if revisionutils.GetRevisionKey(&leader) != revisionutils.GetRevisionKey(&pod) {
 			return false, ctrl.Result{}, nil

@@ -127,6 +127,18 @@ const (
 	// recreation has been triggered but deferred by restartBackoff.
 	GroupRecreatePendingAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-recreate-pending"
 
+	// WorkerUIDsAnnotationKey is set on a leader Pod once every worker of its
+	// current revision exists. The value starts with that revision key, then
+	// the workers' Pod UIDs (or, for a very large group, a fixed-size hash of
+	// those UIDs plus the count). A later reconcile treats a missing worker or
+	// a worker UID that is not in this set as a failure of
+	// RecreateGroupOnPodRestart or RecreateGroupAfterStart, including the first
+	// reconcile after the controller process starts. The record is replaced
+	// when the leader's revision changes, because a rolling update keeps the
+	// leader pod and removes the previous revision's workers. Recreating the
+	// group replaces the leader, so the new group records its own workers.
+	WorkerUIDsAnnotationKey string = "leaderworkerset.sigs.k8s.io/worker-uids"
+
 	// GroupRestartBudgetExhaustedAnnotationKey is set on a leader Pod after its
 	// group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"

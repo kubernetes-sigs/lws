@@ -52,6 +52,14 @@ The `RecreateGroupAfterStart` restart policy is supported in LWS version 0.9.0+.
 
 {{< include file="examples/leaderworkerset/failure-handling/recreate-group-after-start.yaml" lang="yaml" >}}
 
+## Worker identity across controller restarts
+
+For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, a worker that disappears while the controller process is down would otherwise leave no failure for the next process to see: the deleted Pod is already gone, and a StatefulSet replacement has the same name but a new UID and no restart count.
+
+Once every worker of the leader's current revision exists, LWS writes that revision and those workers' Pod UIDs to the leader Pod annotation `leaderworkerset.sigs.k8s.io/worker-uids`. A later reconcile, including the first after the controller starts, treats a missing worker or a worker whose UID is not in that set as a failure and applies the group's restart policy, including `maxGroupRestarts` and `restartBackoff`. A rolling update that keeps the leader pod replaces the record after the new revision's workers exist; workers removed because their revision no longer matches the leader are not a failure. Recreating the group replaces the leader, and the new leader records its own workers. Workers do not get a finalizer for this, so deleting one does not wait on the controller and uninstalling LWS does not leave Pods in `Terminating`.
+
+A group that has not yet formed has no record. A worker lost in that window is handled when the controller sees the deletion itself.
+
 ## Limit Automatic Group Recreation
 
 For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, set
