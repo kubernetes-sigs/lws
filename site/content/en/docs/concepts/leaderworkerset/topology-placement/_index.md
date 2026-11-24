@@ -33,6 +33,31 @@ spec:
       topology: cloud.google.com/gke-nodepool
 ```
 
+Admission only checks that the two keys differ. The subgroup key must also be **narrower** than the group key, so that a subgroup domain fits inside one group domain. A group on `topology.kubernetes.io/rack` with subgroups on `topology.kubernetes.io/zone` is accepted wherever a rack holds a single node, and then never schedules: the group affinity pins every pod of the replica to that node, while the subgroup anti-affinity needs two subgroup domains within it. Pick a group key that contains several subgroup domains, for example `zone` for the group and `rack` for the subgroups.
+
+### Scope and enforcement
+
+Both levels take `scope` and `enforcement`. They parameterize the anti-affinity that keeps other pods out. The affinity that keeps the pods of one replica, or of one subgroup, together is always required, so `enforcement` never splits a replica or a subgroup.
+
+```yaml
+spec:
+  placementPolicy:
+    type: ExclusiveTopology
+    topology: topology.kubernetes.io/zone
+    scope: Own
+    enforcement: Preferred
+    subGroup:
+      type: ExclusiveTopology
+      topology: topology.kubernetes.io/rack
+      scope: Own
+      enforcement: Required
+```
+
+- `scope: All` (default) repels pods of any LeaderWorkerSet, so a domain holds at most one replica of one LeaderWorkerSet. This is the behavior of the annotation.
+- `scope: Own` repels only the replicas of this LeaderWorkerSet. Replicas of other LeaderWorkerSets may share the domain, while this one keeps its own replicas spread.
+- `enforcement: Required` (default) leaves a replica Pending while no domain is free.
+- `enforcement: Preferred` injects the anti-affinity as a `weight: 100` preferred term instead, so a replica co-locates with another one rather than staying Pending. Placement becomes best effort; other scheduling scores still compete with the term.
+
 The field replaces the annotations described below, which are deprecated and still work. Notes on using it:
 
 - Setting a level in the field and in the matching annotation is accepted only when both name the same topology key. A level whose `type` is `None` uses the annotation.
