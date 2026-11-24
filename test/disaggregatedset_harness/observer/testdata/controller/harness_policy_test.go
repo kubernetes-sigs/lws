@@ -93,7 +93,7 @@ func TestHarnessObserveIndependentScalingPolicies(t *testing.T) {
 func TestHarnessCanaryShowsEffectivePoliciesAndSeparatesReversePreview(t *testing.T) {
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 8}, [2]int{1, 1}, [2]int{})
 	ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
-	ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25)}
+	ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25)}}
 	ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: disaggv1.RolloutScalingDeferred, ScaleDownDuringRollout: disaggv1.RolloutScalingDeferred}
 	for i := range ds.Spec.Roles {
 		ds.Spec.Roles[i].Spec.LeaderWorkerTemplate.Size = ptr.To[int32](1)

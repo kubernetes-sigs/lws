@@ -59,8 +59,6 @@ func percentageCanary(l *Lab) {
 		{100, 4, 8, 4, 8},
 		{100, 8, 16, 8, 16},
 		{100, 4, 8, 4, 8},
-		{90, 4, 8, 3, 7}, // Rounding keeps one baseline group in each role.
-		{100, 4, 8, 4, 8},
 	} {
 		if index == 6 {
 			canaryExternalHandoff(l, canaryTargets(l, 4, 8))
@@ -73,7 +71,7 @@ func percentageCanary(l *Lab) {
 			old[role] = n - updated[role]
 		}
 		title := fmt.Sprintf("Request %d%% new at %d Prefill / %d Decode: A=%d/%d, B=%d/%d.", stage.percent, stage.p, stage.d, stage.p-stage.newP, stage.d-stage.newD, stage.newP, stage.newD)
-		l.Checkpoint(title, "Set canaryPercent and desired replicas; keep template identities unchanged.")
+		l.Checkpoint(title, "Set canary.percent and desired replicas; keep template identities unchanged.")
 		update := Update{CanaryPercent: &stage.percent, Counts: desired}
 		if external {
 			update.Counts = nil
@@ -83,7 +81,7 @@ func percentageCanary(l *Lab) {
 		}
 		l.Update(update)
 		if external {
-			l.Checkpoint("Resize both External role targets to "+describe(desired)+".", "Write each real RoleScaler /scale subresource; templates and canaryPercent stay unchanged.")
+			l.Checkpoint("Resize both External role targets to "+describe(desired)+".", "Write each real RoleScaler /scale subresource; templates and canary.percent stay unchanged.")
 			for _, role := range keys(desired) {
 				l.K("-n", Namespace, "scale", "dsrs/"+canaryScalerName(role), fmt.Sprintf("--replicas=%d", desired[role]))
 			}
@@ -116,7 +114,7 @@ func percentageCanary(l *Lab) {
 				want = 2
 			}
 			l.Assert(len(workloads) == want, "First 25% hold did not have both physical revisions")
-		} else if index > 1 {
+		} else if index > 1 && stage.percent < 100 {
 			l.Assert(sameSet(workloads, uidSet(s.LWS)), "Percentage/count edit replaced or deleted a physical revision")
 		}
 		if stage.percent == 0 {
@@ -126,16 +124,24 @@ func percentageCanary(l *Lab) {
 			}
 		}
 		if stage.percent == 100 {
-			l.Assert(len(Pods(s, "A", "")) == 0, "100% hold retained baseline Pods")
-			l.Note("A's LWS objects remain at replicas=0; lowering the percentage can restore A until finalization.")
+			l.Assert(len(Pods(s, "A", "")) == 0, "Completed rollout retained baseline Pods")
+			l.WaitFor("100% finalizes without another edit: A's empty LWS objects are removed", func(s Snapshot) bool {
+				for _, lws := range s.LWS {
+					if VersionOf(lws) == "A" {
+						return false
+					}
+				}
+				return canarySettled(s, old, updated, 100, l.virtual)
+			})
+			l.Note("B is accepted as the next baseline. Rollback after completion requires restoring templates in Git.")
 		}
 		l.Hold("Observed split remains Ready without another trigger", 3, func(s Snapshot) bool {
 			return guard(s) && canarySettled(s, old, updated, stage.percent, l.virtual)
 		})
 		previousPercent = stage.percent
 	}
-	l.Checkpoint("Accept B and finalize the canary.", "Remove canaryPercent; allow the empty baseline LWS objects to be cleaned up.")
-	l.Patch(Object{"spec": Object{"rolloutStrategy": Object{"canaryPercent": nil}}})
+	l.Checkpoint("Omission is equivalent to completed 100%.", "Remove canary.percent after verifying that B is already available and A has been cleaned up.")
+	l.Patch(Object{"spec": Object{"rolloutStrategy": Object{"canary": Object{"percent": nil}}}})
 	l.WaitFor("B is available and A's empty LWS objects have been removed", func(s Snapshot) bool {
 		for _, lws := range s.LWS {
 			if VersionOf(lws) == "A" {
@@ -153,7 +159,7 @@ func percentageCanaryChain(l *Lab) {
 	half, zero := canaryTargets(l, 2, 4), canaryTargets(l, 0, 0)
 	percent := 50
 	guard := canarySafety(l, l.Snapshot(), desired)
-	l.Checkpoint("Hold B at 50%: A=2/4, B=2/4.", "Install B with canaryPercent=50; open only B's application readiness.")
+	l.Checkpoint("Hold B at 50%: A=2/4, B=2/4.", "Install B with canary.percent=50; open only B's application readiness.")
 	l.Update(Update{Version: "B", CanaryPercent: &percent})
 	before := l.Wait("A and B each serve half the requested groups", func(s Snapshot) bool {
 		return guard(s) && canarySettled(s, half, half, percent, l.virtual)
@@ -171,7 +177,7 @@ func percentageCanaryChain(l *Lab) {
 		}
 		return true
 	}
-	l.Checkpoint("Keep A fixed at 50%; replace B with C in the other half.", "Change only the template to C; canaryPercent stays 50 and C readiness remains closed.")
+	l.Checkpoint("Keep A fixed at 50%; replace B with C in the other half.", "Change only the template to C; canary.percent stays 50 and C readiness remains closed.")
 	l.Update(Update{Version: "C"})
 	l.WaitFor("C schedules while A stays unchanged", func(s Snapshot) bool {
 		stable(s)
@@ -309,11 +315,11 @@ func canaryVersionsSettled(s Snapshot, versions map[string]Targets, percent int,
 		}
 	}
 	generation := at(s.DS, "metadata", "generation")
-	if s.DS == nil || at(s.DS, "status", "observedGeneration") != generation || integer(at(s.DS, "spec", "rolloutStrategy", "canaryPercent"), -1) != percent {
+	if s.DS == nil || at(s.DS, "status", "observedGeneration") != generation || integer(at(s.DS, "spec", "rolloutStrategy", "canary", "percent"), -1) != percent {
 		return false
 	}
 	want, kind := "CanaryHeld", "Progressing"
-	if percent < 0 { // The absent field finalizes; explicit 100 remains held.
+	if percent < 0 || percent == 100 { // Omission and 100 both finalize.
 		want, kind = "AllRolesReady", "Available"
 	}
 	for _, condition := range objects(at(s.DS, "status", "conditions")) {

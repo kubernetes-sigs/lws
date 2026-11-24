@@ -592,7 +592,7 @@ func (l *Lab) Update(u Update) {
 	}
 	spec := Object{"roles": roles}
 	if u.CanaryPercent != nil {
-		spec["rolloutStrategy"] = Object{"canaryPercent": *u.CanaryPercent}
+		spec["rolloutStrategy"] = Object{"canary": Object{"percent": *u.CanaryPercent}}
 	}
 	l.Patch(Object{"spec": spec})
 }

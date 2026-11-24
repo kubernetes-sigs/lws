@@ -15,7 +15,7 @@ func TestCanarySettledRequiresExactSplitAndFreshReadyStatus(t *testing.T) {
 		"A": {"prefill": {3, 3, 3}, "decode": {6, 6, 6}},
 		"B": {"prefill": {1, 1, 1}, "decode": {2, 2, 2}},
 	}, 1)
-	s.DS["spec"] = Object{"rolloutStrategy": Object{"canaryPercent": 25}}
+	s.DS["spec"] = Object{"rolloutStrategy": Object{"canary": Object{"percent": 25}}}
 	obj(s.DS["status"])["conditions"] = []any{Object{"type": "Progressing", "reason": "CanaryHeld", "status": "True", "observedGeneration": 2}}
 	require.True(t, canarySettled(s, pair(3, 6), pair(1, 2), 25, false))
 	require.False(t, canarySettled(s, pair(2, 4), pair(2, 4), 25, false), "total Ready alone cannot prove the requested split")
@@ -60,7 +60,7 @@ func TestCanarySafetyChecksPhysicalSurgeAndReadyFloor(t *testing.T) {
 		"C": {"prefill": {2, 2, 2}, "decode": {4, 4, 4}},
 	}, 1)
 	require.NoError(t, catch(func() { canarySafety(l, before, pair(4, 8))(chain) }))
-	chain.DS["spec"] = Object{"rolloutStrategy": Object{"canaryPercent": 50}}
+	chain.DS["spec"] = Object{"rolloutStrategy": Object{"canary": Object{"percent": 50}}}
 	obj(chain.DS["status"])["conditions"] = []any{Object{"type": "Progressing", "reason": "CanaryHeld", "status": "True", "observedGeneration": 2}}
 	require.True(t, canaryVersionsSettled(chain, map[string]Targets{"A": pair(2, 4), "B": pair(0, 0), "C": pair(2, 4)}, 50, false))
 	frozen := canaryStableIdentity(chain)
@@ -68,15 +68,15 @@ func TestCanarySafetyChecksPhysicalSurgeAndReadyFloor(t *testing.T) {
 	require.NotEqual(t, frozen, canaryStableIdentity(chain), "A replacement must not pass just because its Ready count is unchanged")
 }
 
-func TestCanaryFullHoldIsNotFinalization(t *testing.T) {
+func TestCanaryFullPercentageFinalizes(t *testing.T) {
 	s := fleet(map[string]map[string]Counts{"B": {"prefill": {4, 4, 4}, "decode": {8, 8, 8}}}, 1)
-	s.DS["spec"] = Object{"rolloutStrategy": Object{"canaryPercent": 100}}
+	s.DS["spec"] = Object{"rolloutStrategy": Object{"canary": Object{"percent": 100}}}
 	condition := Object{"type": "Progressing", "reason": "CanaryHeld", "status": "True", "observedGeneration": 2}
 	obj(s.DS["status"])["conditions"] = []any{condition}
-	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), 100, false))
-	condition["type"], condition["reason"] = "Available", "AllRolesReady"
 	require.False(t, canarySettled(s, pair(0, 0), pair(4, 8), 100, false))
-	delete(obj(at(s.DS, "spec", "rolloutStrategy")), "canaryPercent")
+	condition["type"], condition["reason"] = "Available", "AllRolesReady"
+	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), 100, false))
+	delete(obj(at(s.DS, "spec", "rolloutStrategy", "canary")), "percent")
 	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), -1, false))
 }
 
@@ -100,7 +100,7 @@ func TestCanaryUpdatePatchesControlsCountsAndTemplateTogether(t *testing.T) {
 	var patch Object
 	call := executor.calls[1]
 	require.NoError(t, json.Unmarshal([]byte(call.args[slices.Index(call.args, "-p")+1]), &patch))
-	require.Equal(t, 25, integer(at(patch, "spec", "rolloutStrategy", "canaryPercent")))
+	require.Equal(t, 25, integer(at(patch, "spec", "rolloutStrategy", "canary", "percent")))
 	role := objects(at(patch, "spec", "roles"))[0]
 	require.Nil(t, at(role, "spec", "replicas"), "subroles must not acquire parent replicas")
 	require.Equal(t, "B", at(role, "spec", "leaderWorkerTemplate", "workerTemplate", "metadata", "labels", VersionLabel))
