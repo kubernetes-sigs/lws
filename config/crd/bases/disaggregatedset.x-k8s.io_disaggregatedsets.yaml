@@ -19671,10 +19671,10 @@ spec:
                         description: |-
                           Dimension defaults to Groups: divide each role/sub-role within each
                           slice. Slices instead promotes whole slices in ascending slice-index order.
-                          Dimensions cannot change while Percent is set, including at 100.
-                          Slice-count changes are not supported during a slices canary;
-                          remove Percent to finalize the canary first.
-                          This field has no effect when Percent is omitted.
+                          Dimensions cannot change while Percent is below 100.
+                          Slice-count changes are not supported during a partial Slices canary;
+                          finish at 100 or remove Percent first.
+                          This field has no effect when Percent is omitted or 100.
                         enum:
                         - Groups
                         - Slices
@@ -19683,11 +19683,10 @@ spec:
                         description: |-
                           Percent is the new revision's requested share, using Dimension
                           as the unit. By default, split each role/sub-role's groups independently in
-                          every slice. Omitted disables canarying and allows old history to be cleaned
-                          up. An explicit 100 runs all groups on the new revision but retains the
-                          baseline LWS objects at zero replicas, so lowering the percentage can
-                          restore them. Remove the field to finalize the canary and accept the new
-                          revision as the baseline for a subsequent canary.
+                          every slice. Omitted or 100 finishes the rollout, allows old history to be
+                          cleaned up, and accepts the new revision as the next canary's baseline.
+                          Lowering the percentage after completion does not restore retired history;
+                          use a Git revert for rollback after finalization.
                           The oldest revision with surviving groups is recorded as the baseline;
                           that choice survives controller restarts. A later template update replaces
                           the canary within its share while retaining the recorded baseline's share.
@@ -19710,7 +19709,7 @@ spec:
                           An ambiguous initial choice or conflicting recorded baselines also blocks.
                           Existing roles can scale to and from zero. Scaling the whole set to zero
                           retains the marked baseline's LWS templates; scale-up restores the split.
-                          Finalizing the canary by removing the field retires that baseline and its
+                          Finalizing at 100 or by removing the field retires that baseline and its
                           rollback history. Keeping 100 does not automatically hold the next template
                           update below 100%; set its starting percentage with the new templates.
                         format: int32

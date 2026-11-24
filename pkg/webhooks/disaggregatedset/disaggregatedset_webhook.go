@@ -217,14 +217,15 @@ func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorLis
 	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices {
 		return field.ErrorList{field.NotSupported(path, mode, []string{"Groups", "Slices"})}
 	}
-	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil || old.Spec.RolloutStrategy.Canary.Percent == nil || strategy.Canary.Percent == nil {
+	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil ||
+		ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
 		return nil
 	}
 	if dimension(old) != mode {
-		return field.ErrorList{field.Forbidden(path, "cannot change dimension while canary.percent is set; remove it to finalize the canary first")}
+		return field.ErrorList{field.Forbidden(path, "cannot change dimension during a partial canary; finish at 100 or remove canary.percent first")}
 	}
 	if mode != disaggv1.CanaryDimensionGroups && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
-		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a Slices canary; remove canary.percent to finalize the canary first")}
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a partial Slices canary; finish at 100 or remove canary.percent first")}
 	}
 	return nil
 }

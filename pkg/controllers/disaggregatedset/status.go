@@ -579,11 +579,8 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 	if len(unresolvedRoles) > 0 {
 		reason = "ReplicaTargetsUnresolved"
 		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", listRoles(unresolvedRoles))
-	} else if canary && canaryHeld && ready && (percent < 100 || available) {
+	} else if canary && canaryHeld && ready {
 		reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canary.percent %d; %s", percent, held)
-		if percent == 100 {
-			message += "; remove canary.percent to finalize"
-		}
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
@@ -599,8 +596,7 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 }
 
 // canaryHold reports a rolling update that has stopped at the requested
-// percentage: every role has exactly its desired groups, all Ready. This also
-// includes 100%, before the user finalizes the canary. The message lists
+// percentage: every role has exactly its desired groups, all Ready. The message lists
 // each role's groups on the current revision. Counts alone can briefly match
 // while a new LWS's status lags its groups, or one slice's progress can mask
 // another's, so the caller also requires the executor to have found every

@@ -92,7 +92,7 @@ func TestCanaryRoundingAndLogicalRoles(t *testing.T) {
 	for _, percent := range []int32{0, 25, 50, 99, 100} {
 		setCanaryPercent(ds, percent)
 		actual, active := canaryPercent(ds)
-		require.True(t, active, "an explicit percentage retains rollback history, including 100")
+		require.Equal(t, percent < 100, active, "100 finishes the canary like an omitted percentage")
 		require.EqualValues(t, percent, actual)
 		config := extractRollingUpdateConfig(ds, []string{"prefill", "model/a", "model/b"}, map[string]int{"prefill": 4, "model/a": 4, "model/b": 8})
 		for i, desired := range []int{4, 4, 8} {
@@ -100,9 +100,13 @@ func TestCanaryRoundingAndLogicalRoles(t *testing.T) {
 		}
 		require.Equal(t, before, disaggutils.ComputeRevision(ds.Spec.Roles), "promotion must not restart the revision")
 	}
-	ds.Spec.RolloutStrategy = nil
-	_, active := canaryPercent(ds)
-	require.False(t, active)
+	for _, strategy := range []*disaggv1.DisaggregatedSetRolloutStrategy{nil, {}, {Canary: &disaggv1.DisaggregatedSetCanary{}}} {
+		ds.Spec.RolloutStrategy = strategy
+		percent, active := canaryPercent(ds)
+		require.Equal(t, 100, percent)
+		require.False(t, active)
+		require.Equal(t, disaggv1.CanaryDimensionGroups, canaryDimension(ds))
+	}
 }
 
 func TestCanaryPlannerPromotesThroughHolds(t *testing.T) {
@@ -158,9 +162,14 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 						for i, name := range testRoleNames() {
 							previous[i] = old.GetTotalReplicasPerRole(name) + int(getLWSReplicas(target.Roles[name]))
 						}
-						_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
-						require.NoError(t, err)
-						require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "new", complete))
+						if len(old) == 0 {
+							_, err = newTestReconciler(c).reconcileCurrentRevision(t.Context(), ds, 0, "new", target, desired)
+							require.NoError(t, err)
+						} else {
+							_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
+							require.NoError(t, err)
+							require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "new", complete))
+						}
 						require.Empty(t, executor.canaryMessage)
 						emitted := ""
 						for len(recorder.Events) > 0 {
@@ -221,12 +230,12 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 					{25, [2]int{20, 8}, [2]int{15, 6}, [2]int{5, 2}, false},
 					{50, [2]int{20, 8}, [2]int{10, 4}, [2]int{10, 4}, false},
 					{50, [2]int{16, 8}, [2]int{8, 4}, [2]int{8, 4}, false},
-					{100, [2]int{16, 8}, [2]int{0, 0}, [2]int{16, 8}, true},
-					{100, [2]int{32, 16}, [2]int{0, 0}, [2]int{32, 16}, true},
-					{100, [2]int{1, 1}, [2]int{0, 0}, [2]int{1, 1}, true},
-					{100, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, true},
-					{90, [2]int{10, 10}, [2]int{1, 1}, [2]int{9, 9}, true},
-					{25, [2]int{24, 16}, [2]int{18, 12}, [2]int{6, 4}, true},
+					{100, [2]int{16, 8}, [2]int{0, 0}, [2]int{16, 8}, false},
+					{100, [2]int{32, 16}, [2]int{0, 0}, [2]int{32, 16}, false},
+					{100, [2]int{1, 1}, [2]int{0, 0}, [2]int{1, 1}, false},
+					{100, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
+					{90, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
+					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
 					{-1, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
 					// Only finalization permits cleanup; percentages cannot revive deleted history.
 					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
@@ -255,7 +264,7 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 		{"zero holds a single old group", 0, 1, 1, 0, "prefill", ""},
 		{"100 does not need to split a single group or slice", 100, 1, 1, 0, "prefill", ""},
 		{"layout change is explicit", 25, 4, 4, 0, "previous", "same active roles"},
-		{"full canary still requires compatible history", 100, 4, 4, 0, "previous", "same active roles"},
+		{"100 permits layout change", 100, 4, 4, 0, "previous", ""},
 		{"finalization permits layout change", -1, 4, 4, 0, "previous", ""},
 	} {
 		for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
@@ -391,9 +400,6 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
 						{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
 						{100, [2]int{12, 8}, [2]int{0, 0}, [2]int{12, 8}},
-						{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
-						{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
-						{0, [2]int{8, 8}, [2]int{8, 8}, [2]int{0, 0}},
 					} {
 						setCanaryPercent(f.ds, phase.percent)
 						if dimension == disaggv1.CanaryDimensionSlices && phase.percent > 0 {
@@ -635,7 +641,7 @@ func TestCanaryHoldCondition(t *testing.T) {
 		{"surge is still draining", 25, true, false, 9, 8, 2, "RolloutInProgress"},
 		{"group is not ready", 25, true, false, 8, 7, 2, "RolloutInProgress"},
 		{"100 waits for updated status", 100, true, false, 8, 8, 2, "RolloutInProgress"},
-		{"100 awaits finalization", 100, true, true, 8, 8, 8, reasonCanaryHeld},
+		{"100 finalizes", 100, true, true, 8, 8, 8, "AllRolesReady"},
 		{"initial creation is not held", 100, false, true, 8, 8, 8, "AllRolesReady"},
 		{"finalized rollout", -1, false, true, 8, 8, 8, "AllRolesReady"},
 	} {
@@ -1007,7 +1013,11 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 						lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
 						require.NoError(t, c.Status().Update(t.Context(), lws))
 					}
-					settled = settled && currentRoles == 2 && stableRoles == 2
+					wantStable := 2
+					if percent == 100 {
+						wantStable = 0
+					}
+					settled = settled && currentRoles == 2 && stableRoles == wantStable
 					if settled {
 						break
 					}
@@ -1020,11 +1030,15 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 	}
 }
 
-func TestCanarySlicePromotionAndReversal(t *testing.T) {
-	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionSlices} {
+func TestCanaryPromotionReversalAndFinalization(t *testing.T) {
+	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
 		for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 			t.Run(fmt.Sprintf("%s/%s", mode, identity), func(t *testing.T) {
-				ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 1}, [2]int{1, 1}, [2]int{})
+				unit := int32(1)
+				if mode == disaggv1.CanaryDimensionGroups {
+					unit = 4
+				}
+				ds := newTwoRoleTestDisaggregatedSet([2]int32{unit, unit}, [2]int{1, 1}, [2]int{})
 				ds.Spec.Slices = ptr.To[int32](8)
 				ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 				setCanaryPercent(ds, 25)
@@ -1035,7 +1049,7 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 				}
 				for slice := range 8 {
 					for _, name := range testRoleNames() {
-						lws := revisionLWS("stable", name, 1, 1, time.Unix(1, 0), 1)
+						lws := revisionLWS("stable", name, unit, unit, time.Unix(1, 0), unit)
 						lws.Name = fmt.Sprintf("test-%d-stable-%s", slice, name)
 						lws.UID = types.UID(lws.Name)
 						lws.Spec.GroupIdentity = identity
@@ -1053,9 +1067,10 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 					{50, 2, "B"}, // Role resizing does not change which slices are selected.
 					{50, 2, "C"}, {25, 2, "C"}, {0, 2, "C"}, {25, 2, "C"},
 					{25, 0, "C"}, {25, 1, "C"}, {100, 1, "C"},
-					{100, 2, "C"}, {90, 2, "C"}, {100, 1, "C"},
-					{-1, 1, "C"}, {25, 1, "D"}, // Finalization makes C the next baseline.
+					{25, 1, "D"},               // 100 finalized C: A must not return during the next canary.
+					{-1, 1, "D"}, {25, 1, "E"}, // Omitting percent also finalizes.
 				} {
+					phase.replicas *= unit
 					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
 					setCanaryPercent(ds, phase.percent)
 					for i := range ds.Spec.Roles {
@@ -1064,7 +1079,8 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 					}
 					require.NoError(t, c.Update(t.Context(), ds))
 					revision := disaggutils.ComputeRevision(ds.Spec.Roles)
-					r := newTestReconciler(c) // Every phase also tests controller restart.
+					r := newTestReconciler(c)         // Every phase also tests controller restart.
+					r.Record = &events.FakeRecorder{} // This sequence checks state, not events.
 					settled := false
 					for range 100 {
 						_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
@@ -1077,28 +1093,31 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 							lws, want := &list.Items[i], int32(0)
 							slice, err := strconv.Atoi(lws.Labels[disaggv1.SliceLabelKey])
 							require.NoError(t, err)
-							selected := phase.percent < 0 || slice < 8-canaryOldReplicas(8, int(phase.percent))
+							oldDesired := int32(0)
+							if phase.percent >= 0 && phase.percent < 100 {
+								if mode == disaggv1.CanaryDimensionGroups {
+									oldDesired = int32(canaryOldReplicas(int(phase.replicas), int(phase.percent)))
+								} else if slice >= 8-canaryOldReplicas(8, int(phase.percent)) {
+									oldDesired = phase.replicas
+								}
+							}
 							switch lws.Labels[disaggv1.RevisionLabelKey] {
 							case baseline:
 								stableCount++
-								if !selected {
-									want = phase.replicas
-								}
+								want = oldDesired
 								if baseline == "stable" {
 									require.EqualValues(t, lws.Name, lws.UID, "baseline identity survives at zero")
 								}
 							case revision:
 								targetCount++
-								if selected {
-									want = phase.replicas
-								}
+								want = phase.replicas - oldDesired
 							}
 							settled = settled && getLWSReplicas(lws) == want && lws.Status.ReadyReplicas == want
 							lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = getLWSReplicas(lws), getLWSReplicas(lws), getLWSReplicas(lws)
 							require.NoError(t, c.Status().Update(t.Context(), lws))
 						}
 						wantStable := 16
-						if phase.percent < 0 {
+						if phase.percent < 0 || phase.percent == 100 {
 							wantStable = 0
 						}
 						settled = settled && stableCount == wantStable && targetCount == 16
@@ -1108,7 +1127,11 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 					}
 					require.True(t, settled, "phase %+v", phase)
 					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
-					if phase.percent < 0 {
+					if phase.percent < 0 || phase.percent == 100 {
+						available := meta.FindStatusCondition(ds.Status.Conditions, string(disaggv1.DisaggregatedSetAvailable))
+						require.NotNil(t, available)
+						require.Equal(t, metav1.ConditionTrue, available.Status)
+						require.Equal(t, "AllRolesReady", available.Reason)
 						baseline = revision
 					}
 				}

@@ -106,15 +106,12 @@ func TestCanaryDimension(t *testing.T) {
 		for _, percent := range []*int32{ptr.To[int32](100), nil} {
 			changed.Spec.RolloutStrategy.Canary.Percent = percent
 			_, err = w.ValidateUpdate(t.Context(), ds, changed)
-			if percent != nil {
-				require.ErrorContains(t, err, "cannot change dimension")
-				ds.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
-				_, err = w.ValidateUpdate(t.Context(), ds, changed)
-				require.ErrorContains(t, err, "cannot change dimension", "100 does not end the canary")
-			} else {
-				require.NoError(t, err)
-			}
+			require.NoError(t, err)
 		}
+		ds.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.NoError(t, err, "a new canary can choose a different dimension")
 	}
 }
 

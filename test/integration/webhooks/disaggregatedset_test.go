@@ -372,7 +372,7 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionGroups
-			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("cannot change dimension")))
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = nil
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 		},

@@ -37,7 +37,8 @@ func canaryPercent(ds *disaggv1.DisaggregatedSet) (int, bool) {
 	if strategy == nil || strategy.Canary == nil || strategy.Canary.Percent == nil {
 		return 100, false
 	}
-	return int(*strategy.Canary.Percent), true
+	percent := int(*strategy.Canary.Percent)
+	return percent, percent < 100
 }
 
 // Round new groups up, but keep both revisions for a partial canary. One group
