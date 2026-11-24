@@ -143,10 +143,13 @@ HELM_RBAC_GENERATED_FILES := \
 	$(HELM_RBAC_DIR)/role_binding.yaml \
 	$(HELM_RBAC_DIR)/service_account.yaml
 
+# Use module mode to be compatible with checkouts that vendor their
+# dependencies: vendor mode fails with "inconsistent vendoring" for
+# modules not listed in vendor/modules.txt.
 .PHONY: update-helm
 update-helm: manifests ## Generate Helm RBAC templates from config/rbac.
 	rm -f $(HELM_RBAC_GENERATED_FILES)
-	$(GO_CMD) run -modfile=$(PROJECT_DIR)/hack/tools/yaml-processor/go.mod \
+	$(GO_CMD) run -mod=mod -modfile=$(PROJECT_DIR)/hack/tools/yaml-processor/go.mod \
 		sigs.k8s.io/kueue/hack/tools/yaml-processor \
 		-zap-log-level=$(YAML_PROCESSOR_LOG_LEVEL) $(PROJECT_DIR)/hack/processing-plan.yaml
 	@for file in $(HELM_RBAC_GENERATED_FILES); do \
@@ -441,13 +444,13 @@ artifacts: kustomize helm yq
 	mkdir -p artifacts
 	$(KUSTOMIZE) build config/default -o artifacts/manifests.yaml
 	@$(call clean-manifests)
-	# Update the image tag and policy
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REPO)" | .image.manager.tag = "$(GIT_TAG)" | .image.manager.pullPolicy = "IfNotPresent"' -i charts/lws/values.yaml
-	# create the package. TODO: consider signing it
-	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) charts/lws -d artifacts/
+	# Package the Helm chart from a temporary copy to avoid mutating charts/lws/values.yaml
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R charts/lws "$$tmpdir/lws"; \
+	$(YQ) e '.image.manager.repository = "$(IMAGE_REPO)" | .image.manager.tag = "$(GIT_TAG)" | .image.manager.pullPolicy = "IfNotPresent"' -i "$$tmpdir/lws/values.yaml"; \
+	$(HELM) package --version $(GIT_TAG) --app-version $(GIT_TAG) "$$tmpdir/lws" -d artifacts/; \
 	mv artifacts/lws-$(GIT_TAG).tgz artifacts/lws-chart-$(GIT_TAG).tgz
-	# Revert the image changes
-	$(YQ)  e  '.image.manager.repository = "$(IMAGE_REGISTRY)/$(IMAGE_NAME)" | .image.manager.tag = "$(RELEASE_BRANCH)" | .image.manager.pullPolicy = "Always"' -i charts/lws/values.yaml	
 
 .PHONY: prepare-release-branch
 prepare-release-branch: yq kustomize ## Prepare the release branch with the release version.

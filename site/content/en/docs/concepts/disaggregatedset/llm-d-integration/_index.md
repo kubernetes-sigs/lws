@@ -58,4 +58,4 @@ plugins:
 
 Replace `my-set` and the role names with yours. Each router must be able to see both roles and all revisions of the set.
 
-See the [llm-d rollout screener documentation](https://github.com/llm-d/llm-d-router/blob/main/pkg/epp/framework/plugins/requestcontrol/screener/disaggregatedsetrollout/README.md) for the full setup, including coordinator configuration and advanced options.
+See the [llm-d rollout screener documentation](https://github.com/llm-d/llm-d-router/blob/main/pkg/epp/framework/plugins/requesthandling/screener/disaggregatedsetrollout/README.md) for the full setup, including coordinator configuration and advanced options.

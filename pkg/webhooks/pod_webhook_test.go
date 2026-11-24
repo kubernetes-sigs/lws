@@ -629,7 +629,7 @@ func TestGetSubGroupIndex(t *testing.T) {
 		podCount              int
 		subGroupSize          int
 		workerIndex           int
-		leaderOnly            bool
+		leaderExcluded        bool
 		expectedSubGroupIndex string
 	}{
 		{
@@ -660,11 +660,59 @@ func TestGetSubGroupIndex(t *testing.T) {
 			workerIndex:           2,
 			expectedSubGroupIndex: "2",
 		},
+		{
+			name:                  "LeaderExcluded, size 2, SubGroupSize 1, workerIndex 1",
+			podCount:              2,
+			subGroupSize:          1,
+			workerIndex:           1,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "0",
+		},
+		{
+			name:                  "LeaderExcluded, size 4, SubGroupSize 1, workerIndex 1",
+			podCount:              4,
+			subGroupSize:          1,
+			workerIndex:           1,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "0",
+		},
+		{
+			name:                  "LeaderExcluded, size 4, SubGroupSize 1, workerIndex 2",
+			podCount:              4,
+			subGroupSize:          1,
+			workerIndex:           2,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "1",
+		},
+		{
+			name:                  "LeaderExcluded, size 4, SubGroupSize 1, workerIndex 3",
+			podCount:              4,
+			subGroupSize:          1,
+			workerIndex:           3,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "2",
+		},
+		{
+			name:                  "LeaderExcluded, size 5, SubGroupSize 2, workerIndex 2",
+			podCount:              5,
+			subGroupSize:          2,
+			workerIndex:           2,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "0",
+		},
+		{
+			name:                  "LeaderExcluded, size 5, SubGroupSize 2, workerIndex 3",
+			podCount:              5,
+			subGroupSize:          2,
+			workerIndex:           3,
+			leaderExcluded:        true,
+			expectedSubGroupIndex: "1",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex)
+			subGroupIndex := getSubGroupIndex(tc.podCount, tc.subGroupSize, tc.workerIndex, tc.leaderExcluded)
 			if tc.expectedSubGroupIndex != subGroupIndex {
 				t.Errorf("Expected subGroupIndex to be %s, got %s", tc.expectedSubGroupIndex, subGroupIndex)
 			}

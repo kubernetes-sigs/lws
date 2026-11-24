@@ -263,6 +263,42 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 				return nil
 			},
 		}),
+		ginkgo.Entry("LeaderExcluded with SubGroupSize 1, expect worker subgroup index to start at 0", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				return corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test",
+							leaderworkerset.WorkerIndexLabelKey: "1",
+							leaderworkerset.GroupIndexLabelKey:  "1",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:               "4",
+							leaderworkerset.SubGroupSizeAnnotationKey:       "1",
+							leaderworkerset.SubGroupPolicyTypeAnnotationKey: string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded),
+						},
+					},
+					Spec: wrappers.MakeWorkerPodSpecWithTPUResource(),
+				}
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				if got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] != "" {
+					got.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = "uniqueHash"
+				}
+				if diff := cmp.Diff(got.Labels, map[string]string{
+					leaderworkerset.SetNameLabelKey:            "test",
+					leaderworkerset.SubGroupUniqueHashLabelKey: "uniqueHash",
+					leaderworkerset.WorkerIndexLabelKey:        "1",
+					leaderworkerset.SubGroupIndexLabelKey:      "0",
+					leaderworkerset.GroupIndexLabelKey:         "1",
+				}); diff != "" {
+					return errors.New("pod labels mismatch: " + diff)
+				}
+				return nil
+			},
+		}),
 		ginkgo.Entry("Pod requesting TPUs which doesn't belong to LWS will not have TPU env vars populated", &testDefaultingCase{
 			makePod: func(ns *corev1.Namespace) corev1.Pod {
 				return corev1.Pod{
@@ -740,6 +776,60 @@ var _ = ginkgo.Describe("leaderworkerset pod defaulting, creation and update", f
 			},
 			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
 				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				return nil
+			},
+		}),
+		ginkgo.Entry("Leader pod with exclusive placement keeps user affinity on the same topology key", &testDefaultingCase{
+			makePod: func(ns *corev1.Namespace) corev1.Pod {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sample-1",
+						Namespace: ns.Name,
+						Labels: map[string]string{
+							leaderworkerset.SetNameLabelKey:     "test-sample",
+							leaderworkerset.WorkerIndexLabelKey: "0",
+						},
+						Annotations: map[string]string{
+							leaderworkerset.SizeAnnotationKey:         "4",
+							leaderworkerset.ExclusiveKeyAnnotationKey: "topologyKey",
+						},
+					},
+					Spec: wrappers.MakeLeaderPodSpecWithTPUResource(),
+				}
+				pod.Spec.Affinity = &corev1.Affinity{
+					PodAffinity: &corev1.PodAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+							LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+								Key:      "tier",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{"cache"},
+							}}},
+							TopologyKey: "topologyKey",
+						}},
+					},
+					PodAntiAffinity: &corev1.PodAntiAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+							LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+								Key:      "tier",
+								Operator: metav1.LabelSelectorOpExists,
+							}}},
+							TopologyKey: "topologyKey",
+						}},
+					},
+				}
+				return *pod
+			},
+			checkExpectedPod: func(expected corev1.Pod, got corev1.Pod) error {
+				gomega.Expect(testutils.ValidatePodExclusivePlacementTerms(got, leaderworkerset.ExclusiveKeyAnnotationKey, leaderworkerset.GroupUniqueHashLabelKey)).To(gomega.BeTrue())
+				if n := len(got.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution); n != 2 {
+					return fmt.Errorf("pod affinity terms = %d, want 2 (the user's plus the injected one)", n)
+				}
+				if n := len(got.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution); n != 2 {
+					return fmt.Errorf("pod anti-affinity terms = %d, want 2 (the user's plus the injected one)", n)
+				}
+				if got.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].LabelSelector.MatchExpressions[0].Key != "tier" {
+					return fmt.Errorf("the user's affinity term was dropped or reordered")
+				}
 				return nil
 			},
 		}),
