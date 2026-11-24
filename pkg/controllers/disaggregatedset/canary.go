@@ -34,10 +34,10 @@ import (
 
 func canaryPercent(ds *disaggv1.DisaggregatedSet) (int, bool) {
 	strategy := ds.Spec.RolloutStrategy
-	if strategy == nil || strategy.CanaryPercent == nil {
+	if strategy == nil || strategy.Canary == nil || strategy.Canary.Percent == nil {
 		return 100, false
 	}
-	return int(*strategy.CanaryPercent), true
+	return int(*strategy.Canary.Percent), true
 }
 
 // Round new groups up, but keep both revisions for a partial canary. One group
@@ -65,10 +65,10 @@ func canarySingletonRole(names []string, desired map[string]int) string {
 const canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
 
 func canaryDimension(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
-	if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.CanaryDimension == "" {
+	if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.Canary == nil || ds.Spec.RolloutStrategy.Canary.Dimension == "" {
 		return disaggv1.CanaryDimensionGroups
 	}
-	return ds.Spec.RolloutStrategy.CanaryDimension
+	return ds.Spec.RolloutStrategy.Canary.Dimension
 }
 
 func canaryPercentForSlice(ds *disaggv1.DisaggregatedSet, target disaggutils.RevisionRoles) int {
@@ -220,11 +220,11 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	}
 	stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, inputs.readiness)
 	if stable.Revision == "" {
-		executor.canaryMessage = "Cannot identify the stable canary revision unambiguously; remove canaryPercent to finish this rollout before starting another canary"
+		executor.canaryMessage = "Cannot identify the stable canary revision unambiguously; remove canary.percent to finish this rollout before starting another canary"
 		return ctrl.Result{}, true, nil
 	}
 	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
-		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; remove canaryPercent to finish the layout change before starting a canary"
+		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; remove canary.percent to finish the layout change before starting a canary"
 		return ctrl.Result{}, true, nil
 	}
 	if err := executor.recordCanaryStable(ctx, ds, stable, true); err != nil {

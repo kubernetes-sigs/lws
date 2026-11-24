@@ -45,9 +45,12 @@ func setCanaryPercent(ds *disaggv1.DisaggregatedSet, percent int32) {
 	if ds.Spec.RolloutStrategy == nil {
 		ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{}
 	}
-	ds.Spec.RolloutStrategy.CanaryPercent = ptr.To(percent)
+	if ds.Spec.RolloutStrategy.Canary == nil {
+		ds.Spec.RolloutStrategy.Canary = &disaggv1.DisaggregatedSetCanary{}
+	}
+	ds.Spec.RolloutStrategy.Canary.Percent = ptr.To(percent)
 	if percent < 0 { // Test phases use -1 to finalize by omitting the field.
-		ds.Spec.RolloutStrategy.CanaryPercent = nil
+		ds.Spec.RolloutStrategy.Canary.Percent = nil
 	}
 }
 
@@ -260,7 +263,7 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 				ds := newDSWithRoles("test", staticRole("prefill"))
 				ds.UID = "uid"
 				setCanaryPercent(ds, int32(tc.percent))
-				ds.Spec.RolloutStrategy.CanaryDimension = dimension
+				ds.Spec.RolloutStrategy.Canary.Dimension = dimension
 				a := revisionLWS("old", tc.oldName, int32(tc.old), int32(tc.old), time.Now(), int32(tc.old))
 				a.Annotations[canaryStableAnnotation] = "true"
 				b := revisionLWS("new", "prefill", int32(tc.new), int32(tc.new), time.Now(), int32(tc.desired))
@@ -370,7 +373,7 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						}
 					}
 					setCanaryPercent(f.ds, 25)
-					f.ds.Spec.RolloutStrategy.CanaryDimension = dimension
+					f.ds.Spec.RolloutStrategy.Canary.Dimension = dimension
 					f.ds.Spec.Slices = ptr.To[int32](2)
 					require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
 					initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
@@ -644,7 +647,7 @@ func TestCanaryHoldCondition(t *testing.T) {
 			condition := disaggregatedSetCondition(ds, statuses, tc.available, nil, tc.held)
 			require.Equal(t, tc.reason, condition.Reason)
 			if tc.reason == reasonCanaryHeld {
-				require.Contains(t, condition.Message, fmt.Sprintf("canaryPercent %d", tc.percent))
+				require.Contains(t, condition.Message, fmt.Sprintf("canary.percent %d", tc.percent))
 				require.Contains(t, condition.Message, fmt.Sprintf("prefill %d/8", tc.updated))
 			}
 		})
@@ -1011,7 +1014,7 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 				}
 				require.True(t, settled, "desired=%d with canaryPercent still%d", desired, percent)
 				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
-				require.Equal(t, percent, *ds.Spec.RolloutStrategy.CanaryPercent)
+				require.Equal(t, percent, *ds.Spec.RolloutStrategy.Canary.Percent)
 			}
 		})
 	}
@@ -1025,7 +1028,7 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 				ds.Spec.Slices = ptr.To[int32](8)
 				ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 				setCanaryPercent(ds, 25)
-				ds.Spec.RolloutStrategy.CanaryDimension = mode
+				ds.Spec.RolloutStrategy.Canary.Dimension = mode
 				objects := []client.Object{ds}
 				for i := range ds.Spec.Roles {
 					ds.Spec.Roles[i].Spec.GroupIdentity = identity

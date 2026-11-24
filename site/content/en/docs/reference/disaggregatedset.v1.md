@@ -9,14 +9,14 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 ---
 
 
-## Resource Types 
+## Resource Types
 
 
 - [DisaggregatedSet](#disaggregatedset-x-k8s-io-v1-DisaggregatedSet)
-  
+
 
 ## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
-    
+
 
 **Appears in:**
 
@@ -28,11 +28,11 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
+
 <tr><td><code>apiVersion</code><br/>string</td><td><code>disaggregatedset.x-k8s.io/v1</code></td></tr>
 <tr><td><code>kind</code><br/>string</td><td><code>DisaggregatedSet</code></td></tr>
-    
-  
+
+
 <tr><td><code>spec</code> <B>[Required]</B><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
 </td>
@@ -51,12 +51,12 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 </table>
 
 ## `CanaryDimension`     {#disaggregatedset-x-k8s-io-v1-CanaryDimension}
-    
+
 (Alias of `string`)
 
 **Appears in:**
 
-- [DisaggregatedSetRolloutStrategy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy)
+- [DisaggregatedSetCanary](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary)
 
 
 <p>CanaryDimension selects the unit used to divide a canary.</p>
@@ -65,7 +65,7 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 
 
 ## `DisaggregatedRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec}
-    
+
 
 **Appears in:**
 
@@ -81,8 +81,8 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -120,8 +120,77 @@ DisaggregatedSet handles rollouts across roles.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetCanary`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary}
+
+
+**Appears in:**
+
+- [DisaggregatedSetRolloutStrategy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy)
+
+
+<p>DisaggregatedSetCanary configures a percentage-based canary rollout.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+
+
+<tr><td><code>percent</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Percent is the new revision's requested share, using Dimension
+as the unit. By default, split each role/sub-role's groups independently in
+every slice. Omitted disables canarying and allows old history to be cleaned
+up. An explicit 100 runs all groups on the new revision but retains the
+baseline LWS objects at zero replicas, so lowering the percentage can
+restore them. Remove the field to finalize the canary and accept the new
+revision as the baseline for a subsequent canary.
+The oldest revision with surviving groups is recorded as the baseline;
+that choice survives controller restarts. A later template update replaces
+the canary within its share while retaining the recorded baseline's share.
+Lowering the percentage restores baseline capacity within rollout budgets;
+0 drains canary groups but keeps the target LWS objects at zero replicas.
+For a durable rollback, restore the stable templates in Git. If they match
+the surviving baseline, the rollout converges fully to it without a hold.
+Remove Percent in the same Git change to leave no canary hold.
+It does not limit initial creation when there is no old revision.
+For 1..99, the canary count rounds up and keeps at least one unit on each
+side. If an active role has only one group, the whole slice stays on the
+baseline in groups mode so it remains a complete serving revision; scaling
+still applies. In slices mode the units are whole slices instead of groups.
+This is not a traffic percentage.
+While held, scaling changes baseline and canary shares under either
+scaling policy, including Deferred. Readiness and availability budgets may
+delay convergence. Percentage changes alone never recreate retired history.
+The active role/sub-role layout must match the recorded baseline; an
+incompatible baseline blocks even if a younger revision is compatible.
+An ambiguous initial choice or conflicting recorded baselines also blocks.
+Existing roles can scale to and from zero. Scaling the whole set to zero
+retains the marked baseline's LWS templates; scale-up restores the split.
+Finalizing the canary by removing the field retires that baseline and its
+rollback history. Keeping 100 does not automatically hold the next template
+update below 100%; set its starting percentage with the new templates.</p>
+</td>
+</tr>
+<tr><td><code>dimension</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-CanaryDimension"><code>CanaryDimension</code></a>
+</td>
+<td>
+   <p>Dimension defaults to Groups: divide each role/sub-role within each
+slice. Slices instead promotes whole slices in ascending slice-index order.
+Dimensions cannot change while Percent is set, including at 100.
+Slice-count changes are not supported during a slices canary;
+remove Percent to finalize the canary first.
+This field has no effect when Percent is omitted.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetRoleScaler`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScaler}
-    
+
 
 **Appears in:**
 
@@ -138,8 +207,8 @@ reads it and drives the role's LeaderWorkerSet.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>spec</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec"><code>DisaggregatedSetRoleScalerSpec</code></a>
 </td>
@@ -158,7 +227,7 @@ reads it and drives the role's LeaderWorkerSet.</p>
 </table>
 
 ## `DisaggregatedSetRoleScalerSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec}
-    
+
 
 **Appears in:**
 
@@ -173,8 +242,8 @@ from the scaler's controller ownerReference and its role label.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>replicas</code> <B>[Required]</B><br/>
 <code>int32</code>
 </td>
@@ -194,7 +263,7 @@ field does not exist&quot;) when the JSONPath resolves to nothing. HPA reads
 </table>
 
 ## `DisaggregatedSetRoleScalerStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerStatus}
-    
+
 
 **Appears in:**
 
@@ -208,8 +277,8 @@ DisaggregatedSet controller.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -250,7 +319,7 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </table>
 
 ## `DisaggregatedSetRolloutStrategy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy}
-    
+
 
 **Appears in:**
 
@@ -263,63 +332,20 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
-<tr><td><code>canaryPercent</code><br/>
-<code>int32</code>
+
+
+<tr><td><code>canary</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary"><code>DisaggregatedSetCanary</code></a>
 </td>
 <td>
-   <p>CanaryPercent is the new revision's requested share, using CanaryDimension
-as the unit. By default, split each role/sub-role's groups independently in
-every slice. Omitted disables canarying and allows old history to be cleaned
-up. An explicit 100 runs all groups on the new revision but retains the
-baseline LWS objects at zero replicas, so lowering the percentage can
-restore them. Remove the field to finalize the canary and accept the new
-revision as the baseline for a subsequent canary.
-The oldest revision with surviving groups is recorded as the baseline;
-that choice survives controller restarts. A later template update replaces
-the canary within its share while retaining the recorded baseline's share.
-Lowering the percentage restores baseline capacity within rollout budgets;
-0 drains canary groups but keeps the target LWS objects at zero replicas.
-For a durable rollback, restore the stable templates in Git. If they match
-the surviving baseline, the rollout converges fully to it without a hold.
-Remove CanaryPercent in the same Git change to leave no canary hold.
-It does not limit initial creation when there is no old revision.
-For 1..99, the canary count rounds up and keeps at least one unit on each
-side. If an active role has only one group, the whole slice stays on the
-baseline in groups mode so it remains a complete serving revision; scaling
-still applies. In slices mode the units are whole slices instead of groups.
-This is not a traffic percentage.
-While held, scaling changes baseline and canary shares under either
-scaling policy, including Deferred. Readiness and availability budgets may
-delay convergence. Percentage changes alone never recreate retired history.
-The active role/sub-role layout must match the recorded baseline; an
-incompatible baseline blocks even if a younger revision is compatible.
-An ambiguous initial choice or conflicting recorded baselines also blocks.
-Existing roles can scale to and from zero. Scaling the whole set to zero
-retains the marked baseline's LWS templates; scale-up restores the split.
-Finalizing the canary by removing the field retires that baseline and its
-rollback history. Keeping 100 does not automatically hold the next template
-update below 100%; set its starting percentage with the new templates.</p>
-</td>
-</tr>
-<tr><td><code>canaryDimension</code><br/>
-<a href="#disaggregatedset-x-k8s-io-v1-CanaryDimension"><code>CanaryDimension</code></a>
-</td>
-<td>
-   <p>CanaryDimension defaults to groups: divide each role/sub-role within each
-slice. Slices instead promotes whole slices in ascending slice-index order.
-Dimensions cannot change while CanaryPercent is set, including at 100.
-Slice-count changes are not supported during a slices canary;
-remove CanaryPercent to finalize the canary first.
-This field has no effect when CanaryPercent is omitted.</p>
+   <p>Canary configures the new revision's requested share during a rollout.</p>
 </td>
 </tr>
 </tbody>
 </table>
 
 ## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
-    
+
 
 **Appears in:**
 
@@ -333,8 +359,8 @@ with DisaggregatedSet reconciliation.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>scaleUpDuringRollout</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy"><code>RolloutScalingPolicy</code></a>
 </td>
@@ -382,7 +408,7 @@ the delay. Controller restarts reset the window.</p>
 </table>
 
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
-    
+
 
 **Appears in:**
 
@@ -399,8 +425,8 @@ to zero without pausing sibling routing pools.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>roles</code> <B>[Required]</B><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec"><code>[]DisaggregatedRoleSpec</code></a>
 </td>
@@ -450,7 +476,7 @@ created, so changing it takes effect on the next rollout.</p>
 </table>
 
 ## `DisaggregatedSetStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus}
-    
+
 
 **Appears in:**
 
@@ -463,8 +489,8 @@ created, so changing it takes effect on the next rollout.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>observedGeneration</code><br/>
 <code>int64</code>
 </td>
@@ -499,7 +525,7 @@ Each condition has a unique type and reflects the status of a specific aspect of
 </table>
 
 ## `DisaggregatedSubRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec}
-    
+
 
 **Appears in:**
 
@@ -512,8 +538,8 @@ Each condition has a unique type and reflects the status of a specific aspect of
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -559,7 +585,7 @@ the parent; with no parent rollout configuration, the default is 1. Zero is expl
 </table>
 
 ## `PlacementPolicy`     {#disaggregatedset-x-k8s-io-v1-PlacementPolicy}
-    
+
 
 **Appears in:**
 
@@ -572,8 +598,8 @@ the parent; with no parent rollout configuration, the default is 1. Zero is expl
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>type</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-PlacementType"><code>PlacementType</code></a>
 </td>
@@ -593,7 +619,7 @@ topologyKey. Required when Type is not None.</p>
 </table>
 
 ## `PlacementType`     {#disaggregatedset-x-k8s-io-v1-PlacementType}
-    
+
 (Alias of `string`)
 
 **Appears in:**
@@ -607,7 +633,7 @@ topologyKey. Required when Type is not None.</p>
 
 
 ## `RoleScaling`     {#disaggregatedset-x-k8s-io-v1-RoleScaling}
-    
+
 
 **Appears in:**
 
@@ -624,8 +650,8 @@ a v2 API bump.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>mode</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleScalingMode"><code>RoleScalingMode</code></a>
 </td>
@@ -638,7 +664,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </table>
 
 ## `RoleScalingMode`     {#disaggregatedset-x-k8s-io-v1-RoleScalingMode}
-    
+
 (Alias of `string`)
 
 **Appears in:**
@@ -652,7 +678,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 
 
 ## `RoleStatus`     {#disaggregatedset-x-k8s-io-v1-RoleStatus}
-    
+
 
 **Appears in:**
 
@@ -665,8 +691,8 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -743,7 +769,7 @@ while draining. Do not add child counts to their parent aggregate.</p>
 </table>
 
 ## `RolloutScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy}
-    
+
 (Alias of `string`)
 
 **Appears in:**
@@ -758,7 +784,7 @@ a rolling update. The scale-up and scale-down fields select it independently.</p
 
 
 ## `SubRoleStatus`     {#disaggregatedset-x-k8s-io-v1-SubRoleStatus}
-    
+
 
 **Appears in:**
 
@@ -771,8 +797,8 @@ a rolling update. The scale-up and scale-down fields select it independently.</p
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-    
-  
+
+
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -832,4 +858,3 @@ at least one Ready group. It never exceeds ReadyReplicas.</p>
 </tr>
 </tbody>
 </table>
-  

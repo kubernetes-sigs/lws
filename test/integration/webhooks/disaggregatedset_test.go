@@ -354,26 +354,26 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		func(identity leaderworkerset.GroupIdentityType) {
 			disagg := buildDisaggregatedSet("canary-schema").Obj()
 			disagg.Spec.Roles[0].Spec.GroupIdentity = identity
-			disagg.Spec.RolloutStrategy = &disaggregatedset.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25), CanaryDimension: disaggregatedset.CanaryDimensionSlices}
+			disagg.Spec.RolloutStrategy = &disaggregatedset.DisaggregatedSetRolloutStrategy{Canary: &disaggregatedset.DisaggregatedSetCanary{Percent: ptr.To[int32](25), Dimension: disaggregatedset.CanaryDimensionSlices}}
 			gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
 			fetched := &disaggregatedset.DisaggregatedSet{}
 			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), fetched)).To(gomega.Succeed())
-			gomega.Expect(fetched.Spec.RolloutStrategy.CanaryPercent).To(gomega.HaveValue(gomega.Equal(int32(25))))
-			gomega.Expect(fetched.Spec.RolloutStrategy.CanaryDimension).To(gomega.Equal(disaggregatedset.CanaryDimensionSlices))
-			fetched.Spec.RolloutStrategy.CanaryDimension = "invalid"
-			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canaryDimension")))
-			fetched.Spec.RolloutStrategy.CanaryDimension = disaggregatedset.CanaryDimensionSlices
-			fetched.Spec.RolloutStrategy.CanaryPercent = ptr.To[int32](101)
-			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canaryPercent")))
-			fetched.Spec.RolloutStrategy.CanaryPercent = ptr.To[int32](25)
+			gomega.Expect(fetched.Spec.RolloutStrategy.Canary.Percent).To(gomega.HaveValue(gomega.Equal(int32(25))))
+			gomega.Expect(fetched.Spec.RolloutStrategy.Canary.Dimension).To(gomega.Equal(disaggregatedset.CanaryDimensionSlices))
+			fetched.Spec.RolloutStrategy.Canary.Dimension = "invalid"
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canary.dimension")))
+			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionSlices
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](101)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canary.percent")))
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
 			fetched.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](1)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("partition is not supported")))
 			fetched.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](0)
-			fetched.Spec.RolloutStrategy.CanaryPercent = ptr.To[int32](100)
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
-			fetched.Spec.RolloutStrategy.CanaryDimension = disaggregatedset.CanaryDimensionGroups
+			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionGroups
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("cannot change dimension")))
-			fetched.Spec.RolloutStrategy.CanaryPercent = nil
+			fetched.Spec.RolloutStrategy.Canary.Percent = nil
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 		},
 		ginkgo.Entry("Ordinal", leaderworkerset.GroupIdentityOrdinal),

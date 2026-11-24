@@ -300,17 +300,24 @@ type DisaggregatedSetSpec struct {
 }
 
 // CanaryDimension selects the unit used to divide a canary.
-// +kubebuilder:validation:Enum=groups;slices
+// +kubebuilder:validation:Enum=Groups;Slices
 type CanaryDimension string
 
 const (
-	CanaryDimensionGroups CanaryDimension = "groups"
-	CanaryDimensionSlices CanaryDimension = "slices"
+	CanaryDimensionGroups CanaryDimension = "Groups"
+	CanaryDimensionSlices CanaryDimension = "Slices"
 )
 
 // DisaggregatedSetRolloutStrategy configures a set-wide canary hold.
 type DisaggregatedSetRolloutStrategy struct {
-	// CanaryPercent is the new revision's requested share, using CanaryDimension
+	// Canary configures the new revision's requested share during a rollout.
+	// +optional
+	Canary *DisaggregatedSetCanary `json:"canary,omitempty"`
+}
+
+// DisaggregatedSetCanary configures a percentage-based canary rollout.
+type DisaggregatedSetCanary struct {
+	// Percent is the new revision's requested share, using Dimension
 	// as the unit. By default, split each role/sub-role's groups independently in
 	// every slice. Omitted disables canarying and allows old history to be cleaned
 	// up. An explicit 100 runs all groups on the new revision but retains the
@@ -324,7 +331,7 @@ type DisaggregatedSetRolloutStrategy struct {
 	// 0 drains canary groups but keeps the target LWS objects at zero replicas.
 	// For a durable rollback, restore the stable templates in Git. If they match
 	// the surviving baseline, the rollout converges fully to it without a hold.
-	// Remove CanaryPercent in the same Git change to leave no canary hold.
+	// Remove Percent in the same Git change to leave no canary hold.
 	// It does not limit initial creation when there is no old revision.
 	// For 1..99, the canary count rounds up and keeps at least one unit on each
 	// side. If an active role has only one group, the whole slice stays on the
@@ -345,16 +352,16 @@ type DisaggregatedSetRolloutStrategy struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
-	CanaryPercent *int32 `json:"canaryPercent,omitempty"`
+	Percent *int32 `json:"percent,omitempty"`
 
-	// CanaryDimension defaults to groups: divide each role/sub-role within each
+	// Dimension defaults to Groups: divide each role/sub-role within each
 	// slice. Slices instead promotes whole slices in ascending slice-index order.
-	// Dimensions cannot change while CanaryPercent is set, including at 100.
+	// Dimensions cannot change while Percent is set, including at 100.
 	// Slice-count changes are not supported during a slices canary;
-	// remove CanaryPercent to finalize the canary first.
-	// This field has no effect when CanaryPercent is omitted.
+	// remove Percent to finalize the canary first.
+	// This field has no effect when Percent is omitted.
 	// +optional
-	CanaryDimension CanaryDimension `json:"canaryDimension,omitempty"`
+	Dimension CanaryDimension `json:"dimension,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.

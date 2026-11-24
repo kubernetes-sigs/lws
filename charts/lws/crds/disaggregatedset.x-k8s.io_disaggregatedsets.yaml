@@ -18138,56 +18138,60 @@ spec:
                     RolloutStrategy controls progressive delivery across all roles and sub-roles.
                     Changing it does not create a new revision.
                   properties:
-                    canaryDimension:
-                      description: |-
-                        CanaryDimension defaults to groups: divide each role/sub-role within each
-                        slice. Slices instead promotes whole slices in ascending slice-index order.
-                        Dimensions cannot change while CanaryPercent is set, including at 100.
-                        Slice-count changes are not supported during a slices canary;
-                        remove CanaryPercent to finalize the canary first.
-                        This field has no effect when CanaryPercent is omitted.
-                      enum:
-                        - groups
-                        - slices
-                      type: string
-                    canaryPercent:
-                      description: |-
-                        CanaryPercent is the new revision's requested share, using CanaryDimension
-                        as the unit. By default, split each role/sub-role's groups independently in
-                        every slice. Omitted disables canarying and allows old history to be cleaned
-                        up. An explicit 100 runs all groups on the new revision but retains the
-                        baseline LWS objects at zero replicas, so lowering the percentage can
-                        restore them. Remove the field to finalize the canary and accept the new
-                        revision as the baseline for a subsequent canary.
-                        The oldest revision with surviving groups is recorded as the baseline;
-                        that choice survives controller restarts. A later template update replaces
-                        the canary within its share while retaining the recorded baseline's share.
-                        Lowering the percentage restores baseline capacity within rollout budgets;
-                        0 drains canary groups but keeps the target LWS objects at zero replicas.
-                        For a durable rollback, restore the stable templates in Git. If they match
-                        the surviving baseline, the rollout converges fully to it without a hold.
-                        Remove CanaryPercent in the same Git change to leave no canary hold.
-                        It does not limit initial creation when there is no old revision.
-                        For 1..99, the canary count rounds up and keeps at least one unit on each
-                        side. If an active role has only one group, the whole slice stays on the
-                        baseline in groups mode so it remains a complete serving revision; scaling
-                        still applies. In slices mode the units are whole slices instead of groups.
-                        This is not a traffic percentage.
-                        While held, scaling changes baseline and canary shares under either
-                        scaling policy, including Deferred. Readiness and availability budgets may
-                        delay convergence. Percentage changes alone never recreate retired history.
-                        The active role/sub-role layout must match the recorded baseline; an
-                        incompatible baseline blocks even if a younger revision is compatible.
-                        An ambiguous initial choice or conflicting recorded baselines also blocks.
-                        Existing roles can scale to and from zero. Scaling the whole set to zero
-                        retains the marked baseline's LWS templates; scale-up restores the split.
-                        Finalizing the canary by removing the field retires that baseline and its
-                        rollback history. Keeping 100 does not automatically hold the next template
-                        update below 100%; set its starting percentage with the new templates.
-                      format: int32
-                      maximum: 100
-                      minimum: 0
-                      type: integer
+                    canary:
+                      description: Canary configures the new revision's requested share during a rollout.
+                      properties:
+                        dimension:
+                          description: |-
+                            Dimension defaults to Groups: divide each role/sub-role within each
+                            slice. Slices instead promotes whole slices in ascending slice-index order.
+                            Dimensions cannot change while Percent is set, including at 100.
+                            Slice-count changes are not supported during a slices canary;
+                            remove Percent to finalize the canary first.
+                            This field has no effect when Percent is omitted.
+                          enum:
+                            - Groups
+                            - Slices
+                          type: string
+                        percent:
+                          description: |-
+                            Percent is the new revision's requested share, using Dimension
+                            as the unit. By default, split each role/sub-role's groups independently in
+                            every slice. Omitted disables canarying and allows old history to be cleaned
+                            up. An explicit 100 runs all groups on the new revision but retains the
+                            baseline LWS objects at zero replicas, so lowering the percentage can
+                            restore them. Remove the field to finalize the canary and accept the new
+                            revision as the baseline for a subsequent canary.
+                            The oldest revision with surviving groups is recorded as the baseline;
+                            that choice survives controller restarts. A later template update replaces
+                            the canary within its share while retaining the recorded baseline's share.
+                            Lowering the percentage restores baseline capacity within rollout budgets;
+                            0 drains canary groups but keeps the target LWS objects at zero replicas.
+                            For a durable rollback, restore the stable templates in Git. If they match
+                            the surviving baseline, the rollout converges fully to it without a hold.
+                            Remove Percent in the same Git change to leave no canary hold.
+                            It does not limit initial creation when there is no old revision.
+                            For 1..99, the canary count rounds up and keeps at least one unit on each
+                            side. If an active role has only one group, the whole slice stays on the
+                            baseline in groups mode so it remains a complete serving revision; scaling
+                            still applies. In slices mode the units are whole slices instead of groups.
+                            This is not a traffic percentage.
+                            While held, scaling changes baseline and canary shares under either
+                            scaling policy, including Deferred. Readiness and availability budgets may
+                            delay convergence. Percentage changes alone never recreate retired history.
+                            The active role/sub-role layout must match the recorded baseline; an
+                            incompatible baseline blocks even if a younger revision is compatible.
+                            An ambiguous initial choice or conflicting recorded baselines also blocks.
+                            Existing roles can scale to and from zero. Scaling the whole set to zero
+                            retains the marked baseline's LWS templates; scale-up restores the split.
+                            Finalizing the canary by removing the field retires that baseline and its
+                            rollback history. Keeping 100 does not automatically hold the next template
+                            update below 100%; set its starting percentage with the new templates.
+                          format: int32
+                          maximum: 100
+                          minimum: 0
+                          type: integer
+                      type: object
                   type: object
                 scalingPolicy:
                   description: |-

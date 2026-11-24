@@ -580,9 +580,9 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 		reason = "ReplicaTargetsUnresolved"
 		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", listRoles(unresolvedRoles))
 	} else if canary && canaryHeld && ready && (percent < 100 || available) {
-		reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canaryPercent %d; %s", percent, held)
+		reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canary.percent %d; %s", percent, held)
 		if percent == 100 {
-			message += "; remove canaryPercent to finalize"
+			message += "; remove canary.percent to finalize"
 		}
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable

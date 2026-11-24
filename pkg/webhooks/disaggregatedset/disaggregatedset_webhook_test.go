@@ -53,7 +53,7 @@ func TestValidateCanaryPercent(t *testing.T) {
 	for _, percent := range []int32{-1, 0, 25, 100, 101} {
 		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
 			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
-			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To(percent)},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To(percent)}},
 		}}
 		webhook := &DisaggregatedSetWebhook{}
 		_, createErr := webhook.ValidateCreate(t.Context(), ds)
@@ -71,7 +71,7 @@ func TestValidateCanaryPercent(t *testing.T) {
 	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
 		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
 			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}},
-			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25)},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25)}},
 		}}
 		ds.Spec.Roles[0].Spec.GroupIdentity = identity
 		_, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), ds)
@@ -80,35 +80,35 @@ func TestValidateCanaryPercent(t *testing.T) {
 }
 
 func TestCanaryDimension(t *testing.T) {
-	for _, mode := range []disaggv1.CanaryDimension{"", "groups", "slices", "auto", "invalid"} {
-		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25), CanaryDimension: mode}}}
+	for _, mode := range []disaggv1.CanaryDimension{"", "Groups", "Slices", "groups", "slices", "auto", "Auto", "invalid"} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25), Dimension: mode}}}}
 		w := &DisaggregatedSetWebhook{}
 		_, err := w.ValidateCreate(t.Context(), ds)
-		if mode == "invalid" || mode == "auto" {
-			require.ErrorContains(t, err, "canaryDimension")
+		if mode != "" && mode != "Groups" && mode != "Slices" {
+			require.ErrorContains(t, err, "canary.dimension")
 			continue
 		}
 		require.NoError(t, err)
 		changed := ds.DeepCopy()
 		changed.Spec.Slices = ptr.To[int32](9)
 		_, err = w.ValidateUpdate(t.Context(), ds, changed)
-		if mode == "slices" {
+		if mode == "Slices" {
 			require.ErrorContains(t, err, "slice-count changes")
 		} else {
 			require.NoError(t, err)
 		}
-		changed.Spec.RolloutStrategy.CanaryDimension = "groups"
-		if mode == "" || mode == "groups" {
-			changed.Spec.RolloutStrategy.CanaryDimension = "slices"
+		changed.Spec.RolloutStrategy.Canary.Dimension = "Groups"
+		if mode == "" || mode == "Groups" {
+			changed.Spec.RolloutStrategy.Canary.Dimension = "Slices"
 		}
 		_, err = w.ValidateUpdate(t.Context(), ds, changed)
 		require.ErrorContains(t, err, "cannot change dimension")
 		for _, percent := range []*int32{ptr.To[int32](100), nil} {
-			changed.Spec.RolloutStrategy.CanaryPercent = percent
+			changed.Spec.RolloutStrategy.Canary.Percent = percent
 			_, err = w.ValidateUpdate(t.Context(), ds, changed)
 			if percent != nil {
 				require.ErrorContains(t, err, "cannot change dimension")
-				ds.Spec.RolloutStrategy.CanaryPercent = ptr.To[int32](100)
+				ds.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 				_, err = w.ValidateUpdate(t.Context(), ds, changed)
 				require.ErrorContains(t, err, "cannot change dimension", "100 does not end the canary")
 			} else {
