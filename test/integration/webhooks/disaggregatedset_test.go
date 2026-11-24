@@ -810,7 +810,7 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 		}
 	})
 
-	ginkgo.DescribeTable("accepts percentage budgets that round to zero after positive replica changes",
+	ginkgo.DescribeTable("revalidates rollout budgets on positive replica changes",
 		func(subRoles bool) {
 			ds := newDisaggregatedSet()
 			for i := range ds.Spec.Roles {
@@ -840,6 +840,21 @@ var _ = ginkgo.Describe("DisaggregatedSet legacy admission compatibility", func(
 				}
 			}
 			gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+			// A literal 0%/0 is admitted at 0 replicas but rejected on scale-up.
+			for i := range ds.Spec.Roles {
+				ds.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("0%")
+			}
+			gomega.Expect(k8sClient.Update(ctx, ds)).To(gomega.Succeed())
+			for i := range ds.Spec.Roles {
+				if subRoles {
+					ds.Spec.Roles[i].SubRoles[0].Replicas = ptr.To[int32](1)
+				} else {
+					ds.Spec.Roles[i].Spec.Replicas = ptr.To[int32](1)
+				}
+			}
+			err := k8sClient.Update(ctx, ds, client.DryRunAll)
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring("rollingUpdateConfiguration.maxUnavailable"))
 		},
 		ginkgo.Entry("role replicas", false),
 		ginkgo.Entry("sub-role aggregate replicas", true),

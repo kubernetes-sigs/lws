@@ -17,6 +17,7 @@ limitations under the License.
 package disaggregatedset
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -1207,10 +1208,11 @@ func TestValidateUpdate(t *testing.T) {
 
 	t.Run("sub-role replica changes", func(t *testing.T) {
 		for _, tc := range []struct {
-			name        string
-			oldReplicas [2]*int32
-			replicas    [2]*int32
-			wantError   bool
+			name           string
+			oldReplicas    [2]*int32
+			replicas       [2]*int32
+			maxUnavailable string
+			wantError      bool
 		}{
 			{
 				name:        "partial scale to zero keeps a parent percentage that rounds to zero",
@@ -1235,6 +1237,13 @@ func TestValidateUpdate(t *testing.T) {
 				name:     "defaulted targets are unchanged",
 				replicas: [2]*int32{ptr.To[int32](1), ptr.To[int32](1)},
 			},
+			{
+				name:           "zero to positive revalidates a zero parent budget",
+				oldReplicas:    [2]*int32{ptr.To[int32](0), ptr.To[int32](0)},
+				replicas:       [2]*int32{ptr.To[int32](0), ptr.To[int32](1)},
+				maxUnavailable: "0%",
+				wantError:      true,
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				oldObj := validObj.DeepCopy()
@@ -1243,8 +1252,9 @@ func TestValidateUpdate(t *testing.T) {
 					{Name: "hot", Replicas: tc.oldReplicas[0]},
 					{Name: "cold", Replicas: tc.oldReplicas[1]},
 				}
+				maxUnavailable := cmp.Or(tc.maxUnavailable, "50%")
 				role.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderworkerset.RollingUpdateConfiguration{
-					MaxUnavailable: intstr.FromString("50%"),
+					MaxUnavailable: intstr.FromString(maxUnavailable),
 				}
 				_, err := webhook.ValidateCreate(ctx, oldObj)
 				require.NoError(t, err)
