@@ -81,7 +81,9 @@ func ExpectValidServices(ctx context.Context, k8sClient client.Client, leaderWor
 			return validateService(headlessService, lws.Name, map[string]string{leaderworkerset.SetNameLabelKey: lws.Name})
 		}
 
-		for i := 0; i < int(*lws.Spec.Replicas); i++ {
+		// Ordinals beyond spec.replicas belong to surge groups, so loop up to
+		// the expected service count to validate those as well.
+		for i := 0; i < numHeadlessServices; i++ {
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-%s", lws.Name, strconv.Itoa(i)), Namespace: lws.Namespace}, &headlessService); err != nil {
 				return false, err
 			}
