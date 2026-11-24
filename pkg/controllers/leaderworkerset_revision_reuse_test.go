@@ -23,8 +23,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -188,6 +191,128 @@ func TestCreateUpdatedRevisionDeleteFailure(t *testing.T) {
 	}
 	if n := countRevisions(t, ctx, c, lws, map[string]string{leaderworkerset.RevisionKey: keyA}); n != 2 {
 		t.Fatalf("got %d revisions under key %s, want 2", n, keyA)
+	}
+}
+
+// TestReconcileReusesRevisionOnLeaderApplyRetry exercises the full Reconcile / reconcileHash
+// paths when initial leader workload creation fails and later succeeds without template changes.
+func TestReconcileReusesRevisionOnLeaderApplyRetry(t *testing.T) {
+	tests := []struct {
+		name          string
+		groupIdentity leaderworkerset.GroupIdentityType
+	}{
+		{name: "ordinal mode", groupIdentity: leaderworkerset.GroupIdentityOrdinal},
+		{name: "hash mode", groupIdentity: leaderworkerset.GroupIdentityHash},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := invalidTemplateTestScheme(t)
+			lws := leaderOnlyTestLWS()
+			lws.UID = types.UID("lws-uid")
+			lws.Spec.GroupIdentity = tc.groupIdentity
+
+			failApply := true
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).WithStatusSubresource(lws).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+						if !failApply {
+							return cl.Apply(ctx, obj, opts...)
+						}
+						switch applied := obj.(type) {
+						case *appsapplyv1.StatefulSetApplyConfiguration:
+							if tc.groupIdentity == leaderworkerset.GroupIdentityOrdinal && ptr.Deref(applied.GetName(), "") != workerTemplateProbeName {
+								return apierrors.NewServiceUnavailable("leader statefulset create failed")
+							}
+						case *appsapplyv1.DeploymentApplyConfiguration:
+							if tc.groupIdentity == leaderworkerset.GroupIdentityHash {
+								return apierrors.NewServiceUnavailable("leader deployment create failed")
+							}
+						}
+						return cl.Apply(ctx, obj, opts...)
+					},
+				}).Build()
+			recorder := events.NewFakeRecorder(32)
+			r := NewLeaderWorkerSetReconciler(c, scheme, recorder, nil)
+
+			drainCreatedEvents := func() int {
+				created := 0
+				for len(recorder.Events) > 0 {
+					if strings.Contains(<-recorder.Events, "Normal "+CreatingRevision) {
+						created++
+					}
+				}
+				return created
+			}
+
+			// First reconcile creates the revision, then fails applying the leader workload.
+			if err := reconcileLWS(t, r, lws); !apierrors.IsServiceUnavailable(err) {
+				t.Fatalf("first Reconcile() error = %v, want ServiceUnavailable", err)
+			}
+			var revisions appsv1.ControllerRevisionList
+			if err := c.List(ctx, &revisions, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+				t.Fatalf("listing revisions after first failure: %v", err)
+			}
+			if len(revisions.Items) != 1 {
+				t.Fatalf("after first failure: got %d revisions, want 1", len(revisions.Items))
+			}
+			firstRevisionName := revisions.Items[0].Name
+			if got := drainCreatedEvents(); got != 1 {
+				t.Fatalf("after first failure: got %d %s events, want 1", got, CreatingRevision)
+			}
+
+			// Second reconcile still fails applying the leader workload and must reuse the revision.
+			if err := reconcileLWS(t, r, lws); !apierrors.IsServiceUnavailable(err) {
+				t.Fatalf("second Reconcile() error = %v, want ServiceUnavailable", err)
+			}
+			revisions = appsv1.ControllerRevisionList{}
+			if err := c.List(ctx, &revisions, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+				t.Fatalf("listing revisions after second failure: %v", err)
+			}
+			if len(revisions.Items) != 1 || revisions.Items[0].Name != firstRevisionName {
+				t.Fatalf("after second failure: got %d revisions (%v), want only %s", len(revisions.Items), revisions.Items, firstRevisionName)
+			}
+			if got := drainCreatedEvents(); got != 0 {
+				t.Fatalf("after second failure: got %d %s events, want 0", got, CreatingRevision)
+			}
+
+			// Third reconcile succeeds in creating the leader workload, still keeping a single revision.
+			failApply = false
+			if err := reconcileLWS(t, r, lws); err != nil {
+				t.Fatalf("third Reconcile() error = %v, want nil", err)
+			}
+			revisions = appsv1.ControllerRevisionList{}
+			if err := c.List(ctx, &revisions, client.MatchingLabels{leaderworkerset.SetNameLabelKey: lws.Name}); err != nil {
+				t.Fatalf("listing revisions after recovery: %v", err)
+			}
+			if len(revisions.Items) != 1 || revisions.Items[0].Name != firstRevisionName {
+				t.Fatalf("after recovery: got %d revisions (%v), want only %s", len(revisions.Items), revisions.Items, firstRevisionName)
+			}
+			if got := drainCreatedEvents(); got != 0 {
+				t.Fatalf("after recovery: got %d %s events, want 0", got, CreatingRevision)
+			}
+
+			wantKey := revisionutils.GetRevisionKey(&revisions.Items[0])
+
+			if tc.groupIdentity == leaderworkerset.GroupIdentityOrdinal {
+				var leaderSts appsv1.StatefulSet
+				if err := c.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts); err != nil {
+					t.Fatalf("getting leader StatefulSet: %v", err)
+				}
+				if gotKey := revisionutils.GetRevisionKey(&leaderSts); gotKey != wantKey {
+					t.Fatalf("leader StatefulSet revision key = %s, want %s", gotKey, wantKey)
+				}
+			} else {
+				var leaderDeploy appsv1.Deployment
+				if err := c.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderDeploy); err != nil {
+					t.Fatalf("getting leader Deployment: %v", err)
+				}
+				if gotKey := revisionutils.GetRevisionKey(&leaderDeploy); gotKey != wantKey {
+					t.Fatalf("leader Deployment revision key = %s, want %s", gotKey, wantKey)
+				}
+			}
+		})
 	}
 }
 

@@ -516,23 +516,49 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
-			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
-			updates: []*update{
-				{
-					// Fetch the headless service and force delete it, so we can test if it is recreated.
-					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var leaderSts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
-						gomega.Expect(k8sClient.Delete(ctx, &leaderSts)).To(gomega.Succeed())
-					},
-					// Service should be recreated during reconciliation
-					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+		ginkgo.Entry("leader statefulset deleted will be recreated", func() *testCase {
+			var deletedStsUID types.UID
+			var originalRevisionName string
+			return &testCase{
+				makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
+				updates: []*update{
+					{
+						// Fetch the leader StatefulSet and force delete it, so we can test if it is recreated.
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							var leaderSts appsv1.StatefulSet
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+							deletedStsUID = leaderSts.UID
+
+							var revisions appsv1.ControllerRevisionList
+							gomega.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{
+								leaderworkerset.SetNameLabelKey: lws.Name,
+							})).To(gomega.Succeed())
+							gomega.Expect(revisions.Items).To(gomega.HaveLen(1))
+							originalRevisionName = revisions.Items[0].Name
+
+							gomega.Expect(k8sClient.Delete(ctx, &leaderSts)).To(gomega.Succeed())
+						},
+						// Leader StatefulSet should be recreated during reconciliation while reusing the existing revision.
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							gomega.Eventually(func(g gomega.Gomega) {
+								var leaderSts appsv1.StatefulSet
+								g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+								g.Expect(leaderSts.UID).NotTo(gomega.Equal(deletedStsUID))
+							}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+							testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+							testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+
+							var revisions appsv1.ControllerRevisionList
+							gomega.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{
+								leaderworkerset.SetNameLabelKey: lws.Name,
+							})).To(gomega.Succeed())
+							gomega.Expect(revisions.Items).To(gomega.HaveLen(1))
+							gomega.Expect(revisions.Items[0].Name).To(gomega.Equal(originalRevisionName))
+						},
 					},
 				},
-			},
-		}),
+			}
+		}()),
 		ginkgo.Entry("Able to get scale subResource information", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
