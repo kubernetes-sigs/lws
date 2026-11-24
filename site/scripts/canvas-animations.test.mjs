@@ -68,11 +68,11 @@ test('documentation animations appear in their pages and the visualizer', async 
   }
 });
 
-test('100% canary animation retains rollback history until explicit finalization', async () => {
+test('100% canary animation completes and accepts the new baseline', async () => {
   const scene = JSON.parse(await read('../static/animations/canary-promotion.json'));
-  assert.match(scene.frames.at(-1).caption, /Hold at 100%.*templates stay/);
-  assert.match(scene.frames.at(-1).caption, /remove the field to finalize/);
-  assert.doesNotMatch(JSON.stringify(scene), /Complete at 100%|100% completes/);
+  assert.match(scene.frames.at(-1).caption, /Complete at 100%.*cleaned up/);
+  assert.match(scene.frames.at(-1).caption, /B is the next baseline/);
+  assert.doesNotMatch(scene.frames.at(-1).caption, /templates stay|remove the field to finalize/);
 });
 
 test('all deployment contexts gate snapshots and the Hugo build on integration tests', async () => {

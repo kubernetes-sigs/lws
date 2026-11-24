@@ -43,25 +43,27 @@ Use one set-wide percentage to hold a rollout for canary analysis:
 ```yaml
 spec:
   rolloutStrategy:
-    canaryPercent: 25
+    canary:
+      percent: 25
+      dimension: Groups
 ```
 
 By default, this requests 25% of each role's replica groups on the new revision, independently in every slice. It works with both Ordinal and Hash groups, including virtual roles: each sub-role gets its own share. It does **not** set a traffic percentage or account for different GPU sizes.
 
-To divide complete slices instead, add `canaryDimension: slices`. With eight slices of 1 Prefill + 1 Decode and `canaryPercent: 25`, slices 0 and 1 roll to B while six stay on A. At 50%, slices 2 and 3 also roll to B; returning to 25% restores those slices to A. A subsequent B → C update runs inside the selected slices, leaving the others on A.
+To divide complete slices instead, set `dimension: Slices` inside the `canary` block. With eight slices of 1 Prefill + 1 Decode and `canary.percent: 25`, slices 0 and 1 roll to B while six stay on A. At 50%, slices 2 and 3 also roll to B; returning to 25% restores those slices to A. A subsequent B → C update runs inside the selected slices, leaving the others on A.
 
-`canaryDimension: auto` chooses once: it uses `groups` unless an active role/sub-role has only one group and at least two slices exist, in which case it chooses `slices`. The choice survives restarts, percentage changes including 100%, and B → C. It does not continually compare rounded percentages. Dimension changes are rejected while `canaryPercent` is set; `slices` and `auto` also require an unchanged slice count until the field is removed. Slice autoscaling is not part of this feature. See the [Argo CD slice example](../argo-cd/#canary-complete-slices).
+Choose `Groups` (the default) or `Slices` explicitly; there is no automatic choice. Dimension changes are rejected during a partial canary, and `Slices` also requires an unchanged slice count. Finish at 100% or omit the percentage before changing them. Slice autoscaling is not part of this feature. See the [Argo CD slice example](../argo-cd/#canary-complete-slices).
 
-- Set `0` with the template change to start with all surviving groups old. Raise it to advance; `100` runs all groups on the new revision but retains the baseline LWS objects at zero, so a later decrease can restore them. **Remove the field to finalize** and permit old history cleanup. Without an old revision, initial creation still starts the full desired workload. Omitting the field leaves the existing rollout behavior unchanged.
+- Set `0` with the template change to start with all surviving groups old. Raise it to advance. **At `100` or with the percentage omitted, the rollout finishes and the old baseline can be cleaned up.** The completed version becomes the next canary's baseline. Without an old revision, initial creation still starts the full desired workload.
 - Counts round up, keeping at least one old and one new group during a partial canary. At 25%, 4 groups become 3 old + 1 new; 8 groups become 6 old + 2 new. With just 2 groups, any partial percentage leaves 1 old + 1 new.
 - Another template update replaces the canary while retaining its baseline. At 50%, an A/B hold becomes A/C: B rolls to C within the canary half, while A's groups remain unchanged at fixed demand and percentage. See the [animated example](../argo-cd/#replace-the-canary-while-keeping-its-baseline).
-- Changing demand recalculates both shares. At 25%, scaling 3 old + 1 new up to 8 gives 6 old + 2 new; scaling back to 4 returns to 3 old + 1 new. **During an active canary hold, the `Deferred` / `Immediate` settings in `spec.scalingPolicy.scaleUpDuringRollout` and `spec.scalingPolicy.scaleDownDuringRollout` are ignored:** both revisions resize to preserve the percentage. At 100%, only the new revision's share changes. Readiness, `maxSurge`, and `maxUnavailable` still apply. The configured scaling policies resume when the field is removed.
+- Changing demand recalculates both shares. At 25%, scaling 3 old + 1 new up to 8 gives 6 old + 2 new; scaling back to 4 returns to 3 old + 1 new. **During a partial canary hold, the `Deferred` / `Immediate` settings in `spec.scalingPolicy.scaleUpDuringRollout` and `spec.scalingPolicy.scaleDownDuringRollout` are ignored:** both revisions resize to preserve the percentage. Readiness, `maxSurge`, and `maxUnavailable` still apply. The configured scaling policies resume at 100% or when the percentage is omitted.
 - Lowering the percentage restores the baseline share and reduces the canary share. At `0`, all desired groups use the baseline and the target LWS objects remain at `spec.replicas: 0`. LWS records the oldest revision with surviving groups as the baseline and keeps that choice across controller restarts. Restored groups keep its historical templates, budgets, and membership. This is not a judgment that the baseline is healthy at the application level.
-- Restoring the surviving baseline's templates makes it the desired target and converges fully to it, even if the percentage remains set. During a canary, baseline LWS templates survive even at zero replicas and at 100%. Percentage changes alone cannot recreate a deleted revision after the canary has been finalized.
+- Restoring the surviving baseline's templates makes it the desired target and converges fully to it, even if the percentage remains set. During a partial canary, baseline LWS templates survive even at zero replicas. Percentage changes alone cannot recreate a deleted revision after finalization at 100% or with the percentage omitted.
 - The embedded LWS `partition` field remains unsupported. This control belongs to DisaggregatedSet, not the child LWS rollout.
 
 {{% alert title="A zero-percent hold does not restore the templates" color="danger" %}}
-The new templates remain desired at `canaryPercent: 0`. A later promotion or removal of the field can deploy them again. For a durable rollback, **restore the stable templates in Git**. In the same change, remove `canaryPercent` to restore its default, `nil` (omitted). This means no hold; explicitly set an initial percentage with the next canary release's templates.
+The new templates remain desired at `canary.percent: 0`. A later promotion or removal of the field can deploy them again. For a durable rollback, **restore the stable templates in Git**. In the same change, remove `canary.percent` to restore its default, `nil` (omitted). This means no hold; explicitly set an initial percentage with the next canary release's templates.
 {{% /alert %}}
 
 A settled, fully Ready hold reports `Progressing=True` with reason `CanaryHeld`, and its message includes the percentage and observed new/desired counts. For Git-driven promotion, health configuration, and optional manual actions with stock Argo CD, see [Canary Rollouts with Argo CD](../argo-cd/). This is not native Argo Rollouts workload support.

@@ -61,7 +61,7 @@ class Scene {
     this.text(960, 46, this.drawing.title, 38, ink, true, 'center');
     this.text(960, 94, 'maxSurge = 1 · maxUnavailable = 0 per role · Each square is one group', 25, muted, false, 'center');
     this.rect(48, 124, 1824, 66, surface, 10);
-    this.text(74, 157, `canaryPercent: ${percent}`, 31, ink, true, 'left', true);
+    this.text(74, 157, `canary.percent: ${percent}`, 31, ink, true, 'left', true);
     this.text(1845, 157, `Desired: ${desired[0]} Prefill + ${desired[1]} Decode`, 30, ink, false, 'right');
     const starts = this.replacement ? [365, 865, 1365] : [380, 1170];
     const names = this.replacement ? ['A · baseline stays fixed', 'B · previous canary', 'C · new canary'] : ['A · baseline', 'B · canary'];
@@ -80,7 +80,7 @@ class Scene {
         }
         const pending = counts[revision][i] - ready[revision][i];
         const count = counts[revision][i];
-        const retained = !count && ((zero && revision === target) || (percent === 100 && revision === 0));
+        const retained = !count && zero && revision === target;
         const label = retained ? 'LWS retained · replicas: 0' : `${count} ${count === 1 ? 'group' : 'groups'} · ${ready[revision][i]} Ready${pending ? ` · ${pending} starting` : ''}`;
         this.text(x, y + 74, label, 24, muted);
       });
@@ -120,7 +120,7 @@ class Scene {
     this.text(370, 958, 'Marker = requested hold · Bars show Ready groups, not traffic weight', 23, muted);
     this.rect(48, 996, 1824, 66, surface, 10);
     this.text(960, 1029, cue, 28, ink, false, 'center');
-    const caption = `${cue} ${action} canaryPercent ${percent}; desired ${desired.join('/')} Prefill/Decode. ` +
+    const caption = `${cue} ${action} canary.percent ${percent}; desired ${desired.join('/')} Prefill/Decode. ` +
       counts.map((r, revision) => `${String.fromCharCode(65 + revision)}: ${r.join('/')} groups, ${ready[revision].join('/')} Ready.`).join(' ') +
       ` Serving Ready ${serving.join('/')}; floors ${desired.join('/')}; requested ${total.join('/')}; ceilings ${desired.map(d => d + 1).join('/')}. Illustrative timing.`;
     this.drawing.frames.push({duration: seconds, caption, items: this.items, hits: this.hits});
@@ -161,13 +161,13 @@ promote(100, [1, 2], [4, 7], 'The new Decode becomes Ready.');
 promote(100, [1, 1], [4, 7], 'One old group remains in each role.');
 promote(100, [1, 1], [4, 8], 'Start the final B Decode.', [0, 1]);
 promote(100, [1, 1], [4, 8], 'B is fully Ready; A’s last groups can leave.');
-promote(100, [0, 0], [4, 8], 'Hold at 100%: B serves all groups; A’s templates stay.', [0, 0], 3, 'Lower the percentage to restore A; remove the field to finalize.');
+promote(100, [0, 0], [4, 8], 'Complete at 100%: B serves all groups; A can be cleaned up.', [0, 0], 3, 'B is the next baseline. Roll back after completion with a Git revert.');
 await promotion.save('canary-promotion');
 
 const replacement = new Scene('Replace canary B with C · keep baseline A', true);
 const replace = (b, c, action, pending = [0, 0], seconds = .8, cue = 'A keeps its own half; B rolls to C within the other half.') =>
   replacement.frame({percent: 50, counts: [[2, 4], b, c], ready: [[2, 4], b, c.map((n, i) => n - pending[i])], seconds, action, cue});
-replace([2, 4], [0, 0], 'Change templates B → C; leave canaryPercent at 50.', [0, 0], 3);
+replace([2, 4], [0, 0], 'Change templates B → C; leave canary.percent at 50.', [0, 0], 3);
 replace([2, 4], [1, 1], 'Start C in both roles.', [1, 1], 2);
 replace([2, 4], [1, 1], 'C becomes Ready in both roles.', [0, 0], 1);
 replace([1, 3], [1, 1], 'Remove the replaced B groups.');
