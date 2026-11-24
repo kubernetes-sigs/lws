@@ -34,13 +34,13 @@ Only the failed pod is restarted or rescheduled. Other pods in the group continu
 
 ### RecreateGroupAfterStart
 
-When any pod in a group fails, the entire group is recreated **if and only if there are no pods currently pending** in the group. If any pod in the replica is still in the `Pending` phase (e.g., during image pulls or initial scheduling), the controller skips the failure event without triggering a group-wide recreation. If the pod is `Pending` because the scheduler could not place it, the controller also records a `GroupUnschedulable` warning event and reports it on the `Progressing` condition, as described below.
+When the controller observes a pod failure directly, it skips group recreation while any member is in the `Pending` phase, for example during image pulls or initial scheduling. If a member is `Pending` because the scheduler could not place it, the controller records a `GroupUnschedulable` warning event. A worker deletion or replacement can also trigger recreation based on the group's recorded startup state, as described below.
 
-- **Pod Failures:** Recreates the entire group if a pod fails after all pods in the replica have started (no pods are `Pending`). If any pod in the replica is `Pending`, the failure event is skipped, allowing Kubernetes to handle pod restarts individually and preventing restart cascades during rollout.
-- **Node Failures:** If a node fails after all pods in the replica have started, the entire replica group is deleted and recreated on healthy nodes. If the failure occurs while any pod in the replica is `Pending`, group recreation is not triggered.
+- **Pod Failures:** Recreates the entire group if a pod fails after all pods in the replica have started. During initial startup, Kubernetes can handle individual pod restarts while LWS waits for the group to start.
+- **Node Failures:** If a node fails after all pods in the replica have started, LWS can recreate the group on healthy nodes. A recorded worker deletion or replacement can trigger that recovery even while a replacement worker is still `Pending`.
 - **Primary Use Case:** Workloads with large container images or long startup times where you want strict collective restart semantics in production once running, but want to prevent recreation loops during the initial rollout.
 
-A `Pending` pod can be in one of three states, and LWS does not recreate the group in any of them. A pod that has no `PodScheduled` condition yet, because the scheduler has not reported a result for it, is treated as starting.
+When LWS checks the current members for startup, each of the following `Pending` states defers recreation. A pod that has no `PodScheduled` condition yet, because the scheduler has not reported a result for it, is treated as starting.
 
 - **Held by a scheduling gate** (`PodScheduled=False` with reason `SchedulingGated`): the scheduler has not tried to place the pod yet. Every leader starts gated until LWS admits it, so a gated leader may not have worker pods yet.
 - **Placed and starting** (`PodScheduled=True`): the pod is on a node and is pulling images or starting containers.
@@ -58,7 +58,7 @@ For `RecreateGroupOnPodRestart` and `RecreateGroupAfterStart`, a worker that dis
 
 LWS stores the revision, worker count, and a digest of the worker Pod UIDs in the leader Pod annotation `leaderworkerset.sigs.k8s.io/worker-uids`. With `RecreateGroupOnPodRestart`, it records the group once all its workers exist. With `RecreateGroupAfterStart`, it waits until every member has left `Pending`.
 
-A later reconcile, including the first after the controller starts, checks the record for missing or replaced workers and applies the group's restart policy, including `maxGroupRestarts` and `restartBackoff`. With `RecreateGroupAfterStart`, a current member in `Pending` still defers recreation. Each replacement leader establishes its own record. Worker Pods can be deleted independently of the record.
+A later reconcile, including the first after the controller starts, checks the record for missing or replaced workers and applies the group's restart policy, including `maxGroupRestarts` and `restartBackoff`. For `RecreateGroupAfterStart`, a record marked `:started` confirms that the original group started. A missing or replaced worker then qualifies the group for recreation even if the replacement is still `Pending` or unschedulable. Each replacement leader establishes its own record. Worker Pods can be deleted independently of the record.
 
 The controller needs a prior record to recover a missed deletion. Before that record is written, worker deletions are handled when the controller observes them.
 

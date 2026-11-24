@@ -699,37 +699,32 @@ func (r *PodReconciler) handleRestartPolicy(ctx context.Context, pod corev1.Pod,
 	// recreation that is already pending backoff passed this guard when it was
 	// decided, so it is not checked again.
 	if requiresStartedGroup(policy, &leaderWorkerSet) && !isRecreatePending && !alreadyCharged {
-		var startState groupStartState
-		var unschedulablePod string
 		if workerLoss != nil {
+			// The record describes the original members. A replacement may
+			// remain unschedulable until the group is recreated.
 			if !workerLoss.record.started {
 				return false, ctrl.Result{}, nil
 			}
-			// The record proves the old group started. Check the current
-			// members, including replacements, for Pending or unschedulable Pods.
-			members := append(workerLoss.workers, leader)
-			startState, unschedulablePod = groupStartStateForPods(members, len(members))
 		} else {
 			// Old groups keep their original size during a rollout that changes it.
 			groupSize := podGroupSize(&pod, int32(podGroupSize(&leader, *leaderWorkerSet.Spec.LeaderWorkerTemplate.Size)))
-			var err error
-			startState, unschedulablePod, err = r.groupStartState(ctx, leader, pod, groupSize)
+			startState, unschedulablePod, err := r.groupStartState(ctx, leader, pod, groupSize)
 			if err != nil {
 				return false, ctrl.Result{}, err
 			}
-		}
-		switch startState {
-		case groupStarting:
-			log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
-			return false, ctrl.Result{}, nil
-		case groupUnschedulable:
-			// Keep waiting rather than recreate a group that cannot be placed, but say
-			// why so that a group waiting on the scheduler does not look idle. This
-			// runs after the ownership checks so that pods of a replaced group do not
-			// report on the group that replaced them.
-			r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, GroupUnschedulable, Update,
-				fmt.Sprintf("Skipped recreating group %s because pod %s cannot be scheduled", pod.Labels[leaderworkerset.GroupIndexLabelKey], unschedulablePod))
-			return false, ctrl.Result{}, nil
+			switch startState {
+			case groupStarting:
+				log.V(2).Info(fmt.Sprintf("Skipping group recreation because there is a pod pending: %s", pod.Name))
+				return false, ctrl.Result{}, nil
+			case groupUnschedulable:
+				// Keep waiting rather than recreate a group that cannot be placed, but say
+				// why so that a group waiting on the scheduler does not look idle. This
+				// runs after the ownership checks so that pods of a replaced group do not
+				// report on the group that replaced them.
+				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, GroupUnschedulable, Update,
+					fmt.Sprintf("Skipped recreating group %s because pod %s cannot be scheduled", pod.Labels[leaderworkerset.GroupIndexLabelKey], unschedulablePod))
+				return false, ctrl.Result{}, nil
+			}
 		}
 	}
 	// If a restart budget or backoff is configured, enforce it: any recreate-triggering

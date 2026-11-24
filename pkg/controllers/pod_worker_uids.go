@@ -217,13 +217,7 @@ func parseWorkerUIDRecord(value string) workerUIDRecord {
 	}
 	hash, hashed := strings.CutPrefix(payload, workerUIDHashPrefix)
 	if !hashed {
-		// The first version of the leader record also accepted plain UID lists.
-		// Neither of its formats established that the group had started.
-		uids := strings.Split(payload, ",")
-		if slices.Contains(uids, "") {
-			return workerUIDRecord{}
-		}
-		return workerUIDRecord{revision: revision, digest: digestUIDs(uids), count: len(uids)}
+		return workerUIDRecord{}
 	}
 	hash, started := strings.CutSuffix(hash, workerUIDStarted)
 	digest, rawCount, found := strings.Cut(hash, ":")

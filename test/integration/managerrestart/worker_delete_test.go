@@ -217,7 +217,7 @@ var _ = ginkgo.Describe("Worker deletion across a controller manager restart", f
 		ginkgo.Entry("with both workers missing", 2),
 	)
 
-	ginkgo.It("waits for an AfterStart replacement worker to leave Pending", func() {
+	ginkgo.It("recreates a started AfterStart group with an unschedulable replacement worker", func() {
 		stop := startManager()
 		group := createGroup("pending-replacement-", leaderworkerset.RecreateGroupAfterStart, 2)
 		testing.SetPodToRunning(ctx, k8sClient, group.leader.Name, group.lws)
@@ -228,10 +228,15 @@ var _ = ginkgo.Describe("Worker deletion across a controller manager restart", f
 		deleteWorker(group.workers[0])
 		replacement := createWorker(group.workerSet, 1)
 		gomega.Expect(replacement.UID).NotTo(gomega.Equal(group.workers[0].UID))
-		startManager()
-		expectLeaderKept(group.leader)
+		gomega.Expect(replacement.Status.Phase).To(gomega.Equal(corev1.PodPending))
+		replacement.Status.Conditions = []corev1.PodCondition{{
+			Type:   corev1.PodScheduled,
+			Status: corev1.ConditionFalse,
+			Reason: corev1.PodReasonUnschedulable,
+		}}
+		gomega.Expect(k8sClient.Status().Update(ctx, &replacement)).To(gomega.Succeed())
 
-		testing.SetPodToRunning(ctx, k8sClient, replacement.Name, group.lws)
+		startManager()
 		expectGroupRecreation(group.leader)
 	})
 })

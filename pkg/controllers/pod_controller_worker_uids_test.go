@@ -45,15 +45,11 @@ const (
 )
 
 func TestWorkerUIDRecordFormat(t *testing.T) {
-	record := workerUIDRecord{revision: workerUIDRevision, digest: digestUIDs([]string{string(workerUIDNew), string(workerUIDOld)}), count: 2, started: true}
-	if got := parseWorkerUIDRecord(record.String()); got != record {
-		t.Fatalf("record after round trip = %+v, want %+v", got, record)
-	}
-	oldRecord := record
-	oldRecord.started = false
-	for _, value := range []string{oldRecord.String(), workerUIDRevision + "|" + string(workerUIDOld) + "," + string(workerUIDNew)} {
-		if got := parseWorkerUIDRecord(value); got != oldRecord {
-			t.Fatalf("parsing previous record %q = %+v, want %+v", value, got, oldRecord)
+	record := workerUIDRecord{revision: workerUIDRevision, digest: digestUIDs([]string{string(workerUIDNew), string(workerUIDOld)}), count: 2}
+	for _, started := range []bool{false, true} {
+		record.started = started
+		if got := parseWorkerUIDRecord(record.String()); got != record {
+			t.Fatalf("record after round trip = %+v, want %+v", got, record)
 		}
 	}
 }
@@ -156,14 +152,26 @@ func TestWorkerUIDRecordFitsBesideExistingAnnotations(t *testing.T) {
 	}
 }
 
-func TestHandleRestartPolicyDoesNotRecreateAnUnrecordedGroup(t *testing.T) {
-	lws := workerUIDLWS()
-	leader := workerUIDLeader()
-	r := workerUIDReconciler(t, nil, lws, leader)
+func TestHandleRestartPolicyDoesNotRecreateWithoutAValidWorkerRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record string
+	}{
+		{name: "unrecorded"},
+		{name: "arbitrary payload", record: workerUIDRevision + "|invalid"},
+		{name: "plain UID list", record: workerUIDRevision + "|" + string(workerUIDOld)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := workerUIDLWS()
+			leader := workerUIDLeader()
+			leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = tc.record
+			r := workerUIDReconciler(t, nil, lws, leader)
 
-	deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
-	if err != nil || deleted {
-		t.Fatalf("handleRestartPolicy() = %t, %v, want no recreation before the group is recorded", deleted, err)
+			deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
+			if err != nil || deleted {
+				t.Fatalf("handleRestartPolicy() = %t, %v, want no recreation without a valid record", deleted, err)
+			}
+		})
 	}
 }
 
@@ -279,29 +287,39 @@ func TestHandleRestartPolicyIdentityLossHonorsBackoffAndBudget(t *testing.T) {
 	})
 }
 
-func TestHandleRestartPolicyAfterStartWaitsForAPendingReplacement(t *testing.T) {
-	lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).RestartGroupAfterStart().Obj()
-	leader := workerUIDLeader()
-	leader.Status.Phase = corev1.PodRunning
-	record := parseWorkerUIDRecord(workerUIDRecordValue(workerUIDRevision, workerUIDOld))
-	record.started = true
-	leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = record.String()
-	replacement := workerUIDPod(leader, workerUIDNew)
-	replacement.Status.Phase = corev1.PodPending
-	r := workerUIDReconciler(t, nil, lws, leader, replacement)
+func TestHandleRestartPolicyAfterStartUsesRecordedStartupState(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		started       bool
+		unschedulable bool
+	}{
+		{name: "record does not show startup"},
+		{name: "started with Pending replacement", started: true},
+		{name: "started with unschedulable replacement", started: true, unschedulable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).RestartGroupAfterStart().Obj()
+			leader := workerUIDLeader()
+			leader.Status.Phase = corev1.PodRunning
+			record := parseWorkerUIDRecord(workerUIDRecordValue(workerUIDRevision, workerUIDOld))
+			record.started = tc.started
+			leader.Annotations[leaderworkerset.WorkerUIDsAnnotationKey] = record.String()
+			replacement := workerUIDPod(leader, workerUIDNew)
+			replacement.Status.Phase = corev1.PodPending
+			if tc.unschedulable {
+				replacement.Status.Conditions = []corev1.PodCondition{{
+					Type:   corev1.PodScheduled,
+					Status: corev1.ConditionFalse,
+					Reason: corev1.PodReasonUnschedulable,
+				}}
+			}
+			r := workerUIDReconciler(t, nil, lws, leader, replacement)
 
-	deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
-	if err != nil || deleted {
-		t.Fatalf("handleRestartPolicy() = %t, %v, want no recreation while the replacement is pending", deleted, err)
-	}
-
-	replacement.Status.Phase = corev1.PodRunning
-	if err := r.Status().Update(context.Background(), replacement); err != nil {
-		t.Fatal(err)
-	}
-	deleted, _, err = r.handleRestartPolicy(context.Background(), *leader, *lws)
-	if err != nil || !deleted {
-		t.Fatalf("handleRestartPolicy() after start = %t, %v, want recreation", deleted, err)
+			deleted, _, err := r.handleRestartPolicy(context.Background(), *leader, *lws)
+			if err != nil || deleted != tc.started {
+				t.Fatalf("handleRestartPolicy() = %t, %v, want recreation=%t", deleted, err, tc.started)
+			}
+		})
 	}
 }
 
