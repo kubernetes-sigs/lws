@@ -1018,7 +1018,7 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 }
 
 func TestCanarySlicePromotionAndReversal(t *testing.T) {
-	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionSlices, disaggv1.CanaryDimensionAuto} {
+	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionSlices} {
 		for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 			t.Run(fmt.Sprintf("%s/%s", mode, identity), func(t *testing.T) {
 				ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 1}, [2]int{1, 1}, [2]int{})
@@ -1047,7 +1047,7 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 					version           string
 				}{
 					{25, 1, "B"}, {50, 1, "B"}, {25, 1, "B"},
-					{50, 2, "B"}, // Auto remains slices even though groups can now be split.
+					{50, 2, "B"}, // Role resizing does not change which slices are selected.
 					{50, 2, "C"}, {25, 2, "C"}, {0, 2, "C"}, {25, 2, "C"},
 					{25, 0, "C"}, {25, 1, "C"}, {100, 1, "C"},
 					{100, 2, "C"}, {90, 2, "C"}, {100, 1, "C"},
@@ -1105,48 +1105,12 @@ func TestCanarySlicePromotionAndReversal(t *testing.T) {
 					}
 					require.True(t, settled, "phase %+v", phase)
 					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
-					if mode == disaggv1.CanaryDimensionAuto && phase.percent >= 0 {
-						require.Equal(t, "slices", ds.Annotations[canaryDimensionAnnotation])
-					}
 					if phase.percent < 0 {
-						require.Empty(t, ds.Annotations[canaryDimensionAnnotation])
 						baseline = revision
 					}
 				}
 			})
 		}
-	}
-}
-
-func TestCanaryAutoChoicePersists(t *testing.T) {
-	for _, initial := range []int32{1, 4} {
-		ds := newTwoRoleTestDisaggregatedSet([2]int32{initial, initial}, [2]int{1, 1}, [2]int{})
-		ds.Spec.Slices = ptr.To[int32](8)
-		setCanaryPercent(ds, 25)
-		ds.Spec.RolloutStrategy.CanaryDimension = disaggv1.CanaryDimensionAuto
-		c := newTestClient(ds)
-		r := newTestReconciler(c)
-		old := []*leaderv1.LeaderWorkerSet{revisionLWS("A", "prefill", initial, initial, time.Unix(1, 0))}
-		changed, err := r.resolveCanaryDimension(t.Context(), ds, old, "B", map[string]int{"prefill": int(initial), "decode": int(initial)})
-		require.NoError(t, err)
-		require.True(t, changed)
-		want := disaggv1.CanaryDimensionGroups
-		if initial == 1 {
-			want = disaggv1.CanaryDimensionSlices
-		}
-		for _, count := range []int{1, 4, 0} {
-			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(ds), ds))
-			setCanaryPercent(ds, 100)
-			changed, err = newTestReconciler(c).resolveCanaryDimension(t.Context(), ds, old, "C", map[string]int{"prefill": count, "decode": count})
-			require.NoError(t, err)
-			require.False(t, changed)
-			require.Equal(t, want, canaryDimension(ds))
-		}
-		ds.Spec.RolloutStrategy.CanaryPercent = nil
-		changed, err = r.resolveCanaryDimension(t.Context(), ds, old, "C", nil)
-		require.NoError(t, err)
-		require.True(t, changed)
-		require.Empty(t, ds.Annotations[canaryDimensionAnnotation])
 	}
 }
 

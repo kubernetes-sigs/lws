@@ -84,7 +84,7 @@ func TestCanaryDimension(t *testing.T) {
 		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{CanaryPercent: ptr.To[int32](25), CanaryDimension: mode}}}
 		w := &DisaggregatedSetWebhook{}
 		_, err := w.ValidateCreate(t.Context(), ds)
-		if mode == "invalid" {
+		if mode == "invalid" || mode == "auto" {
 			require.ErrorContains(t, err, "canaryDimension")
 			continue
 		}
@@ -92,7 +92,7 @@ func TestCanaryDimension(t *testing.T) {
 		changed := ds.DeepCopy()
 		changed.Spec.Slices = ptr.To[int32](9)
 		_, err = w.ValidateUpdate(t.Context(), ds, changed)
-		if mode == "slices" || mode == "auto" {
+		if mode == "slices" {
 			require.ErrorContains(t, err, "slice-count changes")
 		} else {
 			require.NoError(t, err)

@@ -214,8 +214,8 @@ func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorLis
 		return ds.Spec.RolloutStrategy.CanaryDimension
 	}
 	mode := dimension(obj)
-	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices && mode != disaggv1.CanaryDimensionAuto {
-		return field.ErrorList{field.NotSupported(path, mode, []string{"groups", "slices", "auto"})}
+	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices {
+		return field.ErrorList{field.NotSupported(path, mode, []string{"groups", "slices"})}
 	}
 	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.CanaryPercent == nil || strategy.CanaryPercent == nil {
 		return nil
@@ -224,7 +224,7 @@ func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorLis
 		return field.ErrorList{field.Forbidden(path, "cannot change dimension while canaryPercent is set; remove it to finalize the canary first")}
 	}
 	if mode != disaggv1.CanaryDimensionGroups && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
-		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a slices or auto canary; remove canaryPercent to finalize the canary first")}
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a slices canary; remove canaryPercent to finalize the canary first")}
 	}
 	return nil
 }

@@ -309,11 +309,8 @@ update below 100%; set its starting percentage with the new templates.</p>
 <td>
    <p>CanaryDimension defaults to groups: divide each role/sub-role within each
 slice. Slices instead promotes whole slices in ascending slice-index order.
-Auto chooses groups unless a positive role/sub-role has only one group and
-at least two slices exist; then it chooses slices. This choice is recorded
-when the canary starts and retained across percentage and template changes.
 Dimensions cannot change while CanaryPercent is set, including at 100.
-Slice-count changes are not supported during a slices or auto canary;
+Slice-count changes are not supported during a slices canary;
 remove CanaryPercent to finalize the canary first.
 This field has no effect when CanaryPercent is omitted.</p>
 </td>
