@@ -692,15 +692,17 @@ func TestCombinedRolloutScaleDownPercentageRoundsToZeroAndPrunesCounts(t *testin
 		t.Fatalf("group restart counts after shrink = %q, want %q", got, `{"rev-1/0":1}`)
 	}
 
-	// Pass 2: 25% of 3 rounds down to 0, so floor = 3 - 0 = 3; healthy groups 0..2 stay protected (partition=3)!
+	// Pass 2: 25% of 3 rounds down to 0 with maxSurge=0, so maxUnavailable is raised
+	// to 1 and floor = 3 - 1 = 2; the rollout replaces one healthy group (partition=2)
+	// instead of stalling until the LWS grows back past the rounding threshold.
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("pass 2 Reconcile() error = %v", err)
 	}
 	if err := c.Get(ctx, req.NamespacedName, &updatedSts); err != nil {
 		t.Fatalf("reading sts after pass 2: %v", err)
 	}
-	if got := *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 3 {
-		t.Fatalf("partition when maxUnavailable rounds to 0 = %d, want 3", got)
+	if got := *updatedSts.Spec.UpdateStrategy.RollingUpdate.Partition; got != 2 {
+		t.Fatalf("partition when maxUnavailable rounds to 0 = %d, want 2", got)
 	}
 }
 
@@ -3770,6 +3772,7 @@ func TestPercentageMaxUnavailableResolvesAgainstBaselineForFloor(t *testing.T) {
 		wantFloor      int32
 		wantPartition  int32
 	}{
+		// 25% of the desired 10 is 2, so no fallback: the baseline stays protected.
 		{name: "25% of baseline 2 rounds down to 0", maxUnavailable: intstr.FromString("25%"), wantFloor: 2, wantPartition: 2},
 		{name: "50% of baseline 2 is 1", maxUnavailable: intstr.FromString("50%"), wantFloor: 1, wantPartition: 1},
 		{name: "absolute value is unchanged", maxUnavailable: intstr.FromInt32(1), wantFloor: 1, wantPartition: 1},

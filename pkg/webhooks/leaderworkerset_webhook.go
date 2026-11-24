@@ -407,14 +407,16 @@ func ValidateLeaderWorkerSetTemplate(specPath, metadataPath *field.Path, lws *v1
 	return allErrs
 }
 
-// ValidateRollingUpdateBudget validates rollout budgets for a resolved replica count.
+// ValidateRollingUpdateBudget validates rollout budgets for a replica count. As
+// for Deployments, only budgets that are zero at every size are rejected: the
+// controller raises a percentage that rounds down to 0 to 1, so a scale-down
+// through /scale below the rounding threshold must not block later updates.
+// At 0 replicas only the format is checked.
 func ValidateRollingUpdateBudget(rollout *v1.RollingUpdateConfiguration, replicas int32, path *field.Path) field.ErrorList {
 	if replicas == 0 {
 		return validateRollingUpdateBudget(rollout, path, nil)
 	}
-	return validateRollingUpdateBudget(rollout, path, func(value *intstr.IntOrString, roundUp bool) (int, error) {
-		return intstr.GetScaledValueFromIntOrPercent(value, int(replicas), roundUp)
-	})
+	return ValidateUnknownTargetRollingUpdateBudget(rollout, path)
 }
 
 // ValidateUnknownTargetRollingUpdateBudget validates rollout budgets whose replica

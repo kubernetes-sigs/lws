@@ -305,6 +305,27 @@ func TestValidateUnknownTargetRollingUpdateBudget(t *testing.T) {
 	}
 }
 
+// The autoscaler can scale through /scale below the size where a percentage
+// rounds to a nonzero budget; later spec updates must still be admitted.
+func TestGeneralValidatePercentageRoundsToZero(t *testing.T) {
+	r := &LeaderWorkerSetWebhook{}
+	for _, replicas := range []int{1, 4, 5} {
+		lws := wrappers.BuildLeaderWorkerSet("default").Replica(replicas).Obj()
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("20%")
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
+		if errs := r.generalValidate(lws); len(errs) != 0 {
+			t.Fatalf("replicas=%d: unexpected errors: %v", replicas, errs)
+		}
+	}
+
+	lws := wrappers.BuildLeaderWorkerSet("default").Replica(4).Obj()
+	lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxUnavailable = intstr.FromString("0%")
+	lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge = intstr.FromInt32(0)
+	if errs := r.generalValidate(lws); len(errs) != 1 || !strings.Contains(errs[0].Detail, "must not be 0 when `maxSurge` is 0") {
+		t.Fatalf("want the zero-budget error, got %v", errs)
+	}
+}
+
 func TestGeneralValidateMaxGroupRestarts(t *testing.T) {
 	tests := []struct {
 		name      string
