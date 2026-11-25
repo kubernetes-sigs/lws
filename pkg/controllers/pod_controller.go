@@ -250,8 +250,18 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		if leaderPodName == "" {
 			leaderPodName, _ = statefulsetutils.GetParentNameAndOrdinal(pod.Name)
 		}
+		if leaderPodName == "" {
+			return ctrl.Result{}, nil
+		}
 		var leader corev1.Pod
-		if leaderPodName == "" || r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader) != nil || leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
+		if err := r.Get(ctx, types.NamespacedName{Name: leaderPodName, Namespace: pod.Namespace}, &leader); err != nil {
+			// A missing leader means the group this worker belonged to is gone,
+			// so there is nothing to drive. Any other error is transient and
+			// must be retried rather than reported as a successful reconcile,
+			// matching how handleRestartPolicy reads the leader.
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if leader.Annotations[leaderworkerset.GroupRecreatePendingAnnotationKey] == "" {
 			return ctrl.Result{}, nil
 		}
 	}
