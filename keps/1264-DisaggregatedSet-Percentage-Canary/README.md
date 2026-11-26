@@ -297,4 +297,4 @@ This proposal uses one percentage and lets DisaggregatedSet calculate the counts
 
 ## Implementation history
 
-- 2026-11-26: propose percentage-based canaries for groups or whole slices, with forward-only promotion, completion at 100%, Git rollback, Immediate-only demand changes during partial holds, baseline retention across template updates and scale-to-zero, protection against 2 ↔ 1 autoscaling restarts, and stock Argo CD integration.
+- 2026-10-30: Robert Shaw opened the first partition-based implementation in [#1265](https://github.com/kubernetes-sigs/lws/pull/1265). This KEP evolves that proposal into percentage-based canaries for groups or whole slices.
