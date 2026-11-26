@@ -241,19 +241,35 @@ LWS rolls back using readiness and availability budgets. If A's LWS objects stil
 
 ## Change demand during a canary
 
-Canary mode also preserves the requested proportion when demand changes. At 25%, doubling demand from four Prefill / eight Decode to eight / sixteen gives six old + two new Prefill and twelve old + four new Decode. Reducing demand back to four / eight restores three old + one new Prefill and six old + two new Decode.
+**During a partial canary, only `Immediate` applies demand changes in its direction.** Configure this on the DisaggregatedSet, not in Argo CD:
 
-**During an active canary hold, the `Deferred` / `Immediate` settings in `spec.scalingPolicy.scaleUpDuringRollout` and `spec.scalingPolicy.scaleDownDuringRollout` are ignored.** Both settings produce the same behavior: LWS resizes the old and new revisions to preserve the requested percentage. For example, at 25%, scaling from 8 groups down to 4 changes 6 old + 2 new into 3 old + 1 new, even with `Deferred`.
+```yaml
+spec:
+  scalingPolicy:
+    scaleUpDuringRollout: Immediate
+    scaleDownDuringRollout: Immediate
+```
 
-Readiness, `maxSurge`, `maxUnavailable`, and safe group deletion still govern every change; preserving the percentage does not mean resizing instantly. At `100` or when the percentage is omitted, the configured Deferred/Immediate behavior applies again. Without an active canary, including initial creation without an old revision, the ordinary scaling policies apply.
+| Scale up | Scale down | While the canary is held |
+| --- | --- | --- |
+| Deferred | Deferred | Queue both directions; keep the last accepted counts. |
+| Immediate | Deferred | Apply increases; queue decreases. |
+| Deferred | Immediate | Queue increases; apply decreases. |
+| Immediate | Immediate | Apply both directions. |
+
+With Immediate, at 25%, doubling demand from four Prefill / eight Decode to eight / sixteen gives six old + two new Prefill and twelve old + four new Decode. Reducing demand back to four / eight restores three old + one new Prefill and six old + two new Decode.
+
+Deferred is the default. It keeps the last accepted count, not temporary surge replicas. A request from 4 to 8 therefore stays at 3 A + 1 B. Promoting to 50% still gives 2 A + 2 B, and B → C can still roll within that size. The saved counts survive controller restarts. Switching a direction to Immediate applies only the latest demand, not every queued autoscaler value. A zero request also waits under Deferred scale-down.
+
+Readiness, `maxSurge`, `maxUnavailable`, and safe deletion still apply. At `100` or omission, ordinary rollout policies resume and the latest demand can be applied. Outside a partial canary, Deferred scale-up keeps its normal readiness-paced behavior. Status still shows the requested demand; a step with queued demand is not reported as settled `CanaryHeld`.
 
 {{< canvas-animation data="/animations/canary-scaling.json" title="Autoscale both revisions at 25%" >}}
-Double desired capacity from four Prefill / eight Decode to eight / sixteen, then halve it again. Both revisions resize to preserve the 25% split, including with `Deferred`. A higher availability floor takes time to fill; existing excess after a reduction drains safely. Timing and intermediate changes are illustrative.
+With both scaling directions set to Immediate, double desired capacity from four Prefill / eight Decode to eight / sixteen, then halve it again. Both revisions resize to preserve the 25% split. A higher availability floor takes time to fill; existing excess after a reduction drains safely. Timing and intermediate changes are illustrative.
 {{< /canvas-animation >}}
 
 LWS chooses the **oldest revision with surviving groups** as the baseline and records that choice across template updates and controller restarts. Its role/sub-role templates must match the requested layout, but its replica counts may reach zero. If a required template is missing or the baseline identity is ambiguous, LWS explains the problem through `Progressing` rather than silently treating a younger canary as the baseline. This selection does not determine whether the revision passed your application checks.
 
-An existing role can scale to zero and grow back from its saved templates. During a partial canary, whole-set zero retains both baseline and target LWS objects; resuming restores the split. In slice mode, role resizing keeps the same selected slices. Finalizing at 100% or by omitting the percentage allows the baseline to be retired; lowering the percentage afterward cannot recreate its deleted templates. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
+With Immediate in the corresponding direction, an existing role can scale to zero and grow back from its saved templates. During a partial canary, whole-set zero retains both baseline and target LWS objects; resuming restores the split. In slice mode, role resizing keeps the same selected slices. Finalizing at 100% or by omitting the percentage allows the baseline to be retired; lowering the percentage afterward cannot recreate its deleted templates. See [Rollout Strategy](../rollout-strategy/#one-percentage-for-all-roles) for these limits and small-role rounding.
 
 The [companion harness in #1309](https://github.com/kubernetes-sigs/lws/pull/1309) covers Ordinal and Hash groups, ordinary roles and sub-roles, both scaling policies, and a Static-to-External handoff followed by real scaler updates. Recorded traces require that separate contribution; the animations above illustrate expected behavior and are included with this guide.
 

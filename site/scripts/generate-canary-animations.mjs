@@ -183,7 +183,7 @@ replace([0, 0], [2, 4], 'Hold again: A + C, each at 50%.', [0, 0], 4, 'A kept th
 await replacement.save('canary-replacement');
 
 const scaling = new Scene('Autoscale a canary · keep the 25% split');
-const scale = (desired, a, b, action, seconds, ready = [a, b], cue = 'An active canary resizes both revisions, including with Deferred.') =>
+const scale = (desired, a, b, action, seconds, ready = [a, b], cue = 'Immediate scaling resizes both revisions; Deferred queues demand changes.') =>
   scaling.frame({percent: 25, desired, counts: [a, b], ready, seconds, action, cue});
 scale([4, 8], [3, 6], [1, 2], 'Start from a Ready 25% hold.', 3);
 scale([8, 16], [3, 6], [1, 2], 'Autoscaler doubles desired: 4/8 → 8/16.', 3, undefined, 'More demand raises the floor; keep existing groups while new capacity starts.');
