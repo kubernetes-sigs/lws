@@ -228,6 +228,20 @@ Before downgrading to a version without this support, use the supporting control
 
 The controller reports a successful hold only when **every rolling slice** has reached the requested total and split, every requested group is Ready, intermediate canary revisions have drained, and no further rollout step is needed.
 
+Tools can read `status.canary` without parsing condition messages or inspecting child annotations:
+
+```yaml
+status:
+  canary:
+    percent: 25
+    dimension: Groups
+    baselineRevisions: [revision-a]
+    targetRevision: revision-b
+    settled: true
+```
+
+`percent` is the observed request, not a measured traffic weight. `baselineRevisions` contains the distinct recorded baselines across slices and stays empty until their markers have been observed; status never guesses a baseline. `settled` means the same as `CanaryHeld`, not application approval. Replica counts remain in `status.roleStatuses` and its sub-role entries. This section is absent without an active partial canary, including initial creation without history, a Git revert to the baseline templates, and finalization at `100` or omission. It is informational: planning does not depend on status writes.
+
 | Status | Meaning |
 | --- | --- |
 | `Progressing=True`, reason `CanaryHeld`, **`Available=False`** | The current generation has reached its requested partial hold. All requested groups can be Ready and serving even though the rollout is deliberately incomplete. |
