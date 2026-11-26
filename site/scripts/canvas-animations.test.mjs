@@ -54,7 +54,7 @@ test('documentation animations appear in their pages and the visualizer', async 
     'rollout-strategy': ['fractional'],
     'role-scaler': ['scaling-up', 'scaling-down'],
     'llm-d-integration': ['gating'],
-    'argo-cd': ['canary-promotion', 'canary-replacement', 'canary-reversal', 'canary-scaling'],
+    'argo-cd': ['canary-promotion', 'canary-replacement', 'canary-scaling'],
   };
   const catalog = JSON.parse(await read('../data/trace_player.json')).find(suite => suite.id === 'docs');
   for (const [page, assets] of Object.entries(scenes)) {

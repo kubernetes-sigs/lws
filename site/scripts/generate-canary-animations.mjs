@@ -182,24 +182,6 @@ replace([1, 1], [2, 4], 'C can now serve the entire canary half.', [0, 0], 1);
 replace([0, 0], [2, 4], 'Hold again: A + C, each at 50%.', [0, 0], 4, 'A kept the same groups, LWS objects and Pod UIDs throughout.');
 await replacement.save('canary-replacement');
 
-const reversal = new Scene('Reduce a canary · 50 → 25 → 0%');
-const reverse = (percent, a, b, action, pending = [0, 0], seconds = .8, cue = 'Restore Ready baseline capacity before removing canary groups.') =>
-  reversal.frame({percent, counts: [a, b], ready: [a.map((n, i) => n - pending[i]), b], seconds, action, cue, zero: percent === 0 && b.every(n => n === 0)});
-reverse(50, [2, 4], [2, 4], 'Start from a Ready 50% hold.', [0, 0], 2.5);
-reverse(25, [3, 5], [2, 4], 'Set 25%: grow baseline A.', [1, 1], 2);
-reverse(25, [3, 5], [2, 4], 'Restored A groups become Ready.');
-reverse(25, [3, 5], [1, 3], 'Remove the replaced B groups.');
-reverse(25, [3, 6], [1, 3], 'Restore one more A Decode.', [0, 1]);
-reverse(25, [3, 6], [1, 3], 'The A Decode becomes Ready.');
-reverse(25, [3, 6], [1, 2], 'Hold: B is back to 25%.', [0, 0], 2.5);
-reverse(0, [4, 7], [1, 2], 'Set 0%: restore the remaining baseline groups.', [1, 1], 1.5);
-reverse(0, [4, 7], [1, 2], 'The restored groups become Ready.');
-reverse(0, [4, 7], [1, 1], 'Keep B complete until A can take over.');
-reverse(0, [4, 8], [1, 1], 'Start the final A Decode.', [0, 1]);
-reverse(0, [4, 8], [1, 1], 'A now supplies all desired Ready capacity.');
-reverse(0, [4, 8], [0, 0], 'B’s LWS objects remain, with zero replicas.', [0, 0], 5, '0% still desires B’s templates. Restore A in Git for a durable rollback.');
-await reversal.save('canary-reversal');
-
 const scaling = new Scene('Autoscale a canary · keep the 25% split');
 const scale = (desired, a, b, action, seconds, ready = [a, b], cue = 'An active canary resizes both revisions, including with Deferred.') =>
   scaling.frame({percent: 25, desired, counts: [a, b], ready, seconds, action, cue});

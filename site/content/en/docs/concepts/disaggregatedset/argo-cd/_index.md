@@ -177,7 +177,7 @@ Commit and push the change, then sync the Application. Once Argo CD shows Health
 
 Argo CD does not choose the next percentage or judge the model's answers: you or your release automation make that decision. Healthy means the requested groups are Ready. Readiness and rollout budgets still govern every transition; temporary surge groups are not shown in the table. If autoscaling changes demand, LWS recalculates both shares.
 
-**100% finalizes the canary, like omitting the percentage.** B serves the full desired workload, and A's LWS objects can be cleaned up. Lowering the percentage after completion does not restore retired A templates. Hold below 100% while evaluating B if you need to reduce its share; use a Git revert for rollback after completion.
+**100% finalizes the canary, like omitting the percentage.** B serves the full desired workload, and A's LWS objects can be cleaned up. During a partial canary, percentage decreases are rejected. Keep the percentage unchanged while evaluating B; use a Git template revert for rollback, before or after completion.
 
 After promoting to 100%, wait for `Available=True` with reason `AllRolesReady` for that generation before starting another canary. Both a partial hold and a finalized rollout appear Healthy with the configuration above; their condition reasons distinguish them. No second edit removing the percentage is required to accept B as the next baseline. Set the next starting percentage together with the new templates.
 
@@ -204,7 +204,7 @@ spec:
       dimension: Slices
 ```
 
-For eight slices of 1 Prefill + 1 Decode, two complete slices roll to B and six remain on A. Increasing the percentage to 50 adds two B slices; returning to 25 restores those same two slices to A. B → C updates the selected slices while the others remain on A. Each transition still follows the slice's rollout budgets and readiness checks.
+For eight slices of 1 Prefill + 1 Decode, two complete slices roll to B and six remain on A. Increasing the percentage to 50 adds two B slices; returning to 25 is rejected. B → C updates the selected slices while the others remain on A. Each transition still follows the slice's rollout budgets and readiness checks.
 
 Choose `Groups` (the default) or `Slices` in Git. There is no automatic dimension choice or hidden dimension annotation. Role scaling does not change the configured dimension.
 
@@ -229,19 +229,17 @@ A keeps the same two Prefill and four Decode groups while B rolls to C. The budg
 
 The [companion canary harness in #1309](https://github.com/kubernetes-sigs/lws/pull/1309) checks A's workload and Pod identities while B is replaced by C, for ordinary roles and sub-roles with Ordinal and Hash identities. Its recordings are delivered separately from this guide.
 
-## Reduce a canary or change demand
+## Roll back through Git
 
-During a partial canary, lowering the percentage restores the baseline share and reduces the canary share. For the same four Prefill and eight Decode groups, `50 → 25 → 0` returns through the table above in reverse. LWS waits for restored baseline capacity to become Ready before deleting canary groups when availability requires it. At `0`, the target revision's LWS objects remain with `spec.replicas: 0`, so a later promotion can reuse them. This does not promise reversal after completion at 100%.
+Promotion moves forward: `25 → 50` is allowed, but `50 → 25` and `25 → 0` are rejected. Keep the percentage unchanged to pause promotion. Starting at `0` holds B before its first groups are created; it is not an abort operation after promotion starts.
 
-{{< canvas-animation data="/animations/canary-reversal.json" title="Reduce a canary: 50 → 25 → 0%" >}}
-A regains its share before B shrinks. At zero, B's LWS objects and desired templates remain. A durable rollback restores A's templates in Git. Timing is illustrative.
-{{< /canvas-animation >}}
+{{% alert title="Restore the templates, not just the percentage" color="danger" %}}
+To roll back, **restore A's role templates in Git and remove `canary.percent` in the same commit**, then sync Argo CD. Removing the percentage without restoring A's templates would finish deploying B.
 
-{{% alert title="Zero percent is a hold, not a durable rollback" color="danger" %}}
-Setting `canary.percent: 0` does **not** restore the desired templates. The rejected new templates are still in the DisaggregatedSet. Raising the percentage or removing the field can deploy them again. To make the rollback durable, **restore the stable templates in Git**. If they match the surviving baseline A, LWS converges fully to A even if the percentage remains at `0`.
-
-In that same Git change, remove `canary.percent` to restore its default, `nil` (omitted). This means no canary hold. Explicitly set a starting percentage together with the next canary release's templates. Readiness and rollout budgets still govern convergence.
+LWS rolls back using readiness and availability budgets. If A's LWS objects still exist, they are reused; otherwise LWS recreates A from the restored templates. Wait for completion before starting another canary. For the next release, set its starting percentage together with its new templates.
 {{% /alert %}}
+
+## Change demand during a canary
 
 Canary mode also preserves the requested proportion when demand changes. At 25%, doubling demand from four Prefill / eight Decode to eight / sixteen gives six old + two new Prefill and twelve old + four new Decode. Reducing demand back to four / eight restores three old + one new Prefill and six old + two new Decode.
 
@@ -294,6 +292,10 @@ data:
           end
           obj.spec.rolloutStrategy = obj.spec.rolloutStrategy or {}
           obj.spec.rolloutStrategy.canary = obj.spec.rolloutStrategy.canary or {}
+          local current = obj.spec.rolloutStrategy.canary.percent
+          if current ~= nil and current < 100 and percent < current then
+              error("cannot decrease percent; roll back by restoring templates in Git", 0)
+          end
           obj.spec.rolloutStrategy.canary.percent = percent
           return obj
       - name: promote-full
@@ -309,7 +311,7 @@ kubectl --context YOUR_CONTEXT -n argocd patch configmap argocd-cm \
   --type merge --patch-file argocd-canary-actions.yaml
 ```
 
-The first action asks for `percent`, an integer from 0 to 100; it can increase or reduce a partial canary. The second sets an existing percentage to 100, completing and finalizing the rollout. After completion, lowering the percentage cannot restore retired history; use Git revert for rollback. Neither action bypasses readiness or availability budgets. Users still need Argo CD permission to run the respective resource action. As with the health patch, this replaces the action customization for this kind, not other ConfigMap entries.
+The first action asks for `percent`, an integer from 0 to 100; it may advance a partial canary but cannot decrease its percentage. The second sets an existing percentage to 100, completing and finalizing the rollout. Use a Git template revert for rollback. Neither action bypasses readiness or availability budgets. Users still need Argo CD permission to run the respective resource action. As with the health patch, this replaces the action customization for this kind, not other ConfigMap entries.
 
 Use the Argo CD resource menu for the parameterized action. In the tested releases, the ordinary `argocd app actions run` command has no parameter flag; the API also supports parameters from 3.1 onward.
 
