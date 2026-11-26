@@ -889,7 +889,11 @@ func (r *PodReconciler) markGroupRestartBudgetExhausted(ctx context.Context, lea
 	if exhausted && controllerutil.ContainsFinalizer(leader, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 		return nil
 	}
-	patch := client.MergeFrom(leader.DeepCopy())
+	// The leader comes from the cache, and an ordinal leader can already have
+	// been replaced by a same-name Pod. Lock on the observed resourceVersion so
+	// that a replacement, possibly on a newer revision with its own budget, is
+	// never marked exhausted on behalf of the group it replaced.
+	patch := client.MergeFromWithOptions(leader.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if leader.Annotations == nil {
 		leader.Annotations = map[string]string{}
 	}
@@ -914,8 +918,17 @@ func (r *PodReconciler) terminateExhaustedGroup(ctx context.Context, lws *leader
 		return true, nil
 	}
 	deletionOpt := metav1.DeletePropagationForeground
-	if err := r.Delete(ctx, leader, &client.DeleteOptions{PropagationPolicy: &deletionOpt}); err != nil {
-		return false, client.IgnoreNotFound(err)
+	if err := r.Delete(ctx, leader, &client.DeleteOptions{
+		PropagationPolicy: &deletionOpt,
+		Preconditions:     &metav1.Preconditions{UID: &leader.UID},
+	}); err != nil {
+		// The leader is gone or has been replaced already, which ends this
+		// group either way. Never delete a same-name replacement on behalf of
+		// the previous group.
+		if !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			return false, err
+		}
+		return true, nil
 	}
 	r.Record.Eventf(lws, leader, corev1.EventTypeWarning, "ReplicaRestartBudgetExceeded", Delete,
 		fmt.Sprintf("Restart budget exhausted; terminated group %s and stopped automatic recovery", leader.Labels[leaderworkerset.GroupIndexLabelKey]))
@@ -948,14 +961,18 @@ func (r *PodReconciler) addGroupRestartBudgetFinalizers(ctx context.Context, lea
 		if pod.DeletionTimestamp != nil || controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 			continue
 		}
-		if !podutils.LeaderPod(*pod) {
-			belongs, err := r.workerPodBelongsToLeader(ctx, *pod, *leader)
-			if err != nil {
-				return err
-			}
-			if !belongs {
-				continue
-			}
+		// markGroupRestartBudgetExhausted already finalizes the observed leader.
+		// Any other leader listed here is a same-name, same-revision replacement
+		// without the exhausted annotation, whose finalizer would never be released.
+		if podutils.LeaderPod(*pod) {
+			continue
+		}
+		belongs, err := r.workerPodBelongsToLeader(ctx, *pod, *leader)
+		if err != nil {
+			return err
+		}
+		if !belongs {
+			continue
 		}
 		patch := client.MergeFrom(pod.DeepCopy())
 		controllerutil.AddFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)
