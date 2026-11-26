@@ -187,9 +187,21 @@ Once B finishes, a new C canary uses B as its baseline. Keeping `100` configured
 Four Prefill and eight Decode groups move from A to B. Each role has `maxSurge: 1` and `maxUnavailable: 0`: new groups become Ready before old groups leave. At 100%, the rollout finishes and A's LWS objects can be cleaned up. The marker shows the requested percentage; the bars show Ready groups on B. Timing is illustrative.
 {{< /canvas-animation >}}
 
-Initial creation without an old revision starts the full workload, even with `0`. A positive partial group canary (`1`–`99`) needs at least two groups in each active logical role. If one role has only one group, the whole slice stays on A and continues scaling; its status explains why it cannot yet run a canary. A Ready hold confirms replica readiness, not the quality of the model's answers or its latency: your checks or analysis must decide whether to promote.
+Initial creation without an old revision starts the full workload, even with `0`. Starting a positive partial group canary (`1`–`99`) needs at least two groups in each active logical role. If a role starts with one, the whole slice stays on A and follows its scaling policies; status explains why it cannot yet start the canary. A Ready hold confirms replica readiness, not the quality of the model's answers or its latency: your checks or analysis must decide whether to promote.
 
 A fresh `External` role starts with one group until its autoscaler or operator updates the RoleScaler. This does not freeze peer scaling. For multi-slice Static deployments with small roles, choose whole-slice canaries instead.
+
+### When autoscaling asks for one group
+
+An already-running group canary behaves differently from starting at one. At 50%, suppose A and B each run 1 Prefill + 4 Decode. If Immediate scale-down admits a Prefill request of one, LWS keeps **the existing A and B Prefill groups**. Decode stays unchanged. Repeated Prefill requests of 1 → 2 → 1 do not repeatedly tear down and reload B. Loading groups are retained too; they do not need to become Ready first.
+
+{{% alert title="One extra group can remain during the canary" color="warning" %}}
+Retention keeps one extra group for each affected role or sub-role, in each slice. This can last throughout the partial canary. It uses the first surge slot; with `maxSurge: 0`, retaining the pair is an explicit one-group exception. During B → C, the existing bounded bootstrap recovery can still temporarily borrow a further slot, but only one group is retained across the canary side—not one per old revision.
+{{% /alert %}}
+
+The requested replicas remain one; status reports the observed extra group and explains the deferred final reduction. `status.canary.settled` is false, and `Progressing` explains the retained pair rather than reporting `CanaryHeld`. The configured Argo CD health check therefore stays Progressing. Demand returning to two removes the excess. An admitted zero request, promotion to 100%, or removing the percentage releases retention. Other roles follow their normal scaling policies; Deferred scale-down continues to queue reductions.
+
+Set an autoscaler minimum of two for each required role/sub-role if the canary must both start and reach an exact hold without this boundary. This is optional for avoiding repeated restarts: an already-running pair is protected even when the request drops to one.
 
 ### Canary complete slices
 
