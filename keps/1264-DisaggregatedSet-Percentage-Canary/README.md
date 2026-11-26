@@ -7,7 +7,7 @@
   - [Choose how much to replace](#choose-how-much-to-replace)
   - [Choose groups or whole slices](#choose-groups-or-whole-slices)
   - [Round to whole groups](#round-to-whole-groups)
-  - [Promote or reduce the canary](#promote-or-reduce-the-canary)
+  - [Promote the canary or roll back through Git](#promote-the-canary-or-roll-back-through-git)
   - [Scale while the canary is held](#scale-while-the-canary-is-held)
   - [Replace B with C while keeping A](#replace-b-with-c-while-keeping-a)
 - [Remember which version to keep](#remember-which-version-to-keep)
@@ -106,7 +106,7 @@ new = min(d - 1, max(1, ceil(d * p / 100)))
 old = d - new
 ```
 
-A role with only one desired group cannot be split this way. In `Groups` mode, keep that whole slice on A and continue applying demand changes there. Otherwise B would lack a required role and could not serve. If a held 4P/8D workload changes to 1P/16D, it converges to 1P/16D on A rather than freezing at the previous counts. When all active roles have at least two groups again, the requested split can resume. The ordinary `Progressing` message explains this limitation; it is not reported as a successful canary hold.
+A role with only one admitted group cannot be split this way. In `Groups` mode, keep that whole slice on A; demand changes still follow the selected scaling policies. Otherwise B would lack a required role and could not serve. With Immediate in both directions, a held 4P/8D workload changing to 1P/16D converges to 1P/16D on A. When all active roles have at least two admitted groups again, the requested split can resume. The ordinary `Progressing` message explains this limitation; it is not reported as a successful canary hold.
 
 In `Slices` mode, apply the same rounding rule to the number of slices. One slice cannot be divided; it stays on A while role scaling continues.
 
@@ -122,7 +122,16 @@ If the restored templates match the surviving baseline, A becomes the desired re
 
 ### Scale while the canary is held
 
-The split follows the latest desired replica count, whether it comes from a Static role or an External scaler. For one role held at 25%:
+During a partial canary, **only `Immediate` applies demand changes in its direction**. This applies to both Static replicas and External scaler requests. The two settings are independent:
+
+| Scale up | Scale down | Demand changes during the canary |
+| --- | --- | --- |
+| Deferred | Deferred | Keep the last admitted counts. |
+| Immediate | Deferred | Apply increases; queue decreases. |
+| Deferred | Immediate | Queue increases; apply decreases. |
+| Immediate | Immediate | Apply both directions. |
+
+With Immediate in both directions, one role held at 25% behaves as follows:
 
 | Change | Desired groups | A groups | B groups |
 | --- | --- | --- | --- |
@@ -130,13 +139,15 @@ The split follows the latest desired replica count, whether it comes from a Stat
 | Scale up | 8 | 6 | 2 |
 | Scale down again | 4 | 3 | 1 |
 
-Each role follows its own desired count. If Prefill grows while Decode stays the same size, the controller uses those current counts to coordinate progress. It does not keep judging Prefill against its size before the scale-up.
+Each role/sub-role has its own admitted count. With Deferred scale-up, a request from 4 to 8 stays at 3 A + 1 B. Promoting from 25% to 50% still proceeds, producing 2 A + 2 B. Likewise, changing B's templates to C continues within that admitted size. Deferred does not freeze rollout progress.
 
-**During an active canary, `Deferred` and `Immediate` are ignored for both `scaleUpDuringRollout` and `scaleDownDuringRollout`.** Both revision shares resize to reach the requested split. This includes removing already-started B groups when demand decreases. Otherwise a deliberately held rollout could prevent scale-down indefinitely.
+The controller records admitted counts in the internal `disaggregatedset.x-k8s.io/canary-admitted-replicas` annotation on A's LWS objects. The first record uses A's saved replica targets, not a sum that includes temporary surge. Later Immediate changes update the record before planning; it survives restarts and B → C. Status is not used as planner state.
 
-Readiness and rollout safety checks still apply. The configured scaling policies resume at `100`, when the percentage is omitted, or when there is no active canary, such as initial creation or a rollout whose old history has already gone.
+Changing a Deferred direction to Immediate admits the **latest** request, not every intermediate autoscaler value. A demand of zero follows the same rule: Deferred scale-down queues it; Immediate can drain both sides to zero. Immediate scale-up can resume the same split from their retained templates. Unknown scaler targets pause reconciliation; they are not treated as zero.
 
-An existing role can reach zero and later grow again using its saved templates. At whole-set zero, keep both A and the current target's LWS objects at zero. Resuming restores the same split instead of silently promoting B. In slice mode, role resizing keeps each slice on its selected version; it does not choose a different slice cohort.
+Readiness, availability budgets, and safe deletion still govern admitted changes. At `100` or omission, ordinary rollout policies resume and the latest demand can be applied; finalization removes the saved canary counts. Initial creation without an older revision also uses ordinary policies. **Outside a partial canary, Deferred scale-up retains its existing readiness-paced behavior**, not this demand hold.
+
+In slice mode, the same role-demand rules apply within each slice without changing its selected revision. Slice-count autoscaling remains outside this proposal. Queued demand remains visible in role status as the requested count; a hold with unapplied demand is not reported as a settled `CanaryHeld` step.
 
 ### Replace B with C while keeping A
 
@@ -254,7 +265,7 @@ The [implementation PR](https://github.com/kubernetes-sigs/lws/pull/1307) adds t
 
 Normal forward planning replaces A with the canary while retaining A's required share. When A needs to grow, the same planner is used in the other direction: A provides replacement groups and canary revisions may shrink. The controller checks these plans before applying them, preserves A's historical settings, and waits when another safe step requires readiness.
 
-The controller recalculates the split and checks progress using the latest observations. The annotation records which revision is the baseline; it does not store replica targets or the next rollout step.
+The controller recalculates the split from admitted demand and checks progress using the latest observations. The baseline marker identifies A; a separate per-role count map records admitted demand during the canary. Neither stores the next rollout step.
 
 A settled hold waits for DisaggregatedSet or observed workload events, without a periodic ten-second retry. Work still awaiting scheduling keeps the existing grace-period checks.
 
@@ -264,7 +275,7 @@ A settled hold waits for DisaggregatedSet or observed workload events, without a
 - Exercise forward promotion from zero and Git template rollback with different surge and unavailability budgets. Reject percentage decreases. Verify that both `100` and omission finalize, clean up A, and make B the next canary's baseline.
 - Resize both shares with Ordinal and Hash groups, ordinary roles and sub-roles, and both configured scaling policies. Include asymmetric Prefill/Decode changes and controller restarts.
 - Keep A's workloads, Pod identities, and sub-role assignments while B rolls to C. Check multiple historical revisions and incomplete serving revisions.
-- Check baseline markers, ambiguous history, singleton roles, incompatible layouts, whole-set scale-to-zero, and every-slice hold reporting.
+- Check baseline markers, ambiguous history, singleton roles, incompatible layouts, whole-set scale-to-zero, and every-slice hold reporting. Exercise all four scaling-policy combinations, restarts, coalesced requests, policy switches, and promotion/B → C with queued demand.
 - Validate API persistence and webhook behavior, plus Argo CD health and field ownership.
 - Exercise eight-slice promotion, A → B → C, and zero-demand/resume. Reject unsupported dimensions and dimension/slice-count changes during partial slice canaries; allow changes when finalizing.
 - Use real Pod/native-workload observations for ordinary and virtual-role canaries, with both Ordinal and Hash identity.
@@ -283,4 +294,4 @@ This proposal uses one percentage and lets DisaggregatedSet calculate the counts
 - 2026-11-06: retain A while a held canary changes from B to C.
 - 2026-11-13: add whole-slice canaries and a once-per-canary auto choice; keep scaling at zero or one group and retain the baseline through scale-to-zero.
 - 2026-11-24: finalize at 100%; nest settings under `canary`; retain only explicit `Groups` and `Slices` dimensions.
-- 2026-11-26: reject percentage decreases during partial canaries; use Git template rollback instead.
+- 2026-11-26: reject percentage decreases during partial canaries; use Git template rollback instead. Only Immediate admits demand changes during a partial canary.
