@@ -560,6 +560,108 @@ func TestEnsureCleanupAndReconcilerLifecycle(t *testing.T) {
 	}
 }
 
+// TestCleanupLWSComputeDomainsKeepsDomainClaimedByLeader covers the ComputeDomains that
+// CleanupLWSComputeDomains keeps because a leader claims them. A CPU-only leader of a group with
+// GPU workers carries the compute-domain-name annotation but no ResourceClaims, so until its workers
+// exist no Pod references the ComputeDomain and only the leader's claim keeps it from being deleted.
+func TestCleanupLWSComputeDomainsKeepsDomainClaimedByLeader(t *testing.T) {
+	const cdName = "model-12345-rev1-0-inc01"
+	tests := []struct {
+		name string
+		// leaderClaim is the compute-domain-name annotation of the leader Pod.
+		leaderClaim    string
+		leaderDeleting bool
+		lwsDeleting    bool
+		wantKept       bool
+	}{
+		{name: "an active leader keeps the ComputeDomain it claims", leaderClaim: cdName, wantKept: true},
+		{name: "a terminating leader does not keep its ComputeDomain", leaderClaim: cdName, leaderDeleting: true},
+		{name: "a leader claiming a newer incarnation does not keep the old ComputeDomain", leaderClaim: "model-12345-rev1-0-inc02"},
+		{name: "a deleted LeaderWorkerSet does not keep the ComputeDomain of an active leader", leaderClaim: cdName, lwsDeleting: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lws := &leaderworkersetv1.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "model",
+					Namespace: "default",
+					UID:       types.UID("lws-uid-1"),
+					Annotations: map[string]string{
+						leaderworkersetv1.AutoComputeDomainAnnotationKey: leaderworkersetv1.AutoComputeDomainEnabled,
+					},
+				},
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{
+					LeaderWorkerTemplate: leaderworkersetv1.LeaderWorkerTemplate{
+						LeaderTemplate: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "cpu-coordinator"}},
+							},
+						},
+						WorkerTemplate: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "gpu", Resources: gpuResources("4")}},
+							},
+						},
+					},
+				},
+			}
+			if tc.lwsDeleting {
+				lws.DeletionTimestamp = ptr.To(metav1.Now())
+				lws.Finalizers = []string{"test.lws/hold"}
+			}
+			leader := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "model-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						leaderworkersetv1.SetNameLabelKey:     "model",
+						leaderworkersetv1.WorkerIndexLabelKey: "0",
+						leaderworkersetv1.GroupIndexLabelKey:  "0",
+						leaderworkersetv1.RevisionKey:         "rev1",
+					},
+					Annotations: map[string]string{
+						leaderworkersetv1.ComputeDomainNameAnnotationKey: tc.leaderClaim,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "cpu-coordinator"}},
+				},
+			}
+			if tc.leaderDeleting {
+				leader.DeletionTimestamp = ptr.To(metav1.Now())
+				leader.Finalizers = []string{"test.lws/hold"}
+			}
+			c := newFakeClient(t, lws, leader)
+
+			// Create cdName the way the pod controller does for the leader that claims it.
+			claimant := leader.DeepCopy()
+			claimant.Annotations[leaderworkersetv1.ComputeDomainNameAnnotationKey] = cdName
+			if err := EnsureReplicaComputeDomain(ctx, c, lws, claimant); err != nil {
+				t.Fatalf("EnsureReplicaComputeDomain failed: %v", err)
+			}
+
+			if err := CleanupLWSComputeDomains(ctx, c, lws); err != nil {
+				t.Fatalf("CleanupLWSComputeDomains failed: %v", err)
+			}
+			cd := &ComputeDomain{}
+			err := c.Get(ctx, types.NamespacedName{Namespace: "default", Name: cdName}, cd)
+			if !tc.wantKept {
+				if !apierrors.IsNotFound(err) {
+					t.Fatalf("expected ComputeDomain %s to be deleted, got err=%v", cdName, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected ComputeDomain %s to be kept: %v", cdName, err)
+			}
+			if !cd.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(cd, leaderworkersetv1.ComputeDomainProtectionFinalizer) {
+				t.Fatalf("expected kept ComputeDomain to stay live with its protection finalizer: %+v", cd.ObjectMeta)
+			}
+		})
+	}
+}
+
 type sliceQueue struct {
 	reqs []reconcile.Request
 }
