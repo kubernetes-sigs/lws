@@ -106,7 +106,13 @@ new = min(d - 1, max(1, ceil(d * p / 100)))
 old = d - new
 ```
 
-A role with only one admitted group cannot be split this way. In `Groups` mode, keep that whole slice on A; demand changes still follow the selected scaling policies. Otherwise B would lack a required role and could not serve. With Immediate in both directions, a held 4P/8D workload changing to 1P/16D converges to 1P/16D on A. When all active roles have at least two admitted groups again, the requested split can resume. The ordinary `Progressing` message explains this limitation; it is not reported as a successful canary hold.
+A role starting with only one admitted group cannot be split this way. In `Groups` mode, keep that whole slice on A until every active role can run on both versions. Demand changes still follow the selected scaling policies. Otherwise B would lack a required role and could not serve.
+
+**Do not tear down an already-running canary just because one role scales from two groups to one.** Keep its last A group and its last canary-side group. For example, at 50%, A and B each have 1 Prefill + 4 Decode. An Immediate Prefill request of one keeps those same groups; Decode does not restart. Returning to two requires no new groups. Other roles continue following their own scaling policies, and loading groups are protected too: retention is based on issued groups, not readiness.
+
+This keeps **one extra group per affected role or sub-role in each slice**, potentially for the whole partial canary. It consumes the first configured surge slot. With `maxSurge: 0`, keeping the pair is an explicit one-group exception to the new desired-plus-surge ceiling. The existing bounded bootstrap recovery may still temporarily borrow a further slot during B → C replacement; retention does not grant a separate protected copy of every old canary revision.
+
+The requested count remains one in the spec and status; observed counts show the extra group. `Progressing` explains the delayed final reduction, and `status.canary.settled` stays false rather than claiming an exact hold. Demand returning to two removes the excess. An admitted zero request, promotion to `100`, or omitting the percentage releases retention. Deferred scale-down still queues reductions as usual. Starting a new canary at one does not create a second copy automatically; use an autoscaler minimum of two if the canary must start and settle without this limitation.
 
 In `Slices` mode, apply the same rounding rule to the number of slices. One slice cannot be divided; it stays on A while role scaling continues.
 
@@ -195,7 +201,7 @@ A marker cannot resolve an ambiguous first choice that has never been recorded. 
 
 ## Safety and limitations
 
-The controller keeps the existing planner and group-assignment safeguards. `maxSurge` normally limits extra groups, and `maxUnavailable` normally limits the temporary loss of serving capacity. The [existing recovery rules](../1022-DisaggregatedSet-Scaling-During-Rollout/README.md#keep-bounded-recovery) can still make limited exceptions to get a stuck rollout moving; this feature does not add new emergency overrides.
+The controller keeps the existing planner and group-assignment safeguards. `maxSurge` normally limits extra groups, and `maxUnavailable` normally limits the temporary loss of serving capacity. Retaining the last pair at demand one is the explicit capacity exception described above. The [existing recovery rules](../1022-DisaggregatedSet-Scaling-During-Rollout/README.md#keep-bounded-recovery) can still make limited exceptions to get a stuck rollout moving; there is no new scheduler-failure-triggered override.
 
 Availability is calculated for complete revisions. A Ready Prefill group in A and a Ready Decode group in B do not form a working A or B deployment. Groups still starting, or already committed to deletion, cannot provide replacement readiness.
 
@@ -203,7 +209,8 @@ Ordinary replica-count changes do not stop reconciliation. Some template changes
 
 | Situation | Behavior and next step |
 | --- | --- |
-| An active role has only one desired group at 1–99%. | In groups mode, keep the slice on A and continue scaling. Slice mode can canary complete copies instead. |
+| An active role starts with one desired group at 1–99%. | In groups mode, keep the slice on A and continue scaling. Slice mode can canary complete copies instead. |
+| A running groups canary scales an active role down to one. | Keep its final A and canary-side groups, with one extra group and an explanatory status. Do not restart unrelated roles. |
 | A new External role has not received its first scaling request. | Its initial count of one may prevent splitting the slice; scaling still continues when its request arrives. |
 | Roles are renamed, or ordinary roles are changed into sub-roles. | The controller cannot map the old baseline onto the new layout. Remove `canary.percent` and finish the layout change before starting another canary. |
 | An existing role or sub-role reaches zero, including after a partially completed write. | Restore it from its retained LWS when demand returns. Zero replicas do not mean the template is missing. |
@@ -279,6 +286,7 @@ A settled hold waits for DisaggregatedSet or observed workload events, without a
 - Validate API persistence and webhook behavior, plus Argo CD health and field ownership.
 - Exercise eight-slice promotion, A → B → C, and zero-demand/resume. Reject unsupported dimensions and dimension/slice-count changes during partial slice canaries; allow changes when finalizing.
 - Use real Pod/native-workload observations for ordinary and virtual-role canaries, with both Ordinal and Hash identity.
+- Repeat 2 ↔ 1 scaling without replacing retained Pods. Check loading groups, growing peers, restart recovery, zero demand, finalization, and B → C with zero surge or zero unavailability; protect only the last canary-side group, not every intermediate revision.
 - Use the [harness and recorded traces](https://github.com/kubernetes-sigs/lws/pull/1309) to check real groups, readiness gates, autoscaler handoff, and successive rollout steps.
 
 ## Alternatives
@@ -295,3 +303,4 @@ This proposal uses one percentage and lets DisaggregatedSet calculate the counts
 - 2026-11-13: add whole-slice canaries and a once-per-canary auto choice; keep scaling at zero or one group and retain the baseline through scale-to-zero.
 - 2026-11-24: finalize at 100%; nest settings under `canary`; retain only explicit `Groups` and `Slices` dimensions.
 - 2026-11-26: reject percentage decreases during partial canaries; use Git template rollback instead. Only Immediate admits demand changes during a partial canary.
+- 2026-11-26: retain the last baseline/canary pair when an already-running groups canary scales to one; make the extra capacity and status explicit.
