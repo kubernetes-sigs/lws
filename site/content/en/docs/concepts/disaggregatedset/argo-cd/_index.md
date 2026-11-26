@@ -77,6 +77,20 @@ During a successful partial hold, `Progressing=True` with reason `CanaryHeld` an
 
 The patch preserves unrelated ConfigMap entries but replaces this kind's existing health customization. If Git or Helm manages `argocd-cm`, put the same entry in that source of truth so the change is not reverted. Review any existing customization before replacing it.
 
+For dashboards or promotion automation, `status.canary` also exposes the observed request and rollout identity directly:
+
+```yaml
+status:
+  canary:
+    percent: 25
+    dimension: Groups
+    baselineRevisions: [revision-a]
+    targetRevision: revision-b
+    settled: true
+```
+
+`settled` confirms the requested hold is Ready, not that the application passed your checks. The baseline list contains the recorded revisions across slices; it can be empty while the controller is still identifying the baseline. Replica counts stay in `status.roleStatuses`, including sub-role counts. This section is absent when no partial canary is active, including finalization at `100` or omission. Check `status.observedGeneration` against `metadata.generation`. With External scaling, also compare each reported `desiredReplicas` with its RoleScaler's `spec.replicas`: autoscaling does not change the parent generation.
+
 ### Connect your deployment repository
 
 The Application tells Argo CD where your deployment YAML lives and which cluster receives it. Keep your existing Application if you already have one. Otherwise, save an Application such as this as `inference-application.yaml`:
