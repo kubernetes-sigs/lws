@@ -127,6 +127,13 @@ const (
 	// recreation has been triggered but deferred by restartBackoff.
 	GroupRecreatePendingAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-recreate-pending"
 
+	// WorkerUIDsAnnotationKey records the leader's revision and a digest and
+	// count of its worker Pod UIDs. Recreation policies use it to detect
+	// missing or replaced workers across controller restarts.
+	// RecreateGroupAfterStart records the group once all members have left
+	// Pending. A replacement leader establishes its own record.
+	WorkerUIDsAnnotationKey string = "leaderworkerset.sigs.k8s.io/worker-uids"
+
 	// GroupRestartBudgetExhaustedAnnotationKey is set on a leader Pod after its
 	// group exhausts maxGroupRestarts.
 	GroupRestartBudgetExhaustedAnnotationKey string = "leaderworkerset.sigs.k8s.io/group-restart-budget-exhausted"

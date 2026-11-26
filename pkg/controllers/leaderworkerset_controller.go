@@ -688,6 +688,9 @@ func ConfigureCacheOptions(opts *ctrlcache.Options) error {
 }
 
 func SetupIndexes(indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(context.Background(), &corev1.Pod{}, workerPodGroupIndex, indexWorkerPodGroup); err != nil {
+		return err
+	}
 	return indexer.IndexField(context.Background(), &appsv1.StatefulSet{}, lwsOwnerKey, func(rawObj client.Object) []string {
 		// grab the statefulSet object, extract the owner...
 		statefulSet := rawObj.(*appsv1.StatefulSet)
