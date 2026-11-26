@@ -230,10 +230,12 @@ The controller reports a successful hold only when **every rolling slice** has r
 
 | Status | Meaning |
 | --- | --- |
-| `Progressing=True`, reason `CanaryHeld` | The current generation has reached its requested partial hold. The message includes the percentage and each role's new/desired counts. |
+| `Progressing=True`, reason `CanaryHeld`, **`Available=False`** | The current generation has reached its requested partial hold. All requested groups can be Ready and serving even though the rollout is deliberately incomplete. |
 | `Available=True`, reason `AllRolesReady` | The rollout has completed to the current templates, without an active canary session. |
 | `Progressing=True`, reason `RolloutInProgress` | Work is still in progress, or the message explains why the requested canary cannot currently run. There is no separate `CanaryBlocked` state. |
 | `MinimumReplicasAvailable` | The separate signal for whether minimum serving capacity is available. |
+
+**A healthy partial canary has `Available=False`.** Today `Available` and `Progressing` are mutually exclusive: `Available` means that every desired group is Ready on the current templates, not simply that the application is serving. Do not page on `Available=False` alone during an intentional hold. Monitor `MinimumReplicasAvailable` for each role's configured serving-capacity floor, together with application health, error rate, and latency. A satisfied floor does not prove application health, and reaching the hold is not automatic approval to promote.
 
 Stock Argo CD can sync the percentage field and use a configured health check to recognize these conditions. An operator or Kargo can promote through Git by changing the percentage in successive commits. If another controller writes the percentage directly, Argo CD must be configured not to overwrite it during sync.
 
