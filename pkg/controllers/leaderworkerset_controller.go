@@ -2359,21 +2359,27 @@ func (r *LeaderWorkerSetReconciler) getLeaderStatefulSet(ctx context.Context, lw
 }
 
 // getOrCreateRevision returns the revision with the given key, creating it when
-// none exists. revisionKey is empty when the leader workload does not exist yet.
+// none exists. revisionKey is empty when the leader workload does not exist yet;
+// in that case, an existing revision with equal data that records placement
+// under the computed key is reused so retries before leader workload creation
+// do not accumulate duplicate revisions.
 func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, revisionKey string, lws *leaderworkerset.LeaderWorkerSet) (*appsv1.ControllerRevision, error) {
-	if existingRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); existingRevision != nil || err != nil {
-		return existingRevision, err
+	if revisionKey != "" {
+		if existingRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey); existingRevision != nil || err != nil {
+			return existingRevision, err
+		}
 	}
 	revision, err := revisionutils.NewRevision(ctx, r.Client, lws, revisionKey)
 	if err != nil {
 		return nil, err
 	}
+	if revisionKey == "" {
+		message := fmt.Sprintf("Creating revision with key %s for a newly created LeaderWorkerSet", revisionutils.GetRevisionKey(revision))
+		return r.reuseOrCreateRevision(ctx, lws, revision, message)
+	}
 	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision)
 	if err == nil {
-		message := fmt.Sprintf("Creating revision with key %s for a newly created LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
-		if revisionKey != "" {
-			message = fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revision.Labels[leaderworkerset.RevisionKey])
-		}
+		message := fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revisionutils.GetRevisionKey(revision))
 		r.Record.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, message)
 	}
 	return newRevision, err
@@ -2386,28 +2392,33 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, rev
 // A revision with the same data that does not record placement is replaced by a new one, as recordPlacementInRevision does.
 // Any other revision under the key keeps the previous behavior, a new revision.
 func (r *LeaderWorkerSetReconciler) createUpdatedRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, updatedRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
-	revisionKey := revisionutils.GetRevisionKey(updatedRevision)
+	message := fmt.Sprintf("Creating revision with key %s for updated LWS", revisionutils.GetRevisionKey(updatedRevision))
+	return r.reuseOrCreateRevision(ctx, lws, updatedRevision, message)
+}
+
+func (r *LeaderWorkerSetReconciler) reuseOrCreateRevision(ctx context.Context, lws *leaderworkerset.LeaderWorkerSet, candidate *appsv1.ControllerRevision, eventMessage string) (*appsv1.ControllerRevision, error) {
+	revisionKey := revisionutils.GetRevisionKey(candidate)
 	existingRevision, err := revisionutils.GetRevision(ctx, r.Client, lws, revisionKey)
 	if err != nil {
 		return nil, err
 	}
 	var unmarkedRevision *appsv1.ControllerRevision
-	if existingRevision != nil && revisionutils.EqualRevision(existingRevision, updatedRevision) {
+	if existingRevision != nil && revisionutils.EqualRevision(existingRevision, candidate) {
 		recorded, err := revisionutils.RecordsPlacement(existingRevision)
 		if err != nil {
 			return nil, err
 		}
 		if recorded {
-			ctrl.LoggerFrom(ctx).V(2).Info("Reusing the existing revision for the updated LWS", "revisionKey", revisionKey, "revision", klog.KObj(existingRevision))
+			ctrl.LoggerFrom(ctx).V(2).Info("Reusing the existing revision for the LWS", "revisionKey", revisionKey, "revision", klog.KObj(existingRevision))
 			return existingRevision, nil
 		}
 		unmarkedRevision = existingRevision
 	}
-	revision, err := revisionutils.CreateRevision(ctx, r.Client, updatedRevision)
+	revision, err := revisionutils.CreateRevision(ctx, r.Client, candidate)
 	if err != nil {
 		return nil, err
 	}
-	r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, fmt.Sprintf("Creating revision with key %s for updated LWS", revisionKey))
+	r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, eventMessage)
 	if unmarkedRevision != nil {
 		// GetRevision returns the highest revision for a key, which is the new one.
 		// Removing the old one only avoids keeping two revisions for one key.
