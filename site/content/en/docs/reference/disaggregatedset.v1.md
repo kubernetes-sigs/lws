@@ -158,13 +158,15 @@ the surviving baseline, the rollout converges fully to it without a hold.
 Remove Percent in the same Git change to leave no canary hold.
 It does not limit initial creation when there is no old revision.
 For 1..99, the canary count rounds up and keeps at least one unit on each
-side. If an active role has only one group, the whole slice stays on the
-baseline in groups mode so it remains a complete serving revision; scaling
-still applies. In slices mode the units are whole slices instead of groups.
+side. If an active role has only one admitted group, the whole slice stays
+on the baseline in groups mode so it remains a complete serving revision.
+In slices mode the units are whole slices instead of groups.
 This is not a traffic percentage.
-While held, scaling changes baseline and canary shares under either
-scaling policy, including Deferred. Readiness and availability budgets may
-delay convergence. Percentage changes alone never recreate retired history.
+While held, Immediate admits demand changes in its configured direction;
+Deferred keeps the last admitted count for that direction. Accepted demand
+resizes both shares within readiness and availability budgets. Promotion
+and replacement of the canary templates continue even with Deferred.
+Percentage changes alone never recreate retired history.
 The active role/sub-role layout must match the recorded baseline; an
 incompatible baseline blocks even if a younger revision is compatible.
 An ambiguous initial choice or conflicting recorded baselines also blocks.
@@ -434,7 +436,9 @@ rollout to finish. Immediate also tops up target replicas to desired minus
 replicas requested from all old revisions of the same role. Loading groups
 count, so readiness loss alone does not trigger extra growth.
 Old-revision retirement checks are unchanged.
-Renamed-role replacement limits still apply.</p>
+Renamed-role replacement limits still apply.
+During a partial canary, Deferred instead queues demand increases until
+finalization or a switch to Immediate. Percentage promotion still proceeds.</p>
 </td>
 </tr>
 <tr><td><code>scaleDownDuringRollout</code><br/>
@@ -454,7 +458,9 @@ reductions of roles still present preserve max(0, effective desired -
 maxUnavailable) Ready replicas, or avoid worsening an existing shortfall.
 Renamed-role surplus recovery uses the same availability and scheduled-startup
 protection as other target reductions. These safeguards may delay
-reductions: Immediate does not mean instant deletion.</p>
+reductions: Immediate does not mean instant deletion.
+During a partial canary, Deferred queues demand decreases (including zero)
+until finalization or a switch to Immediate. The latest request wins.</p>
 </td>
 </tr>
 <tr><td><code>subRoleScaleDelaySeconds</code><br/>

@@ -54,6 +54,12 @@ func setCanaryPercent(ds *disaggv1.DisaggregatedSet, percent int32) {
 	}
 }
 
+func allowCanaryScaling(ds *disaggv1.DisaggregatedSet) {
+	ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{
+		ScaleUpDuringRollout: disaggv1.RolloutScalingImmediate, ScaleDownDuringRollout: disaggv1.RolloutScalingImmediate,
+	}
+}
+
 func canaryConfigs(surge, unavailable int, old RoleReplicaState) []RollingUpdateConfig {
 	config := make([]RollingUpdateConfig, len(old))
 	for i, replicas := range old {
@@ -129,123 +135,255 @@ func TestCanaryPlannerPromotesThroughHolds(t *testing.T) {
 
 func TestCanaryResizesBothRevisions(t *testing.T) {
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
-		for _, policy := range []disaggv1.RolloutScalingPolicy{disaggv1.RolloutScalingDeferred, disaggv1.RolloutScalingImmediate} {
-			t.Run(fmt.Sprintf("%s/%s", identity, policy), func(t *testing.T) {
-				ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
-				ds.UID = "uid"
-				setCanaryPercent(ds, 25)
-				ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: policy, ScaleDownDuringRollout: policy}
-				objects := []client.Object{ds}
-				for i, name := range testRoleNames() {
-					ds.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}
-					for _, revision := range []string{"old", "new"} {
-						n := int32(0)
-						if revision == "old" {
-							n = int32(4 * (i + 1))
-						}
-						lws := revisionLWS(revision, name, n, n, time.Now(), int32(4*(i+1)))
-						lws.Spec.GroupIdentity = identity
-						lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(2)}
-						objects = append(objects, lws)
+		t.Run(string(identity), func(t *testing.T) {
+			ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
+			ds.UID = "uid"
+			setCanaryPercent(ds, 25)
+			allowCanaryScaling(ds)
+			objects := []client.Object{ds}
+			for i, name := range testRoleNames() {
+				ds.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}
+				for _, revision := range []string{"old", "new"} {
+					n := int32(0)
+					if revision == "old" {
+						n = int32(4 * (i + 1))
 					}
+					lws := revisionLWS(revision, name, n, n, time.Now(), int32(4*(i+1)))
+					lws.Spec.GroupIdentity = identity
+					lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(2)}
+					objects = append(objects, lws)
+				}
+			}
+			c := newTestClient(objects...)
+			executor := newTestExecutor(c)
+			recorder := events.NewFakeRecorder(100)
+			executor.Record = recorder
+			settledCounts := func(desired map[string]int) (oldCounts, newCounts []int) {
+				t.Helper()
+				for range 100 {
+					old, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "new")
+					require.NoError(t, err)
+					previous := make([]int, 2)
+					for i, name := range testRoleNames() {
+						previous[i] = old.GetTotalReplicasPerRole(name) + int(getLWSReplicas(target.Roles[name]))
+					}
+					if len(old) == 0 {
+						_, err = newTestReconciler(c).reconcileCurrentRevision(t.Context(), ds, 0, "new", target, desired)
+						require.NoError(t, err)
+					} else {
+						_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
+						require.NoError(t, err)
+						require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "new", complete))
+					}
+					require.Empty(t, executor.canaryMessage)
+					emitted := ""
+					for len(recorder.Events) > 0 {
+						emitted += <-recorder.Events
+					}
+					list := &leaderv1.LeaderWorkerSetList{}
+					require.NoError(t, c.List(t.Context(), list))
+					changed := false
+					oldCounts, newCounts = make([]int, 2), make([]int, 2)
+					readyBefore, readyAfter := make([]int, 2), make([]int, 2)
+					for i := range list.Items {
+						lws := &list.Items[i]
+						n := *lws.Spec.Replicas
+						role := 0
+						if lws.Labels[disaggv1.RoleLabelKey] == "decode" {
+							role = 1
+						}
+						if lws.Labels[disaggv1.RevisionLabelKey] == "old" {
+							oldCounts[role] = int(n)
+							require.Equal(t, intstr.FromInt(2), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, "old growth retains old budgets")
+							require.Equal(t, fmt.Sprint(4*(role+1)), lws.Annotations[disaggv1.InitialReplicasAnnotationKey])
+						} else {
+							newCounts[role] = int(n)
+						}
+						changed = changed || n != lws.Status.ReadyReplicas
+						readyBefore[role] += int(lws.Status.ReadyReplicas)
+						readyAfter[role] += int(min(n, lws.Status.ReadyReplicas))
+						lws.Status.Replicas, lws.Status.ReadyReplicas = n, n
+						require.NoError(t, c.Status().Update(t.Context(), lws))
+					}
+					for i, name := range testRoleNames() {
+						require.GreaterOrEqual(t, readyAfter[i], min(readyBefore[i], desired[name]), "scale requests preserve the availability floor before new groups are Ready")
+						if oldCounts[i]+newCounts[i] > max(previous[i], desired[name]+1) {
+							require.Contains(t, emitted, EventReasonBootstrapSurge, "exceeding ordinary surge must use the existing explicit recovery")
+							require.Contains(t, emitted, name)
+							require.LessOrEqual(t, oldCounts[i]+newCounts[i], desired[name]+2, "at most one extra bootstrap group")
+						}
+					}
+					if !changed {
+						return
+					}
+				}
+				t.Fatal("canary did not settle")
+				return
+			}
+			for _, phase := range []struct {
+				percent           int32
+				desired, old, new [2]int
+				checkRetained     bool
+			}{
+				{0, [2]int{4, 8}, [2]int{4, 8}, [2]int{0, 0}, true},
+				{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
+				{25, [2]int{8, 16}, [2]int{6, 12}, [2]int{2, 4}, false},
+				{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
+				{25, [2]int{20, 8}, [2]int{15, 6}, [2]int{5, 2}, false},
+				{50, [2]int{20, 8}, [2]int{10, 4}, [2]int{10, 4}, false},
+				{50, [2]int{16, 8}, [2]int{8, 4}, [2]int{8, 4}, false},
+				{100, [2]int{16, 8}, [2]int{0, 0}, [2]int{16, 8}, false},
+				{100, [2]int{32, 16}, [2]int{0, 0}, [2]int{32, 16}, false},
+				{100, [2]int{1, 1}, [2]int{0, 0}, [2]int{1, 1}, false},
+				{100, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
+				{90, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
+				{90, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
+				{-1, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
+				// Only finalization permits cleanup; percentages cannot revive deleted history.
+				{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
+			} {
+				setCanaryPercent(ds, phase.percent)
+				a, b := settledCounts(map[string]int{"prefill": phase.desired[0], "decode": phase.desired[1]})
+				require.Equal(t, phase.old[:], a, "old groups: percent=%d desired=%v", phase.percent, phase.desired)
+				require.Equal(t, phase.new[:], b, "new groups: percent=%d desired=%v", phase.percent, phase.desired)
+				if phase.checkRetained {
+					list := &leaderv1.LeaderWorkerSetList{}
+					require.NoError(t, c.List(t.Context(), list))
+					require.Len(t, list.Items, 4, "zero holds retain both target LWS objects")
+				}
+			}
+		})
+	}
+}
+
+func TestCanaryDemandPolicies(t *testing.T) {
+	for _, subRoles := range []bool{false, true} {
+		for _, up := range []disaggv1.RolloutScalingPolicy{disaggv1.RolloutScalingDeferred, disaggv1.RolloutScalingImmediate} {
+			for _, down := range []disaggv1.RolloutScalingPolicy{disaggv1.RolloutScalingDeferred, disaggv1.RolloutScalingImmediate} {
+				t.Run(fmt.Sprintf("subRoles=%t/%s/%s", subRoles, up, down), func(t *testing.T) {
+					ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{1, 1}, [2]int{})
+					ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: up, ScaleDownDuringRollout: down}
+					objects := revisionLWSObjects("A", [2]int32{9, 9}, [2]int32{8, 8}, [2]int32{8, 8}, time.Unix(0, 0))
+					keys := testRoleNames()
+					if subRoles {
+						ds.Spec.Roles = []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "p"}, {Name: "d"}}}}
+						lws := revisionLWS("A", "model", 18, 16, time.Unix(0, 0), 16)
+						lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey] = `{"p":8,"d":8}`
+						objects, keys = []client.Object{lws}, []string{"model/p", "model/d"}
+					}
+					c := newTestClient(objects...)
+					stable := disaggutils.RevisionRoles{Revision: "A", Roles: map[string]*leaderv1.LeaderWorkerSet{}}
+					for _, obj := range objects {
+						lws := obj.(*leaderv1.LeaderWorkerSet)
+						stable.Roles[lws.Labels[disaggv1.RoleLabelKey]] = lws
+					}
+					admit := func(p, d int) map[string]int {
+						t.Helper()
+						for _, lws := range stable.Roles {
+							require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(lws), lws))
+						}
+						// A new executor has no in-memory demand history.
+						actual, err := newTestExecutor(c).admitCanaryDemand(t.Context(), ds, stable, map[string]int{keys[0]: p, keys[1]: d})
+						require.NoError(t, err)
+						return actual
+					}
+					want := []int{8, 8}
+					if up == disaggv1.RolloutScalingImmediate {
+						want[0] = 20
+					}
+					if down == disaggv1.RolloutScalingImmediate {
+						want[1] = 4
+					}
+					actual := admit(20, 4)
+					require.Equal(t, want, []int{actual[keys[0]], actual[keys[1]]}, "temporary surge must not become admitted demand")
+					ds.Spec.ScalingPolicy = nil // Both directions now wait, including zero.
+					for _, request := range [][2]int{{0, 0}, {12, 3}, {16, 4}} {
+						actual = admit(request[0], request[1])
+						require.Equal(t, want, []int{actual[keys[0]], actual[keys[1]]})
+					}
+					allowCanaryScaling(ds)
+					actual = admit(16, 4)
+					require.Equal(t, []int{16, 4}, []int{actual[keys[0]], actual[keys[1]]}, "apply only the latest request")
+					actual = admit(0, 0)
+					require.Zero(t, actual[keys[0]])
+					require.Zero(t, actual[keys[1]])
+					_, err := newTestExecutor(c).admitCanaryDemand(t.Context(), ds, stable, map[string]int{})
+					require.ErrorContains(t, err, "cannot determine admitted canary demand", "unknown targets are not zero")
+					require.NoError(t, newTestExecutor(c).recordCanaryStable(t.Context(), ds, stable, false, nil))
+					for _, lws := range stable.Roles {
+						require.Empty(t, lws.Annotations[canaryDemandAnnotation], "finalization removes session state")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCanaryDeferredDemandStillPromotes(t *testing.T) {
+	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
+		for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
+			t.Run(fmt.Sprintf("%s/%s", identity, mode), func(t *testing.T) {
+				ds := newTwoRoleTestDisaggregatedSet([2]int32{20, 4}, [2]int{1, 1}, [2]int{})
+				ds.Spec.Slices = ptr.To[int32](2)
+				objects := revisionLWSObjects("A", [2]int32{6, 6}, [2]int32{6, 6}, [2]int32{8, 8}, time.Unix(0, 0))
+				objects = append(objects, revisionLWSObjects("B", [2]int32{2, 2}, [2]int32{2, 2}, [2]int32{8, 8}, time.Unix(1, 0))...)
+				for _, obj := range objects {
+					obj.(*leaderv1.LeaderWorkerSet).Spec.GroupIdentity = identity
 				}
 				c := newTestClient(objects...)
-				executor := newTestExecutor(c)
-				recorder := events.NewFakeRecorder(100)
-				executor.Record = recorder
-				settledCounts := func(desired map[string]int) (oldCounts, newCounts []int) {
-					t.Helper()
-					for range 100 {
-						old, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "new")
-						require.NoError(t, err)
-						previous := make([]int, 2)
-						for i, name := range testRoleNames() {
-							previous[i] = old.GetTotalReplicasPerRole(name) + int(getLWSReplicas(target.Roles[name]))
+				for _, phase := range []struct {
+					percent int32
+					target  string
+				}{{25, "B"}, {50, "B"}, {50, "C"}, {100, "C"}} {
+					setCanaryPercent(ds, phase.percent)
+					ds.Spec.RolloutStrategy.Canary.Dimension = mode
+					percent := int(phase.percent)
+					if mode == disaggv1.CanaryDimensionSlices {
+						percent = 100 // Selected slice 0; the other slice remains on A.
+					}
+					if phase.target == "C" && phase.percent == 50 {
+						for _, obj := range revisionLWSObjects("C", [2]int32{}, [2]int32{}, [2]int32{20, 4}, time.Unix(2, 0)) {
+							obj.(*leaderv1.LeaderWorkerSet).Spec.GroupIdentity = identity
+							require.NoError(t, c.Create(t.Context(), obj))
 						}
+					}
+					settled := false
+					for range 80 {
+						executor := newTestExecutor(c)
+						old, target, err := executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, phase.target)
+						require.NoError(t, err)
+						r := newTestReconciler(c)
 						if len(old) == 0 {
-							_, err = newTestReconciler(c).reconcileCurrentRevision(t.Context(), ds, 0, "new", target, desired)
+							_, err = r.reconcileCurrentRevision(t.Context(), ds, 0, phase.target, target, resolveDesiredReplicasByRole(ds, nil))
 							require.NoError(t, err)
 						} else {
-							_, complete, err := executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
-							require.NoError(t, err)
-							require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "new", complete))
-						}
-						require.Empty(t, executor.canaryMessage)
-						emitted := ""
-						for len(recorder.Events) > 0 {
-							emitted += <-recorder.Events
+							_, complete := reconcileExistingForTest(t, executor, ds, phase.target)
+							require.NoError(t, r.cleanupDrainedLWS(t.Context(), ds, 0, phase.target, complete))
 						}
 						list := &leaderv1.LeaderWorkerSetList{}
 						require.NoError(t, c.List(t.Context(), list))
-						changed := false
-						oldCounts, newCounts = make([]int, 2), make([]int, 2)
-						readyBefore, readyAfter := make([]int, 2), make([]int, 2)
+						settled = true
 						for i := range list.Items {
 							lws := &list.Items[i]
-							n := *lws.Spec.Replicas
-							role := 0
-							if lws.Labels[disaggv1.RoleLabelKey] == "decode" {
-								role = 1
+							want := 0
+							switch lws.Labels[disaggv1.RevisionLabelKey] {
+							case "A":
+								want = canaryOldReplicas(8, percent)
+							case phase.target:
+								want = 8 - canaryOldReplicas(8, percent)
+								if phase.percent == 100 {
+									want = resolveDesiredReplicasByRole(ds, nil)[lws.Labels[disaggv1.RoleLabelKey]]
+								}
 							}
-							if lws.Labels[disaggv1.RevisionLabelKey] == "old" {
-								oldCounts[role] = int(n)
-								require.Equal(t, intstr.FromInt(2), lws.Spec.RolloutStrategy.RollingUpdateConfiguration.MaxSurge, "old growth retains old budgets")
-								require.Equal(t, fmt.Sprint(4*(role+1)), lws.Annotations[disaggv1.InitialReplicasAnnotationKey])
-							} else {
-								newCounts[role] = int(n)
-							}
-							changed = changed || n != lws.Status.ReadyReplicas
-							readyBefore[role] += int(lws.Status.ReadyReplicas)
-							readyAfter[role] += int(min(n, lws.Status.ReadyReplicas))
-							lws.Status.Replicas, lws.Status.ReadyReplicas = n, n
+							settled = settled && int(*lws.Spec.Replicas) == want && lws.Status.ReadyReplicas == int32(want)
+							lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
 							require.NoError(t, c.Status().Update(t.Context(), lws))
 						}
-						for i, name := range testRoleNames() {
-							require.GreaterOrEqual(t, readyAfter[i], min(readyBefore[i], desired[name]), "scale requests preserve the availability floor before new groups are Ready")
-							if oldCounts[i]+newCounts[i] > max(previous[i], desired[name]+1) {
-								require.Contains(t, emitted, EventReasonBootstrapSurge, "exceeding ordinary surge must use the existing explicit recovery")
-								require.Contains(t, emitted, name)
-								require.LessOrEqual(t, oldCounts[i]+newCounts[i], desired[name]+2, "at most one extra bootstrap group")
-							}
-						}
-						if !changed {
-							return
+						if settled {
+							break
 						}
 					}
-					t.Fatal("canary did not settle")
-					return
-				}
-				for _, phase := range []struct {
-					percent           int32
-					desired, old, new [2]int
-					checkRetained     bool
-				}{
-					{0, [2]int{4, 8}, [2]int{4, 8}, [2]int{0, 0}, true},
-					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
-					{25, [2]int{8, 16}, [2]int{6, 12}, [2]int{2, 4}, false},
-					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
-					{25, [2]int{20, 8}, [2]int{15, 6}, [2]int{5, 2}, false},
-					{50, [2]int{20, 8}, [2]int{10, 4}, [2]int{10, 4}, false},
-					{50, [2]int{16, 8}, [2]int{8, 4}, [2]int{8, 4}, false},
-					{100, [2]int{16, 8}, [2]int{0, 0}, [2]int{16, 8}, false},
-					{100, [2]int{32, 16}, [2]int{0, 0}, [2]int{32, 16}, false},
-					{100, [2]int{1, 1}, [2]int{0, 0}, [2]int{1, 1}, false},
-					{100, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
-					{90, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
-					{90, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
-					{-1, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
-					// Only finalization permits cleanup; percentages cannot revive deleted history.
-					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
-				} {
-					setCanaryPercent(ds, phase.percent)
-					a, b := settledCounts(map[string]int{"prefill": phase.desired[0], "decode": phase.desired[1]})
-					require.Equal(t, phase.old[:], a, "old groups: percent=%d desired=%v", phase.percent, phase.desired)
-					require.Equal(t, phase.new[:], b, "new groups: percent=%d desired=%v", phase.percent, phase.desired)
-					if phase.checkRetained {
-						list := &leaderv1.LeaderWorkerSetList{}
-						require.NoError(t, c.List(t.Context(), list))
-						require.Len(t, list.Items, 4, "zero holds retain both target LWS objects")
-					}
+					require.True(t, settled, "percent=%d target=%s", phase.percent, phase.target)
 				}
 			})
 		}
@@ -310,6 +448,7 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newTwoRoleTestDisaggregatedSet(tc.desired, [2]int{1, 1}, [2]int{1, 1})
+			allowCanaryScaling(ds)
 			setCanaryPercent(ds, 25)
 			objects := revisionLWSObjects("old", tc.old, tc.old, tc.initial, time.Unix(1, 0))
 			for _, object := range objects {
@@ -379,6 +518,7 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						}
 					}
 					setCanaryPercent(f.ds, 25)
+					allowCanaryScaling(f.ds)
 					f.ds.Spec.RolloutStrategy.Canary.Dimension = dimension
 					f.ds.Spec.Slices = ptr.To[int32](2)
 					require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
@@ -478,6 +618,7 @@ func TestCanaryInitialCreationIgnoresHold(t *testing.T) {
 
 func TestCanaryStableGrowthCountsEveryOldRevision(t *testing.T) {
 	ds := newDSWithRoles("test", staticRole("prefill"))
+	allowCanaryScaling(ds)
 	ds.UID = "uid"
 	setCanaryPercent(ds, 25)
 	desired := map[string]int{"prefill": 8}
@@ -740,17 +881,17 @@ func TestCanaryReverseDoesNotInventStableReadiness(t *testing.T) {
 
 func TestCanaryMixedScalingAndRestart(t *testing.T) {
 	ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
+	allowCanaryScaling(ds)
 	ds.UID = "uid"
 	objects := []client.Object{ds}
 	for i, name := range testRoleNames() {
 		ds.Spec.Roles[i].Spec.RolloutStrategy.RollingUpdateConfiguration = &leaderv1.RollingUpdateConfiguration{MaxSurge: intstr.FromInt(1)}
-		objects = append(objects, revisionLWS("old", name, 6, 6, time.Unix(0, 0), 8), revisionLWS("new", name, 2, 2, time.Unix(1, 0), 8))
+		objects = append(objects, revisionLWS("old", name, 8, 8, time.Unix(0, 0), 8), revisionLWS("new", name, 0, 0, time.Unix(1, 0), 8))
 	}
 	c := newTestClient(objects...)
 	for _, percent := range []int32{0, 25, 50} {
 		setCanaryPercent(ds, percent)
-		// Default Deferred is overridden only for this explicit canary. One role
-		// must grow from 8 to20 while the other shrinks from 8 to4.
+		// Immediate admits opposite demand changes: Prefill grows, Decode shrinks.
 		desired := map[string]int{"prefill": 20, "decode": 4}
 		executor := newTestExecutor(c) // Recreate between phases: no stored direction.
 		settled := false
@@ -962,6 +1103,7 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 	for _, percent := range []int32{25, 50, 100} {
 		t.Run(fmt.Sprint(percent), func(t *testing.T) {
 			ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
+			allowCanaryScaling(ds)
 			ds.UID = "uid"
 			ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 			setCanaryPercent(ds, percent)
@@ -1033,6 +1175,7 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 					unit = 4
 				}
 				ds := newTwoRoleTestDisaggregatedSet([2]int32{unit, unit}, [2]int{1, 1}, [2]int{})
+				allowCanaryScaling(ds)
 				ds.Spec.Slices = ptr.To[int32](8)
 				ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 				setCanaryPercent(ds, 25)
@@ -1208,6 +1351,7 @@ func TestCanaryMixedResizeCanDrainWhileBaselineLoads(t *testing.T) {
 			// Demand changed in opposite directions. Stable Prefill is still
 			// loading and short of its 15-group share; Decode can safely shrink.
 			ds := newTwoRoleTestDisaggregatedSet([2]int32{20, 4}, [2]int{1, 1}, [2]int{})
+			allowCanaryScaling(ds)
 			setCanaryPercent(ds, 25)
 			objects := revisionLWSObjects("stable", [2]int32{14, 6}, [2]int32{6, 6}, [2]int32{8, 8}, time.Unix(0, 0))
 			objects = append(objects, revisionLWSObjects("current", [2]int32{6, 1}, [2]int32{6, 1}, [2]int32{20, 4}, time.Unix(1, 0))...)

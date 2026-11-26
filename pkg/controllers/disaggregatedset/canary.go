@@ -18,7 +18,9 @@ package disaggregatedset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -63,7 +65,54 @@ func canarySingletonRole(names []string, desired map[string]int) string {
 	return ""
 }
 
-const canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
+const (
+	canaryStableAnnotation = "disaggregatedset.x-k8s.io/canary-stable"
+	canaryDemandAnnotation = "disaggregatedset.x-k8s.io/canary-admitted-replicas"
+)
+
+// Gate demand, not rollout progress. A Deferred direction keeps its last
+// admitted count while promotion and B -> C can still replace groups. Save the
+// counts on A before planning so restarts and new targets cannot admit a queued
+// request. Historical initial counts seed the record; surge is not demand.
+func (executor *RollingUpdateExecutor) admitCanaryDemand(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, desired map[string]int) (map[string]int, error) {
+	admitted := maps.Clone(desired)
+	byRole := make(map[string]map[string]int, len(ds.Spec.Roles))
+	for _, role := range ds.Spec.Roles {
+		lws := stable.Roles[role.Name]
+		counts, err := subRoleCounts(lws, canaryDemandAnnotation)
+		if err != nil {
+			return nil, err
+		}
+		if counts == nil {
+			if len(role.SubRoles) == 0 {
+				counts = map[string]int{"": stable.GetInitialReplicasPerRole(role.Name)}
+			} else if counts, err = subRoleCounts(lws, disaggv1.InitialSubRoleReplicasAnnotationKey); err != nil {
+				return nil, err
+			}
+		}
+		for _, leaf := range roleLeaves(&role) {
+			name := childRoleKey(role.Name, leaf.Name)
+			previous, known := counts[leaf.Name]
+			requested, resolved := desired[name]
+			if !known || !resolved {
+				return nil, fmt.Errorf("cannot determine admitted canary demand for role %s", name)
+			}
+			if requested > previous && !scaleUpDuringRolloutEnabled(ds) || requested < previous && !scaleDownDuringRolloutEnabled(ds) {
+				admitted[name] = previous
+			}
+			counts[leaf.Name] = admitted[name]
+		}
+		if err := validateSubRoleCounts(counts); err != nil {
+			return nil, err
+		}
+		admitted[role.Name] = countSubRoles(counts)
+		byRole[role.Name] = counts
+	}
+	if err := executor.recordCanaryStable(ctx, ds, stable, true, byRole); err != nil {
+		return nil, err
+	}
+	return admitted, nil
+}
 
 func canaryDimension(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
 	if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.Canary == nil || ds.Spec.RolloutStrategy.Canary.Dimension == "" {
@@ -140,12 +189,9 @@ func canaryStableRevision(revisions disaggutils.RevisionRolesList, names []strin
 
 // Persist the identity before any scaling. Mark A itself: B -> C needs no
 // annotation transfer, and completing the rollout removes A and its marker.
-func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, retain bool) error {
+func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, retain bool, demand map[string]map[string]int) error {
 	manager := executor.LWSManager
-	for _, lws := range stable.Roles {
-		if (lws.Annotations[canaryStableAnnotation] == "true") == retain {
-			continue
-		}
+	for name, lws := range stable.Roles {
 		if !metav1.IsControlledBy(lws, ds) {
 			return fmt.Errorf("stable LWS %s is not controlled by DisaggregatedSet %s", lws.Name, ds.Name)
 		}
@@ -156,8 +202,19 @@ func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, d
 		}
 		if retain {
 			updated.Annotations[canaryStableAnnotation] = "true"
+			if demand != nil {
+				encoded, err := json.Marshal(demand[name])
+				if err != nil {
+					return err
+				}
+				updated.Annotations[canaryDemandAnnotation] = string(encoded)
+			}
 		} else {
 			delete(updated.Annotations, canaryStableAnnotation)
+			delete(updated.Annotations, canaryDemandAnnotation)
+		}
+		if maps.Equal(lws.Annotations, updated.Annotations) {
+			continue
 		}
 		if err := manager.mutate(ctx, updated, false, func(ctx context.Context) error { return manager.client.Patch(ctx, updated, patch) }); err != nil {
 			return err
@@ -212,6 +269,9 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	if !inputs.proportionalCanary {
 		return ctrl.Result{}, false, nil
 	}
+	if inputs.canaryDemand != nil {
+		desired = inputs.canaryDemand
+	}
 	percent, _ := canaryPercent(ds)
 	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && percent < 100 && canaryDimension(ds) != disaggv1.CanaryDimensionSlices && name != "" {
 		executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
@@ -228,7 +288,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; remove canary.percent to finish the layout change before starting a canary"
 		return ctrl.Result{}, true, nil
 	}
-	if err := executor.recordCanaryStable(ctx, ds, stable, true); err != nil {
+	if err := executor.recordCanaryStable(ctx, ds, stable, true, nil); err != nil {
 		return ctrl.Result{}, true, err
 	}
 	needed := false

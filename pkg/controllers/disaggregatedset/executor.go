@@ -84,6 +84,7 @@ type rolloutInputs struct {
 	scaleDownDuringRollout bool
 	proportionalCanary     bool
 	stableRevision         string
+	canaryDemand           map[string]int
 }
 
 type scaleDirection string
@@ -222,7 +223,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			return ctrl.Result{}, false, nil
 		}
 		for _, revision := range append(slices.Clone(oldRevisions), targetRevision) {
-			if err := executor.recordCanaryStable(ctx, disaggregatedSet, revision, false); err != nil {
+			if err := executor.recordCanaryStable(ctx, disaggregatedSet, revision, false, nil); err != nil {
 				return ctrl.Result{}, false, err
 			}
 		}
@@ -295,6 +296,20 @@ func (e *RollingUpdateExecutor) prepareRolloutInputs(ctx context.Context, ds *di
 		return rolloutInputs{}, err
 	}
 	inputs := buildRolloutInputs(ds, old, target, desired, observed)
+	if inputs.proportionalCanary {
+		stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, observed)
+		if compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
+			admitted, err := e.admitCanaryDemand(ctx, ds, stable, desired)
+			if err != nil {
+				return rolloutInputs{}, err
+			}
+			if !maps.Equal(desired, admitted) {
+				e.canaryMessage = "Demand changes are deferred during this partial canary; promotion continues at the admitted replica counts. Use Immediate for the required scaling direction or finish the canary"
+			}
+			inputs = buildRolloutInputs(ds, old, target, admitted, observed)
+			inputs.canaryDemand = admitted
+		}
+	}
 	return inputs, e.syncTargetInitialReplicas(ctx, ds, inputs.allRoleNames, target, inputs.targetReplicas)
 }
 
@@ -336,6 +351,9 @@ func buildRolloutInputs(
 			config[i].CanaryOldReplicas = desiredReplicasByRole[name]
 		}
 	}
+	// Partial canary demand was admitted separately. Both planner directions
+	// must remain available to reach that split and replace B with C, even when
+	// Deferred keeps the admitted workload size unchanged.
 	scaleDownEnabled := canary || scaleDownDuringRolloutEnabled(disaggregatedSet)
 	return rolloutInputs{
 		allRoleNames:           allRoleNames,
