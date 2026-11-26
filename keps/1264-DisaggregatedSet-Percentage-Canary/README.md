@@ -297,10 +297,4 @@ This proposal uses one percentage and lets DisaggregatedSet calculate the counts
 
 ## Implementation history
 
-- 2026-11-02: propose a percentage shared by all roles, as an alternative to per-role integer partitions.
-- 2026-11-06: add canary reversal, proportional resizing, Git rollback guidance, and stock Argo CD configuration.
-- 2026-11-06: retain A while a held canary changes from B to C.
-- 2026-11-13: add whole-slice canaries and a once-per-canary auto choice; keep scaling at zero or one group and retain the baseline through scale-to-zero.
-- 2026-11-24: finalize at 100%; nest settings under `canary`; retain only explicit `Groups` and `Slices` dimensions.
-- 2026-11-26: reject percentage decreases during partial canaries; use Git template rollback instead. Only Immediate admits demand changes during a partial canary.
-- 2026-11-26: retain the last baseline/canary pair when an already-running groups canary scales to one; make the extra capacity and status explicit.
+- 2026-11-26: propose percentage-based canaries for groups or whole slices, with forward-only promotion, completion at 100%, Git rollback, Immediate-only demand changes during partial holds, baseline retention across template updates and scale-to-zero, protection against 2 ↔ 1 autoscaling restarts, and stock Argo CD integration.
