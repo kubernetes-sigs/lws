@@ -1395,6 +1395,18 @@ func (r *LeaderWorkerSetReconciler) updateConditions(ctx context.Context, lws *l
 					log.Error(err, "Fetching worker statefulSet")
 					return false, false, err
 				}
+				// The worker StatefulSet is created from the leader's revision,
+				// so until it exists the leader alone decides rollout progress.
+				// Skipping the group outright would drop an old-revision group
+				// from the rollout, e.g. a LeaderReady leader that never became
+				// Ready, and end UpdateInProgress while it still runs the old
+				// revision.
+				if index < int(*lws.Spec.Replicas) && index >= int(lwsPartition) {
+					partitionedCurrentNonBurstCount++
+					if podOnTargetRevision {
+						partitionedUpdatedNonBurstCount++
+					}
+				}
 				continue
 			}
 		}
