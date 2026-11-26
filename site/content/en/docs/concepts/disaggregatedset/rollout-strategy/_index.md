@@ -95,6 +95,8 @@ The DisaggregatedSet reports two different signals:
 - `Available` is **completion**: every role has reached its desired count, with all of it Ready and updated. It is False during every rollout and scale-up, even when nothing has stopped serving.
 - `MinimumReplicasAvailable` is **serving capacity**: every role and sub-role has at least its availability floor. It stays True through a rollout or scale-up that remains within each role's `maxUnavailable`. Use it for readiness checks and alerts.
 
+A successful partial canary hold reports `Progressing=True` with reason `CanaryHeld` and **`Available=False`**, even when all requested groups are Ready and serving. Do not use `Available=False` alone as an outage alert during a hold. Monitor `MinimumReplicasAvailable` alongside application health; the replica floor does not check errors, latency, or model output.
+
 Each entry in `status.roleStatuses` (and its `subRoleStatuses`) shows the numbers behind it:
 
 - `minAvailableReplicas` is the floor, `desired - maxUnavailable` per slice, totalled across slices. It is unset while the role's target is unknown, and the condition is then `Unknown`, unless another role is already below its floor, which makes it `False`.

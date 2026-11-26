@@ -71,6 +71,10 @@ Argo CD loads the ConfigMap change automatically. Refresh the Application to re-
 - `Available=True` becomes Healthy on completion.
 - Missing or stale status, an active rollout, or a canary that cannot yet run remains Progressing, with the controller's explanation when available.
 
+{{% alert title="A healthy canary can have Available=False" color="warning" %}}
+During a successful partial hold, `Progressing=True` with reason `CanaryHeld` and **`Available=False`**. These conditions are mutually exclusive: `Available` means the rollout has finished on the desired templates, not just that the application is serving. Do not alert on `Available=False` alone during a planned hold. Check `MinimumReplicasAvailable` for the configured serving-capacity floor, together with application health, error rate, and latency. Replica readiness does not prove that the new version is safe to promote.
+{{% /alert %}}
+
 The patch preserves unrelated ConfigMap entries but replaces this kind's existing health customization. If Git or Helm manages `argocd-cm`, put the same entry in that source of truth so the change is not reverted. Review any existing customization before replacing it.
 
 ### Connect your deployment repository
