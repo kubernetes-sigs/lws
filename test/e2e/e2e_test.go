@@ -16,6 +16,7 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -762,6 +763,17 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		}
 		gomega.Eventually(verifyMetricsServerStarted).Should(gomega.Succeed())
 
+		ginkgo.By("resolving an admissible UID for the curl-metrics pod")
+		// Fail on lookup errors instead of falling back to the image user's
+		// UID, which may be inadmissible on clusters that restrict namespace
+		// UIDs.
+		var curlUID int64
+		gomega.Eventually(func(g gomega.Gomega) {
+			uid, err := curlPodUID(ctx, controllerPodName, namespace)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			curlUID = uid
+		}, timeout, interval).Should(gomega.Succeed())
+
 		ginkgo.By("creating the curl-metrics job to access the metrics endpoint")
 		// The e2e config enforces the restricted Pod Security standard on the
 		// controller namespace, so the curl pod must meet it as well.
@@ -771,11 +783,16 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 				Template: corev1.PodTemplateSpec{
 					Spec: corev1.PodSpec{
 						RestartPolicy: corev1.RestartPolicyNever,
+						// UID admission may be evaluated per service account, so
+						// run under the same identity as the controller pod whose
+						// UID is reused.
+						ServiceAccountName: serviceAccountName,
+						// The curl command supplies its own bearer token, so the
+						// service account token is not needed in the pod.
+						AutomountServiceAccountToken: ptr.To(false),
 						SecurityContext: &corev1.PodSecurityContext{
-							RunAsNonRoot: ptr.To(true),
-							// The image runs as curl_user (UID 100). runAsNonRoot
-							// can only be checked against a numeric UID.
-							RunAsUser:      ptr.To[int64](100),
+							RunAsNonRoot:   ptr.To(true),
+							RunAsUser:      ptr.To(curlUID),
 							SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 						},
 						Containers: []corev1.Container{{
@@ -1010,6 +1027,31 @@ func serviceAccountToken(serviceAccountName, namespace string) (string, error) {
 	gomega.Eventually(verifyTokenCreation).Should(gomega.Succeed())
 
 	return out, err
+}
+
+// curlPodUID returns the UID the curl-metrics pod must run as, and an error
+// if the controller manager pod cannot be read. The curlimages/curl image
+// runs as curl_user, whose non-numeric name cannot be verified against
+// runAsNonRoot, so a numeric runAsUser is required. Clusters may restrict
+// the UIDs usable in a namespace to an allocated range and reject anything
+// outside it, so prefer a UID that already runs in the same namespace: the
+// one the controller manager pod runs as. The image user's UID (100) is
+// reserved for a controller pod that was read successfully but pins no UID.
+func curlPodUID(ctx context.Context, controllerPodName, namespace string) (int64, error) {
+	const imageUserUID = 100
+	var pod corev1.Pod
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: controllerPodName, Namespace: namespace}, &pod); err != nil {
+		return 0, fmt.Errorf("reading controller manager pod %s/%s: %w", namespace, controllerPodName, err)
+	}
+	if pod.Spec.SecurityContext != nil && pod.Spec.SecurityContext.RunAsUser != nil && *pod.Spec.SecurityContext.RunAsUser > 0 {
+		return *pod.Spec.SecurityContext.RunAsUser, nil
+	}
+	for i := range pod.Spec.Containers {
+		if sc := pod.Spec.Containers[i].SecurityContext; sc != nil && sc.RunAsUser != nil && *sc.RunAsUser > 0 {
+			return *sc.RunAsUser, nil
+		}
+	}
+	return imageUserUID, nil
 }
 
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
