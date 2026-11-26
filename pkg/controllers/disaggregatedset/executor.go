@@ -219,7 +219,7 @@ func (executor *RollingUpdateExecutor) reconcileExistingRollout(
 			return ctrl.Result{RequeueAfter: idleRolloutRetry}, false, nil
 		}
 		if inputs.proportionalCanary {
-			executor.heldSlices++ // Keep the baseline at zero demand or 100% until finalized.
+			executor.heldSlices++ // Keep the baseline through zero demand during a partial canary.
 			return ctrl.Result{}, false, nil
 		}
 		for _, revision := range append(slices.Clone(oldRevisions), targetRevision) {
@@ -344,7 +344,17 @@ func buildRolloutInputs(
 				config[i].CanaryOldReplicas = desiredReplicasByRole[name]
 			}
 		}
-	} else if canary && percent < 100 && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
+	} else if canary && percent > 0 {
+		retained := retainedCanaryTargets(allRoleNames, desiredReplicasByRole, append(slices.Clone(oldRevisions), targetRevision), stable, readiness)
+		for i, name := range allRoleNames {
+			if retained[name] != desiredReplicasByRole[name] {
+				config[i].CanaryOldReplicas = 1
+				config[i].CanaryRetainedReplicas = 1
+			}
+		}
+		desiredReplicasByRole = retained
+	}
+	if canary && canaryDimension(disaggregatedSet) != disaggregatedsetv1.CanaryDimensionSlices && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
 		// A slice serves only with every required role on the same revision.
 		// Keep it on A while indivisible, but continue all requested scaling.
 		for i, name := range allRoleNames {

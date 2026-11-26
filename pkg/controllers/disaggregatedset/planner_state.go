@@ -30,8 +30,11 @@ type RollingUpdateConfig struct {
 	// CanaryOldReplicas is derived from the set-wide percentage, never from
 	// an LWS partition. The remainder caps the growing revision.
 	CanaryOldReplicas int
-	// MinOldReplicas protects this candidate's share. Intermediate canary
-	// revisions have no protected share while replacing B with C.
+	// CanaryRetainedReplicas reserves the extra group kept at demand one.
+	// It consumes the first surge slot rather than granting that slot twice.
+	CanaryRetainedReplicas int
+	// MinOldReplicas protects this candidate's share. An intermediate canary
+	// only retains the last group until another canary revision replaces it.
 	MinOldReplicas int
 }
 
@@ -210,7 +213,7 @@ func (snapshot rolloutSnapshot) surgeCeiling(role int) int {
 	if !snapshot.ScaleDownDuringRollout {
 		baseline = max(baseline, snapshot.ActiveOld.InitialReplicas[role])
 	}
-	return baseline + snapshot.Config[role].MaxSurge
+	return baseline + max(0, snapshot.Config[role].MaxSurge-snapshot.Config[role].CanaryRetainedReplicas)
 }
 
 // A canary caps growth at the groups it does not hold. Reverse planning uses

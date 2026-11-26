@@ -158,8 +158,12 @@ the surviving baseline, the rollout converges fully to it without a hold.
 Remove Percent in the same Git change to leave no canary hold.
 It does not limit initial creation when there is no old revision.
 For 1..99, the canary count rounds up and keeps at least one unit on each
-side. If an active role has only one admitted group, the whole slice stays
-on the baseline in groups mode so it remains a complete serving revision.
+side. In groups mode, a role starting with one admitted group keeps the
+whole slice on the baseline. If both sides already have groups, reducing
+demand to one retains one group on each side instead of restarting the
+canary. This one extra group consumes surge allowance; with zero surge,
+retention is a one-group exception. Admitted zero demand or finalization
+ends retention.
 In slices mode the units are whole slices instead of groups.
 This is not a traffic percentage.
 While held, Immediate admits demand changes in its configured direction;

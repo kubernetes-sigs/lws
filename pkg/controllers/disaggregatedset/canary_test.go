@@ -444,7 +444,7 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 		{"initially zero", [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}, [2]int32{4, 2}, [2]int32{3, 1}, [2]int32{1, 1}},
 		{"interrupted drain", [2]int32{4, 8}, [2]int32{0, 6}, [2]int32{1, 2}, [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}},
 		{"scale one role to zero", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{4, 0}, [2]int32{3, 0}, [2]int32{1, 0}},
-		{"singleton keeps serving while peers grow", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{1, 16}, [2]int32{1, 16}, [2]int32{0, 0}},
+		{"singleton retains both sides while peers grow", [2]int32{4, 8}, [2]int32{3, 6}, [2]int32{1, 2}, [2]int32{1, 16}, [2]int32{1, 12}, [2]int32{1, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newTwoRoleTestDisaggregatedSet(tc.desired, [2]int{1, 1}, [2]int{1, 1})
@@ -460,7 +460,7 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 			for range 40 {
 				reconcileExistingForTest(t, executor, ds, "new")
 				if tc.desired[0] == 1 {
-					require.Contains(t, executor.canaryMessage, "scaling continues")
+					require.Contains(t, executor.canaryMessage, "Deferring the final scale-down")
 				} else {
 					require.Empty(t, executor.canaryMessage)
 				}
@@ -477,13 +477,46 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 			statuses, _, _, err := executor.LWSManager.collectRoleStatuses(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil))
 			require.NoError(t, err)
 			for i, status := range statuses {
-				require.Equal(t, tc.desired[i], status.AvailableReplicas)
+				require.Equal(t, tc.wantOld[i]+tc.wantNew[i], status.AvailableReplicas)
 			}
 			if tc.desired[0] == 1 {
 				require.NoError(t, c.Create(t.Context(), ds))
 				r := newTestReconciler(c)
 				require.NoError(t, r.updateStatus(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil), nil, ptr.To(true), executor.canaryMessage))
-				require.Equal(t, "RolloutInProgress", progressingReason(ds), "scaling has settled, but no canary has been tested")
+				require.Equal(t, "RolloutInProgress", progressingReason(ds), "retained excess must not be reported as an exact hold")
+			}
+		})
+	}
+}
+
+func TestCanarySingletonTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name                                      string
+		percent, desired, old, new, target, floor int
+	}{
+		{"start at one", 50, 1, 1, 0, 1, 1},
+		{"loading pair", 50, 1, 1, 1, 2, 1},
+		{"zero demand", 50, 0, 1, 1, 0, 0},
+		{"zero percent", 0, 1, 1, 0, 1, 1},
+		{"finalize at 100", 100, 1, 1, 1, 1, 0},
+		{"finalize by omission", -1, 1, 1, 1, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newDSWithRoles("test", staticRole("prefill"))
+			allowCanaryScaling(ds)
+			setCanaryPercent(ds, int32(tc.percent))
+			a := revisionLWS("old", "prefill", int32(tc.old), 0, time.Unix(1, 0), 2)
+			a.Annotations[canaryStableAnnotation] = "true"
+			b := revisionLWS("new", "prefill", int32(tc.new), 0, time.Unix(2, 0), 2)
+			old := disaggutils.RevisionRolesList{{Revision: "old", Roles: map[string]*leaderv1.LeaderWorkerSet{"prefill": a}}}
+			target := disaggutils.RevisionRoles{Revision: "new", Roles: map[string]*leaderv1.LeaderWorkerSet{"prefill": b}}
+			desired := map[string]int{"prefill": tc.desired}
+			inputs := buildRolloutInputs(ds, old, target, desired, rolloutReadiness{})
+			require.Equal(t, []int{tc.target}, inputs.targetReplicas)
+			require.Equal(t, tc.floor, inputs.config[0].CanaryOldReplicas)
+			require.Equal(t, tc.desired, desired["prefill"], "retention does not rewrite the request")
+			if tc.name == "loading pair" {
+				require.Nil(t, ComputeNextStep(inputs.stateForRevision(old, old[0], target)), "loading groups must not be cancelled")
 			}
 		})
 	}
@@ -524,6 +557,7 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 					require.NoError(t, f.manager.client.Update(t.Context(), f.ds))
 					initial := old.lws.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey]
 					executor := &RollingUpdateExecutor{LWSManager: f.manager, Record: &events.FakeRecorder{}}
+					var retainedPods []corev1.Pod
 					// Keep counts small: every group has a leader and two workers.
 					for _, phase := range []struct {
 						percent           int32
@@ -533,10 +567,25 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
 						{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
 						{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
-						{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
+						{50, [2]int{2, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{50, [2]int{1, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{50, [2]int{2, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{50, [2]int{1, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{50, [2]int{1, 12}, [2]int{1, 6}, [2]int{1, 6}},
+						{50, [2]int{1, 1}, [2]int{1, 1}, [2]int{1, 1}},
+						{50, [2]int{0, 12}, [2]int{0, 6}, [2]int{0, 6}},
+						{50, [2]int{2, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{50, [2]int{1, 8}, [2]int{1, 4}, [2]int{1, 4}},
+						{100, [2]int{1, 8}, [2]int{0, 0}, [2]int{1, 8}},
 						{100, [2]int{12, 8}, [2]int{0, 0}, [2]int{12, 8}},
 					} {
 						setCanaryPercent(f.ds, phase.percent)
+						if phase.desired[1] == 1 { // This phase intentionally reduces the peer role too.
+							retainedPods = nil
+						}
+						if !subRoles {
+							phase.desired[1], phase.old[1], phase.new[1] = 0, 0, 0
+						}
 						if dimension == disaggv1.CanaryDimensionSlices && phase.percent > 0 {
 							// Selected slice 0 runs the entire canary revision.
 							phase.old, phase.new = [2]int{}, phase.desired
@@ -549,10 +598,16 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						settled := false
 						last := [2]string{}
 						for range 80 {
+							// Retention relies on observed groups, not in-memory executor state.
+							executor = &RollingUpdateExecutor{LWSManager: f.manager, Record: &events.FakeRecorder{}}
 							_, _, err := executor.reconcileExistingRollout(t.Context(), f.ds, disaggutils.RevisionRolesList{old.revision("old")}, f.revision("model"), desired)
 							require.NoError(t, err)
-							require.Empty(t, executor.canaryMessage)
 							settled = true
+							if dimension == disaggv1.CanaryDimensionGroups && phase.percent == 50 && phase.desired[0] == 1 {
+								settled = strings.Contains(executor.canaryMessage, "Deferring the final scale-down")
+							} else {
+								require.Empty(t, executor.canaryMessage)
+							}
 							for index, fixture := range []*subRoleFixture{old, f} {
 								fixture.native()
 								if subRoles {
@@ -586,11 +641,25 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 									settled = settled && maps.Equal(counts, map[string]int{"a": want[0], "b": want[1]}) && maps.Equal(counts, actual)
 								}
 							}
+							if phase.percent == 50 && phase.desired[0] > 0 {
+								for _, pod := range retainedPods {
+									current := &corev1.Pod{}
+									require.NoError(t, f.manager.client.Get(t.Context(), client.ObjectKeyFromObject(&pod), current), "2 <-> 1 must preserve every retained Pod")
+									require.Equal(t, pod.UID, current.UID)
+								}
+							}
 							if settled {
 								break
 							}
 						}
 						require.True(t, settled, "both revisions must have coherent assignments and exact counts: percent=%d desired=%v old=%v new=%v; %v", phase.percent, phase.desired, phase.old, phase.new, last)
+						if dimension == disaggv1.CanaryDimensionGroups && phase.percent == 50 && phase.desired[0] == 2 {
+							pods := &corev1.PodList{}
+							require.NoError(t, f.manager.client.List(t.Context(), pods))
+							retainedPods = pods.Items
+						} else if phase.desired[0] == 0 {
+							retainedPods = nil
+						}
 					}
 					require.Equal(t, initial, old.observe().LWS.Annotations[disaggv1.InitialSubRoleReplicasAnnotationKey])
 				})
@@ -845,6 +914,43 @@ func TestCanaryKeepsAnchorDuringNestedRollout(t *testing.T) {
 				require.EqualValues(t, 0, *old[1].Roles[name].Spec.Replicas)
 				require.EqualValues(t, 20, *target.Roles[name].Spec.Replicas)
 			}
+		})
+	}
+}
+
+func TestCanarySingletonReplacement(t *testing.T) {
+	for _, budget := range [][2]int{{0, 1}, {1, 0}, {1, 1}, {0, 2}} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 8}, [2]int{budget[0], budget[0]}, [2]int{budget[1], budget[1]})
+			allowCanaryScaling(ds)
+			setCanaryPercent(ds, 50)
+			objects := revisionLWSObjects("a", [2]int32{1, 4}, [2]int32{1, 4}, [2]int32{2, 8}, time.Unix(1, 0))
+			for _, object := range objects {
+				object.(*leaderv1.LeaderWorkerSet).Annotations[canaryStableAnnotation] = "true"
+			}
+			objects = append(objects, revisionLWSObjects("b", [2]int32{1, 4}, [2]int32{1, 4}, [2]int32{2, 8}, time.Unix(2, 0))...)
+			objects = append(objects, revisionLWSObjects("c", [2]int32{}, [2]int32{}, [2]int32{1, 8}, time.Unix(3, 0))...)
+			c := newTestClient(objects...)
+			for range 50 {
+				// Recreate the executor to check that replacement survives a restart.
+				reconcileExistingForTest(t, newTestExecutor(c), ds, "c")
+				assertRevisionReplicas(t, c, "a", [2]int32{1, 4})
+				list := &leaderv1.LeaderWorkerSetList{}
+				require.NoError(t, c.List(t.Context(), list))
+				prefill := 0
+				for i := range list.Items {
+					lws := &list.Items[i]
+					if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
+						prefill += int(*lws.Spec.Replicas)
+					}
+					lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
+					require.NoError(t, c.Status().Update(t.Context(), lws))
+				}
+				require.GreaterOrEqual(t, prefill, 2, "never lose the last canary-side group")
+				require.LessOrEqual(t, prefill, max(2, 1+budget[0])+1, "retention plus at most one temporary bootstrap group")
+			}
+			assertRevisionReplicas(t, c, "b", [2]int32{})
+			assertRevisionReplicas(t, c, "c", [2]int32{1, 4})
 		})
 	}
 }

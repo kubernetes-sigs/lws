@@ -268,7 +268,9 @@ func snapshotWithBootstrapSurge(snapshot rolloutSnapshot, phase, normalLimits Ro
 		// A role held at its requested canary share is not blocked.
 		if config.MaxSurge+config.MaxUnavailable > 0 && min(phase[i], snapshot.canaryCeiling(i)) > current && normalLimits[i] == current &&
 			(current == 0 || coordinationBlocked) {
-			bootstrap.Config[i].MaxSurge = max(config.MaxSurge+1, config.MaxSurge+old-ceiling+1)
+			// Retention may already consume the first slot. Borrow one above
+			// that reservation, otherwise zero-surge B -> C cannot progress.
+			bootstrap.Config[i].MaxSurge = max(config.MaxSurge, config.CanaryRetainedReplicas) + max(1, old-ceiling+1)
 			needed = true
 		}
 	}

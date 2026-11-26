@@ -44,7 +44,7 @@ func canaryPercent(ds *disaggv1.DisaggregatedSet) (int, bool) {
 }
 
 // Round new groups up, but keep both revisions for a partial canary. One group
-// cannot be split: keep it old and report the limitation before planning.
+// cannot be split. The executor retains an existing pair or holds on the baseline.
 func canaryOldReplicas(desired, percent int) int {
 	if percent == 100 {
 		return 0
@@ -63,6 +63,32 @@ func canarySingletonRole(names []string, desired map[string]int) string {
 		}
 	}
 	return ""
+}
+
+// Defer only the final reduction of a role already running on both sides of a
+// partial canary. This is not permission to start a second copy at initial
+// demand one. Intermediate canaries count toward the one new-side group so
+// A -> B -> C can replace B instead of protecting each revision separately.
+// The request itself is unchanged, including explicit zero demand.
+func retainedCanaryTargets(names []string, desired map[string]int, revisions disaggutils.RevisionRolesList, stable disaggutils.RevisionRoles, readiness rolloutReadiness) map[string]int {
+	var retained map[string]int
+	for _, name := range names {
+		if desired[name] != 1 {
+			continue
+		}
+		old := readiness.role(stable, name).spec
+		if old == 0 || readiness.totalReplicas(revisions, name) <= old {
+			return desired // A canary that has not started still uses the singleton fallback.
+		}
+		if retained == nil {
+			retained = maps.Clone(desired)
+		}
+		retained[name] = 2
+	}
+	if retained == nil {
+		return desired
+	}
+	return retained
 }
 
 const (
@@ -238,6 +264,18 @@ func (inputs rolloutInputs) stateForRevision(old disaggutils.RevisionRolesList, 
 		for i := range state.Config {
 			state.Config[i].MinOldReplicas = state.Config[i].CanaryOldReplicas
 		}
+	} else if inputs.proportionalCanary {
+		for i, name := range inputs.allRoleNames {
+			// B may retire once another canary revision has its replacement.
+			// Protect one group across the whole canary side, not one per revision.
+			other := inputs.readiness.role(target, name).spec
+			for _, revision := range old {
+				if revision.Revision != candidate.Revision && revision.Revision != inputs.stableRevision {
+					other += inputs.readiness.role(revision, name).spec
+				}
+			}
+			state.Config[i].MinOldReplicas = max(0, state.Config[i].CanaryRetainedReplicas-other)
+		}
 	}
 	if inputs.proportionalCanary {
 		canaryRoleLayout(&state)
@@ -274,7 +312,17 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 	}
 	percent, _ := canaryPercent(ds)
 	if name := canarySingletonRole(inputs.allRoleNames, desired); percent > 0 && percent < 100 && canaryDimension(ds) != disaggv1.CanaryDimensionSlices && name != "" {
-		executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
+		retained := []string{}
+		for i, name := range inputs.allRoleNames {
+			if desired[name] == 1 && inputs.targetReplicas[i] == 2 {
+				retained = append(retained, name)
+			}
+		}
+		if len(retained) > 0 {
+			executor.canaryMessage = fmt.Sprintf("Deferring the final scale-down of roles %s: keeping one baseline and one canary group while their admitted count is one. An admitted zero request or finalization releases them. This is a one-group exception when maxSurge is zero; other roles follow their scaling policies", listRoles(retained))
+		} else {
+			executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
+		}
 	}
 	if percent > 0 && percent < 100 && canaryDimension(ds) == disaggv1.CanaryDimensionSlices && disaggutils.GetSlices(ds) == 1 {
 		executor.canaryMessage = "Keeping the only slice on the stable revision; a slice canary needs at least two slices, but role scaling continues"
