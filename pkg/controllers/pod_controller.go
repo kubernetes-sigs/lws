@@ -951,14 +951,18 @@ func (r *PodReconciler) addGroupRestartBudgetFinalizers(ctx context.Context, lea
 		if pod.DeletionTimestamp != nil || controllerutil.ContainsFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer) {
 			continue
 		}
-		if !podutils.LeaderPod(*pod) {
-			belongs, err := r.workerPodBelongsToLeader(ctx, *pod, *leader)
-			if err != nil {
-				return err
-			}
-			if !belongs {
-				continue
-			}
+		// markGroupRestartBudgetExhausted already finalizes the observed leader.
+		// Any other leader listed here is a same-name, same-revision replacement
+		// without the exhausted annotation, whose finalizer would never be released.
+		if podutils.LeaderPod(*pod) {
+			continue
+		}
+		belongs, err := r.workerPodBelongsToLeader(ctx, *pod, *leader)
+		if err != nil {
+			return err
+		}
+		if !belongs {
+			continue
 		}
 		patch := client.MergeFrom(pod.DeepCopy())
 		controllerutil.AddFinalizer(pod, leaderworkerset.GroupRestartBudgetCleanupFinalizer)

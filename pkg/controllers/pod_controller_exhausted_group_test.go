@@ -114,6 +114,15 @@ func TestTerminateExhaustedGroupOnlyActsOnObservedLeader(t *testing.T) {
 			wantDeleted: true,
 		},
 		{
+			// The replacement shares the revision label, so listing the group
+			// by name, index, and revision returns it. It lacks the exhausted
+			// annotation, so a finalizer added here would never be released.
+			name:        "a same-revision replacement is left alone for an already exhausted leader",
+			observed:    newLeader("old-uid", "rev-1", true),
+			replacement: newLeader("new-uid", "rev-1", false),
+			wantDeleted: true,
+		},
+		{
 			name:           "a leader that is already gone ends the group",
 			observed:       newLeader("leader-uid", "rev-1", true),
 			wantDeleted:    true,
