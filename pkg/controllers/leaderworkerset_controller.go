@@ -323,7 +323,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		} else {
 			updateMsg = fmt.Sprintf("Updating replicas %d to %d (inclusive)", partition, oldPartition-1)
 		}
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, updateMsg, updateMsg)
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsUpdating, Update, "%s", updateMsg)
 	} else if !lwsUpdated && plan.baseline != nil {
 		var err error
 		requeueDelete, err = r.deleteStaleOrdinalLeaders(ctx, lws, leaderSts, targetRevisionKey, partition, replicas, plan.floor)
