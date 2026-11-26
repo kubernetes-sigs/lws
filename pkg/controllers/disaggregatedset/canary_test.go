@@ -338,7 +338,7 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 			}
 			assertRevisionReplicas(t, c, "old", tc.wantOld)
 			assertRevisionReplicas(t, c, "new", tc.wantNew)
-			statuses, _, err := executor.LWSManager.collectRoleStatuses(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil))
+			statuses, _, _, err := executor.LWSManager.collectRoleStatuses(t.Context(), ds, testRoleNames(), "new", resolveDesiredReplicasByRole(ds, nil))
 			require.NoError(t, err)
 			for i, status := range statuses {
 				require.Equal(t, tc.desired[i], status.AvailableReplicas)

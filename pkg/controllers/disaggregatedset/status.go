@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -45,7 +46,7 @@ import (
 // settled at the canary percentage in this reconcile. Nil means observation
 // is pending, so only an unchanged, previously verified hold can be retained.
 func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld *bool, canaryMessage string) error {
-	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
+	roleStatuses, assigned, canary, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
 	}
@@ -57,9 +58,13 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 
 	held := ptr.Deref(canaryHeld, false)
 	if canaryHeld == nil {
+		if canary != nil && ds.Status.Canary != nil {
+			canary.Settled = ds.Status.Canary.Settled
+		}
 		previous := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
 		held = previous != nil && previous.Status == metav1.ConditionTrue && previous.Reason == reasonCanaryHeld &&
-			previous.ObservedGeneration == ds.Generation && equality.Semantic.DeepEqual(ds.Status.RoleStatuses, roleStatuses)
+			previous.ObservedGeneration == ds.Generation && equality.Semantic.DeepEqual(ds.Status.RoleStatuses, roleStatuses) &&
+			equality.Semantic.DeepEqual(ds.Status.Canary, canary)
 	}
 	changed := setRoleStatuses(ds, roleStatuses)
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
@@ -68,6 +73,13 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	if canaryMessage != "" && len(unresolvedRoles) == 0 {
 		condition.Type = string(disaggregatedsetv1.DisaggregatedSetProgressing)
 		condition.Reason, condition.Message = "RolloutInProgress", canaryMessage
+	}
+	if canary != nil {
+		canary.Settled = condition.Reason == reasonCanaryHeld
+	}
+	if !equality.Semantic.DeepEqual(ds.Status.Canary, canary) {
+		ds.Status.Canary = canary
+		changed = true
 	}
 	holdStarted := condition.Reason == reasonCanaryHeld && progressingReason(ds) != reasonCanaryHeld
 	changed = setDisaggregatedSetCondition(ds, condition) || changed
@@ -141,10 +153,10 @@ func (r *DisaggregatedSetReconciler) publishStatus(ctx context.Context, ds *disa
 // collectRoleStatuses aggregates all slices and revisions. Only current roles
 // and children are published, in spec order; removed children still count toward
 // their parent's total while their old groups drain.
-func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, error) {
+func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, *disaggregatedsetv1.DisaggregatedSetCanaryStatus, error) {
 	all, err := m.ListAll(ctx, ds, "")
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to list LWS for status: %w", err)
+		return nil, false, nil, fmt.Errorf("failed to list LWS for status: %w", err)
 	}
 	byRole := make(map[string][]*leaderworkersetv1.LeaderWorkerSet)
 	for _, lws := range all {
@@ -163,7 +175,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 			var assigned bool
 			status, assigned, err = m.subRoleStatus(ctx, config, workloads, revision, capacity)
 			if err != nil {
-				return nil, false, err
+				return nil, false, nil, err
 			}
 			allAssigned = allAssigned && assigned
 		} else {
@@ -174,7 +186,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 					status.UpdatedReplicas += lws.Status.UpdatedReplicas
 				}
 				if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
-					return nil, false, err
+					return nil, false, nil, err
 				}
 			}
 		}
@@ -185,13 +197,57 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	for role, workloads := range byRole {
 		for _, lws := range workloads {
 			if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
-				return nil, false, err
+				return nil, false, nil, err
 			}
 		}
 	}
 	capacity.requireTargets(ds, revision, desiredReplicasByRole)
 	capacity.setAvailableReplicas(statuses)
-	return statuses, allAssigned, nil
+	return statuses, allAssigned, observedCanaryStatus(ds, revision, all), nil
+}
+
+// Reuse the owned LWS list already read for role counts. Only published markers
+// identify baselines here: status must not guess or become a second planner.
+func observedCanaryStatus(ds *disaggregatedsetv1.DisaggregatedSet, target string, all []*leaderworkersetv1.LeaderWorkerSet) *disaggregatedsetv1.DisaggregatedSetCanaryStatus {
+	percent, partial := canaryPercent(ds)
+	if !partial {
+		return nil
+	}
+	baselines := sets.New[string]()
+	markedBySlice := map[string]sets.Set[string]{}
+	for _, lws := range all {
+		if lws.Annotations[canaryStableAnnotation] != "true" || lws.DeletionTimestamp != nil {
+			continue
+		}
+		slice := lws.Labels[disaggregatedsetv1.SliceLabelKey]
+		if markedBySlice[slice] == nil {
+			markedBySlice[slice] = sets.New[string]()
+		}
+		markedBySlice[slice].Insert(lws.Labels[disaggregatedsetv1.RevisionLabelKey])
+	}
+	active := false
+	for _, lws := range all {
+		revision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
+		if revision == "" || revision == target || lws.DeletionTimestamp != nil {
+			continue
+		}
+		markedRevisions := markedBySlice[lws.Labels[disaggregatedsetv1.SliceLabelKey]]
+		if markedRevisions.Len() == 1 && markedRevisions.Has(target) {
+			continue // Git restored the baseline; this slice rolls normally to it.
+		}
+		marked := lws.Annotations[canaryStableAnnotation] == "true"
+		active = active || marked || ptr.Deref(lws.Spec.Replicas, 0) > 0
+		if marked {
+			baselines.Insert(markedRevisions.UnsortedList()...)
+		}
+	}
+	if !active {
+		return nil
+	}
+	return &disaggregatedsetv1.DisaggregatedSetCanaryStatus{
+		Percent: int32(percent), Dimension: canaryDimension(ds),
+		TargetRevision: target, BaselineRevisions: sets.List(baselines),
+	}
 }
 
 // observeServingLayout counts a workload that the current spec does not partition.

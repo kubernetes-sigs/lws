@@ -484,6 +484,38 @@ type RoleStatus struct {
 	SubRoleStatuses []SubRoleStatus `json:"subRoleStatuses,omitempty"`
 }
 
+// DisaggregatedSetCanaryStatus describes an observed partial canary. Replica
+// counts remain in RoleStatuses; this section does not drive rollout planning.
+type DisaggregatedSetCanaryStatus struct {
+	// Percent is the requested canary percentage observed by the controller,
+	// not a measured traffic weight or a guarantee of the current replica split.
+	// +required
+	Percent int32 `json:"percent"`
+
+	// Dimension is the unit of the requested percentage: Groups or Slices.
+	// +required
+	Dimension CanaryDimension `json:"dimension"`
+
+	// TargetRevision identifies the revision computed from the desired templates.
+	// +required
+	TargetRevision string `json:"targetRevision"`
+
+	// BaselineRevisions lists the recorded baseline revision identifiers across
+	// slices. It is empty until the baseline markers have been observed. Different
+	// slices can retain different baselines; conflicting markers do not imply a
+	// successful hold. Consult Settled and Conditions before treating it as ready.
+	// +optional
+	// +listType=set
+	BaselineRevisions []string `json:"baselineRevisions,omitempty"`
+
+	// Settled is true only when the controller reports CanaryHeld for the
+	// observed generation and replica demand. It confirms replica readiness,
+	// not application health. External scaler changes do not advance the parent
+	// generation; compare RoleStatuses.DesiredReplicas with the scaler targets.
+	// +required
+	Settled bool `json:"settled"`
+}
+
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.
 type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
@@ -501,12 +533,21 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 
+	// Canary describes a partial canary with surviving history. It is absent
+	// during initial creation without a baseline, when restoring the baseline's
+	// templates, and when the percentage is omitted or 100.
+	// +optional
+	Canary *DisaggregatedSetCanaryStatus `json:"canary,omitempty"`
+
 	// conditions represent the current state of the DisaggregatedSet resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
-	// - "Available": the resource is fully functional
+	// - "Available": the rollout is complete and every desired group is Ready
 	// - "Progressing": the resource is being created or updated
+	// Available is False during a successful partial canary hold. Use
+	// MinimumReplicasAvailable for the serving-capacity floor and application
+	// health checks for service health, not Available alone.
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map

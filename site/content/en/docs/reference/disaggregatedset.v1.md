@@ -58,6 +58,8 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 
 - [DisaggregatedSetCanary](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary)
 
+- [DisaggregatedSetCanaryStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus)
+
 
 <p>CanaryDimension selects the unit used to divide a canary.</p>
 
@@ -183,6 +185,68 @@ Dimensions cannot change while Percent is below 100.
 Slice-count changes are not supported during a partial Slices canary;
 finish at 100 or remove Percent first.
 This field has no effect when Percent is omitted or 100.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSetCanaryStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus}
+
+
+**Appears in:**
+
+- [DisaggregatedSetStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus)
+
+
+<p>DisaggregatedSetCanaryStatus describes an observed partial canary. Replica
+counts remain in RoleStatuses; this section does not drive rollout planning.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+
+
+<tr><td><code>percent</code> <B>[Required]</B><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Percent is the requested canary percentage observed by the controller,
+not a measured traffic weight or a guarantee of the current replica split.</p>
+</td>
+</tr>
+<tr><td><code>dimension</code> <B>[Required]</B><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-CanaryDimension"><code>CanaryDimension</code></a>
+</td>
+<td>
+   <p>Dimension is the unit of the requested percentage: Groups or Slices.</p>
+</td>
+</tr>
+<tr><td><code>targetRevision</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>TargetRevision identifies the revision computed from the desired templates.</p>
+</td>
+</tr>
+<tr><td><code>baselineRevisions</code><br/>
+<code>[]string</code>
+</td>
+<td>
+   <p>BaselineRevisions lists the recorded baseline revision identifiers across
+slices. It is empty until the baseline markers have been observed. Different
+slices can retain different baselines; conflicting markers do not imply a
+successful hold. Consult Settled and Conditions before treating it as ready.</p>
+</td>
+</tr>
+<tr><td><code>settled</code> <B>[Required]</B><br/>
+<code>bool</code>
+</td>
+<td>
+   <p>Settled is true only when the controller reports CanaryHeld for the
+observed generation and replica demand. It confirms replica readiness,
+not application health. External scaler changes do not advance the parent
+generation; compare RoleStatuses.DesiredReplicas with the scaler targets.</p>
 </td>
 </tr>
 </tbody>
@@ -506,6 +570,15 @@ Parent counts include historical layouts and may exceed the visible child sum.
 Removed roles are omitted even while their groups drain.</p>
 </td>
 </tr>
+<tr><td><code>canary</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus"><code>DisaggregatedSetCanaryStatus</code></a>
+</td>
+<td>
+   <p>Canary describes a partial canary with surviving history. It is absent
+during initial creation without a baseline, when restoring the baseline's
+templates, and when the percentage is omitted or 100.</p>
+</td>
+</tr>
 <tr><td><code>conditions</code><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
@@ -514,8 +587,11 @@ Removed roles are omitted even while their groups drain.</p>
 Each condition has a unique type and reflects the status of a specific aspect of the resource.</p>
 <p>Standard condition types include:</p>
 <ul>
-<li>&quot;Available&quot;: the resource is fully functional</li>
-<li>&quot;Progressing&quot;: the resource is being created or updated</li>
+<li>&quot;Available&quot;: the rollout is complete and every desired group is Ready</li>
+<li>&quot;Progressing&quot;: the resource is being created or updated
+Available is False during a successful partial canary hold. Use
+MinimumReplicasAvailable for the serving-capacity floor and application
+health checks for service health, not Available alone.</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
 </td>
