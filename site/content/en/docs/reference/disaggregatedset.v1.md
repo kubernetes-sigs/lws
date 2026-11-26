@@ -151,8 +151,8 @@ use a Git revert for rollback after finalization.
 The oldest revision with surviving groups is recorded as the baseline;
 that choice survives controller restarts. A later template update replaces
 the canary within its share while retaining the recorded baseline's share.
-Lowering the percentage restores baseline capacity within rollout budgets;
-0 drains canary groups but keeps the target LWS objects at zero replicas.
+During a partial canary Percent may increase, but decreases are rejected.
+Start at 0 to hold the baseline before creating any canary groups.
 For a durable rollback, restore the stable templates in Git. If they match
 the surviving baseline, the rollout converges fully to it without a hold.
 Remove Percent in the same Git change to leave no canary hold.

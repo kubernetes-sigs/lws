@@ -115,6 +115,28 @@ func TestCanaryDimension(t *testing.T) {
 	}
 }
 
+func TestCanaryPercentOnlyAdvances(t *testing.T) {
+	for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
+		for _, step := range [][2]int32{{0, 25}, {25, 50}, {50, 50}, {50, 25}, {25, 0}, {50, 100}, {50, -1}, {100, 25}, {-1, 25}} {
+			old := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{Name: "model"}}, RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To(step[0]), Dimension: dimension}}}}
+			if step[0] < 0 {
+				old.Spec.RolloutStrategy.Canary.Percent = nil
+			}
+			next := old.DeepCopy()
+			next.Spec.RolloutStrategy.Canary.Percent = ptr.To(step[1])
+			if step[1] < 0 {
+				next.Spec.RolloutStrategy.Canary.Percent = nil
+			}
+			_, err := (&DisaggregatedSetWebhook{}).ValidateUpdate(t.Context(), old, next)
+			if step[0] < 100 && step[0] > step[1] && step[1] >= 0 {
+				require.ErrorContains(t, err, "cannot decrease percent", "%s %v", dimension, step)
+			} else {
+				require.NoError(t, err, "%s %v", dimension, step)
+			}
+		}
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

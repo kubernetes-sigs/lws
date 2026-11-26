@@ -88,7 +88,7 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
-	allErrs = append(allErrs, validateCanaryDimension(obj, oldObj)...)
+	allErrs = append(allErrs, validateCanaryUpdate(obj, oldObj)...)
 	if strategy := obj.Spec.RolloutStrategy; strategy != nil && strategy.Canary != nil && strategy.Canary.Percent != nil {
 		if percent := *strategy.Canary.Percent; percent < 0 || percent > 100 {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), percent, "must be between 0 and 100"))
@@ -201,7 +201,7 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	return warnings, allErrs
 }
 
-func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
+func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	strategy := obj.Spec.RolloutStrategy
 	if strategy == nil || strategy.Canary == nil {
 		return nil
@@ -220,6 +220,9 @@ func validateCanaryDimension(obj, old *disaggv1.DisaggregatedSet) field.ErrorLis
 	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil ||
 		ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
 		return nil
+	}
+	if *strategy.Canary.Percent < *old.Spec.RolloutStrategy.Canary.Percent {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "cannot decrease percent during a partial canary; to roll back, restore the previous templates and remove canary.percent")}
 	}
 	if dimension(old) != mode {
 		return field.ErrorList{field.Forbidden(path, "cannot change dimension during a partial canary; finish at 100 or remove canary.percent first")}

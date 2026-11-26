@@ -220,11 +220,8 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 					desired, old, new [2]int
 					checkRetained     bool
 				}{
-					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
-					{50, [2]int{4, 8}, [2]int{2, 4}, [2]int{2, 4}, true},
-					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, true},
 					{0, [2]int{4, 8}, [2]int{4, 8}, [2]int{0, 0}, true},
-					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, true},
+					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
 					{25, [2]int{8, 16}, [2]int{6, 12}, [2]int{2, 4}, false},
 					{25, [2]int{4, 8}, [2]int{3, 6}, [2]int{1, 2}, false},
 					{25, [2]int{20, 8}, [2]int{15, 6}, [2]int{5, 2}, false},
@@ -235,7 +232,7 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 					{100, [2]int{1, 1}, [2]int{0, 0}, [2]int{1, 1}, false},
 					{100, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
 					{90, [2]int{10, 10}, [2]int{0, 0}, [2]int{10, 10}, false},
-					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
+					{90, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
 					{-1, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
 					// Only finalization permits cleanup; percentages cannot revive deleted history.
 					{25, [2]int{24, 16}, [2]int{0, 0}, [2]int{24, 16}, false},
@@ -395,16 +392,13 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 						{25, [2]int{8, 8}, [2]int{6, 6}, [2]int{2, 2}},
 						{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
 						{50, [2]int{12, 8}, [2]int{6, 4}, [2]int{6, 4}},
-						{25, [2]int{12, 8}, [2]int{9, 6}, [2]int{3, 2}},
-						{0, [2]int{12, 8}, [2]int{12, 8}, [2]int{0, 0}},
 						{50, [2]int{8, 8}, [2]int{4, 4}, [2]int{4, 4}},
 						{100, [2]int{8, 8}, [2]int{0, 0}, [2]int{8, 8}},
 						{100, [2]int{12, 8}, [2]int{0, 0}, [2]int{12, 8}},
 					} {
 						setCanaryPercent(f.ds, phase.percent)
 						if dimension == disaggv1.CanaryDimensionSlices && phase.percent > 0 {
-							// This is selected slice 0. Reversing to 0 must restore its
-							// baseline from zero through the real native adapters.
+							// Selected slice 0 runs the entire canary revision.
 							phase.old, phase.new = [2]int{}, phase.desired
 						}
 						desired := map[string]int{"model": phase.desired[0] + phase.desired[1], "model/a": phase.desired[0], "model/b": phase.desired[1]}
@@ -661,8 +655,8 @@ func TestCanaryHoldCondition(t *testing.T) {
 }
 
 func TestCanaryForwardPlannerDoesNotSpendTheHeldShare(t *testing.T) {
-	// Lowering the percentage does not authorize the forward planner to drain
-	// stable groups. The reverse pass must handle the surplus current groups.
+	// Demand reduction does not authorize draining the held stable share.
+	// The planner must remove surplus current groups instead.
 	state := rolloutState([]int{4, 4}, []int{3, 3}, []int{3, 3}, nil, nil, []int{2, 2}, []int{2, 2}, []int{4, 4}, canaryConfigs(1, 0, []int{3, 3}))
 	state.ProportionalCanary = true
 	require.Nil(t, ComputeNextStep(state))
@@ -753,7 +747,7 @@ func TestCanaryMixedScalingAndRestart(t *testing.T) {
 		objects = append(objects, revisionLWS("old", name, 6, 6, time.Unix(0, 0), 8), revisionLWS("new", name, 2, 2, time.Unix(1, 0), 8))
 	}
 	c := newTestClient(objects...)
-	for _, percent := range []int32{25, 0, 25} {
+	for _, percent := range []int32{0, 25, 50} {
 		setCanaryPercent(ds, percent)
 		// Default Deferred is overridden only for this explicit canary. One role
 		// must grow from 8 to20 while the other shrinks from 8 to4.
@@ -1030,7 +1024,7 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 	}
 }
 
-func TestCanaryPromotionReversalAndFinalization(t *testing.T) {
+func TestCanaryPromotionAndFinalization(t *testing.T) {
 	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
 		for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 			t.Run(fmt.Sprintf("%s/%s", mode, identity), func(t *testing.T) {
@@ -1063,10 +1057,10 @@ func TestCanaryPromotionReversalAndFinalization(t *testing.T) {
 					percent, replicas int32
 					version           string
 				}{
-					{25, 1, "B"}, {50, 1, "B"}, {25, 1, "B"},
+					{0, 1, "B"}, {25, 1, "B"}, {50, 1, "B"},
 					{50, 2, "B"}, // Role resizing does not change which slices are selected.
-					{50, 2, "C"}, {25, 2, "C"}, {0, 2, "C"}, {25, 2, "C"},
-					{25, 0, "C"}, {25, 1, "C"}, {100, 1, "C"},
+					{50, 2, "C"}, {75, 2, "C"},
+					{75, 0, "C"}, {75, 1, "C"}, {100, 1, "C"},
 					{25, 1, "D"},               // 100 finalized C: A must not return during the next canary.
 					{-1, 1, "D"}, {25, 1, "E"}, // Omitting percent also finalizes.
 				} {

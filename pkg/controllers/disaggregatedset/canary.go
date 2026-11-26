@@ -201,7 +201,7 @@ func canaryRoleLayout(state *RolloutState) {
 	}
 }
 
-// Restore A when demand grows or the percentage falls. Older canaries drain
+// Grow A when accepted demand increases its share. Older canaries drain
 // before the current target. The ordinary forward planner handles promotion,
 // including B -> C while A keeps its own share.
 func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
