@@ -26,7 +26,7 @@ Add `spec.rolloutStrategy.canary.percent` so an operator can try a new applicati
 
 For example, with four Prefill groups and eight Decode groups, `canary.percent: 25` runs one Prefill and two Decode groups on the new version. The remaining groups stay on the previous version. The rollout waits there until the operator changes the percentage.
 
-The same field applies to every role, including virtual roles (sub-roles), with either Ordinal or Hash group identity. It can also divide whole slices: eight slices of 1 Prefill + 1 Decode can run two complete slices on B and six on A at 25%. Increasing the percentage promotes the new version. Decreasing it restores more of the previous version, while its templates are retained.
+The same field applies to every role, including virtual roles (sub-roles), with either Ordinal or Hash group identity. It can also divide whole slices: eight slices of 1 Prefill + 1 Decode can run two complete slices on B and six on A at 25%. Increasing the percentage promotes the new version. Decreases during a partial canary are rejected; rollback uses the previous templates from Git.
 
 ## Motivation
 
@@ -63,7 +63,7 @@ These are the counts after each step settles. During a step, some groups may sti
 
 Changing only the percentage does not create another application revision. Set the percentage together with the template change to control how that rollout starts. If there is no previous version, initial creation starts the full desired workload regardless of the percentage.
 
-**Reversal is supported during a partial canary, not after finalization.** Use a hold such as `90` or `99` while evaluating B if you still need to reduce its share. Once the rollout completes at `100`, lowering the percentage cannot restore retired A templates; use a Git revert for rollback.
+**Promotion only moves forward.** During a partial canary, `25 → 50` is allowed, but `50 → 25` and `25 → 0` are rejected. Keep the percentage unchanged to pause promotion. To roll back, restore A's templates in Git and remove the percentage in the same change.
 
 After B finishes at `100` (or with the percentage omitted), a new C rollout uses B as its baseline, without a separate finalization edit. Set the next starting percentage together with C's templates. Leaving `100` configured does not automatically pause the next template update below 100%.
 
@@ -87,7 +87,7 @@ spec:
       dimension: Slices
 ```
 
-Slices 0 and 1 roll to B; slices 2 through 7 stay on A. At 50%, slices 2 and 3 also roll to B. Returning to 25% restores those same two slices to A. Each selected slice rolls normally within its own availability and surge budgets; switching slices is not instantaneous.
+Slices 0 and 1 roll to B; slices 2 through 7 stay on A. At 50%, slices 2 and 3 also roll to B. Returning to 25% is rejected. Each selected slice rolls normally within its own availability and surge budgets; promotion is not instantaneous.
 
 Choose `Groups` (the default) or `Slices` in the manifest. There is no automatic choice based on replica counts and no internal dimension annotation.
 
@@ -110,24 +110,15 @@ A role with only one desired group cannot be split this way. In `Groups` mode, k
 
 In `Slices` mode, apply the same rounding rule to the number of slices. One slice cannot be divided; it stays on A while role scaling continues.
 
-### Promote or reduce the canary
+### Promote the canary or roll back through Git
 
-Changing `25` to `50` grows B's share and reduces A's share. Changing `50` back to `25` does the opposite: the controller starts more groups using A's existing templates and removes excess B groups.
+Changing `25` to `50` grows B's share and reduces A's share within the rollout budgets. Admission rejects percentage decreases during a partial canary. This follows the forward-only intent of partitioned rollouts, but rejects decreases explicitly instead of accepting a setting that cannot undo completed updates.
 
-Both directions use the existing rollout planner. For a role with four groups, moving from two A + two B to three A + one B illustrates the budget choices:
+Start at `0` to keep B's LWS objects at zero before the first promotion. Once promotion starts, returning to `0` is not an abort operation.
 
-- With `maxSurge: 1` and `maxUnavailable: 0`, an extra A group can start and become Ready before a B group is removed.
-- With `maxSurge: 0` and `maxUnavailable: 1`, the controller may remove a B group first to make room. That temporary reduction is explicitly allowed by the budget.
+> **To roll back, restore A's templates in Git and remove `canary.percent` in the same change.** Removing the percentage alone would finish deploying B. With A's templates restored, it starts an ordinary rollout back to A, subject to readiness and availability budgets. For the next canary release, set an initial percentage together with its new templates.
 
-Restoring A preserves its saved templates, rollout settings, and original replica-count annotations. Newly requested groups count toward capacity usage, but cannot be counted as Ready before they are actually Ready.
-
-At `0`, B's LWS objects remain with `spec.replicas: 0`. They can be reused if the operator raises the percentage again.
-
-> **To roll back permanently, restore A's templates in Git.** Setting `canary.percent: 0` stops running B, but leaves B's templates desired. Raising the percentage or removing the field without restoring A's templates could deploy B again.
->
-> In the same Git change, we recommend removing `canary.percent` to restore its default, `nil` (field omitted). **This means no canary hold.** For the next canary release, explicitly set a percentage such as `25` together with its new templates.
-
-If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A, even without resetting the percentage. If A has already disappeared, restoring its templates with the percentage omitted starts an ordinary rollout. Lowering the percentage alone cannot recreate a version that has been fully removed.
+If the restored templates match the surviving baseline, A becomes the desired revision and the controller completes the return to A. If A has already disappeared, its restored templates recreate it through an ordinary rollout.
 
 ### Scale while the canary is held
 
@@ -141,7 +132,7 @@ The split follows the latest desired replica count, whether it comes from a Stat
 
 Each role follows its own desired count. If Prefill grows while Decode stays the same size, the controller uses those current counts to coordinate progress. It does not keep judging Prefill against its size before the scale-up.
 
-**During an active canary, `Deferred` and `Immediate` are ignored for both `scaleUpDuringRollout` and `scaleDownDuringRollout`.** Both revision shares resize to reach the requested split. This includes removing already-started B groups when demand or the percentage decreases. Otherwise a deliberately held rollout could prevent scale-down indefinitely.
+**During an active canary, `Deferred` and `Immediate` are ignored for both `scaleUpDuringRollout` and `scaleDownDuringRollout`.** Both revision shares resize to reach the requested split. This includes removing already-started B groups when demand decreases. Otherwise a deliberately held rollout could prevent scale-down indefinitely.
 
 Readiness and rollout safety checks still apply. The configured scaling policies resume at `100`, when the percentage is omitted, or when there is no active canary, such as initial creation or a rollout whose old history has already gone.
 
@@ -162,7 +153,7 @@ While B is being replaced, B and C temporarily share the canary part. With deman
 
 The replacement uses rollout budgets calculated from the full desired workload, and A's serving groups still contribute to availability. The hold is reached again when C supplies the requested canary share and the intermediate B groups have drained.
 
-With `Slices`, the selected half rolls from B to C while the other half remains on A. Keep A's zero-replica LWS objects even in selected slices so a later reduction can restore A there.
+With `Slices`, the selected half rolls from B to C while the other half remains on A. Keep A's zero-replica LWS objects even in selected slices to preserve the same baseline identity throughout the canary.
 
 ## Remember which version to keep
 
@@ -218,11 +209,11 @@ Small replica counts can differ substantially from the requested percentage beca
 
 Before downgrading to a version without this support, use the supporting controller to finish every active canary:
 
-1. **Choose which version to keep.** To keep B, set `canary.percent: 100` and wait until all desired groups are Ready on B. To return to A, restore A's templates in Git and wait until the rollback finishes. Setting the percentage to `0` alone does not restore the desired templates.
+1. **Choose which version to keep.** To keep B, set `canary.percent: 100` and wait until all desired groups are Ready on B. To return to A, restore A's templates in Git, remove the percentage, and wait until the rollback finishes.
 2. **Confirm completion and remove unsupported settings.** Remove the `canary` block from Git or the other source of truth. Wait for the controller to apply that change and report `Available=True` with reason `AllRolesReady` for the current generation and replica demand.
 3. Only then downgrade the controller and CRDs. Keep canary fields out of subsequent updates until both support them again.
 
-**An explicit `100` finalizes the canary, just like omitting the percentage.** Do not downgrade while relying on a partial hold or on retained templates for a later reversal.
+**An explicit `100` finalizes the canary, just like omitting the percentage.** Do not downgrade while relying on a partial hold.
 
 ## Status and Argo CD
 
@@ -270,12 +261,12 @@ A settled hold waits for DisaggregatedSet or observed workload events, without a
 ## Test plan
 
 - Check rounding, valid percentage values, and that percentage-only changes do not create revisions.
-- Exercise promotion, partial reversal, reduction to zero, re-promotion, and Git template rollback with different surge and unavailability budgets. Verify that both `100` and omission finalize, clean up A, and make B the next canary's baseline.
+- Exercise forward promotion from zero and Git template rollback with different surge and unavailability budgets. Reject percentage decreases. Verify that both `100` and omission finalize, clean up A, and make B the next canary's baseline.
 - Resize both shares with Ordinal and Hash groups, ordinary roles and sub-roles, and both configured scaling policies. Include asymmetric Prefill/Decode changes and controller restarts.
 - Keep A's workloads, Pod identities, and sub-role assignments while B rolls to C. Check multiple historical revisions and incomplete serving revisions.
 - Check baseline markers, ambiguous history, singleton roles, incompatible layouts, whole-set scale-to-zero, and every-slice hold reporting.
 - Validate API persistence and webhook behavior, plus Argo CD health and field ownership.
-- Exercise eight-slice promotion, reversal, A → B → C, and zero/resume. Reject unsupported dimensions and dimension/slice-count changes during partial slice canaries; allow changes when finalizing.
+- Exercise eight-slice promotion, A → B → C, and zero-demand/resume. Reject unsupported dimensions and dimension/slice-count changes during partial slice canaries; allow changes when finalizing.
 - Use real Pod/native-workload observations for ordinary and virtual-role canaries, with both Ordinal and Hash identity.
 - Use the [harness and recorded traces](https://github.com/kubernetes-sigs/lws/pull/1309) to check real groups, readiness gates, autoscaler handoff, and successive rollout steps.
 
@@ -292,3 +283,4 @@ This proposal uses one percentage and lets DisaggregatedSet calculate the counts
 - 2026-11-06: retain A while a held canary changes from B to C.
 - 2026-11-13: add whole-slice canaries and a once-per-canary auto choice; keep scaling at zero or one group and retain the baseline through scale-to-zero.
 - 2026-11-24: finalize at 100%; nest settings under `canary`; retain only explicit `Groups` and `Slices` dimensions.
+- 2026-11-26: reject percentage decreases during partial canaries; use Git template rollback instead.
