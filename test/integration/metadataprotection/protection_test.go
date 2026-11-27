@@ -157,6 +157,18 @@ func TestMetadataProtection(t *testing.T) {
 	}
 	allowed, denied := actor(manager), actor(other)
 	must(t, admin.Create(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "scheduler", Namespace: ns}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "writers"}, Subjects: []rbacv1.Subject{{Kind: "User", APIGroup: "rbac.authorization.k8s.io", Name: scheduler}}}))
+	// Seed revisions before installing admission to model an existing cluster.
+	legacyRevisions := []*unstructured.Unstructured{}
+	for i, path := range [][]string{
+		{"data", "Spec", "Template", "Metadata", "Labels"},
+		{"data", "spec", "template", "metadata", "Annotations"},
+	} {
+		obj := workload("ControllerRevision", fmt.Sprintf("legacy-alias-%d", i))
+		must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"app": "legacy"}, path...))
+		obj.SetFinalizers([]string{"example.com/cleanup"})
+		must(t, admin.Create(ctx, obj))
+		legacyRevisions = append(legacyRevisions, obj)
+	}
 	installPolicy(t, ctx, admin, root)
 
 	const labelKey = "leaderworkerset.sigs.k8s.io/name"
@@ -438,6 +450,29 @@ func TestMetadataProtection(t *testing.T) {
 			obj := workload("ControllerRevision", fmt.Sprintf("opaque-%d", i))
 			obj.Object["data"] = data
 			must(t, denied.Create(ctx, obj))
+		}
+	})
+	t.Run("preexisting_revision_aliases_allow_metadata_and_finalizer_updates", func(t *testing.T) {
+		for _, obj := range legacyRevisions {
+			t.Run(obj.GetName(), func(t *testing.T) {
+				must(t, patch(denied, obj, `{"metadata":{"labels":{"app":"updated"},"annotations":{"example.com/note":"updated"}}}`))
+				assertDenied(t, patch(denied, obj, `{"metadata":{"labels":{"leaderworkerset.sigs.k8s.io/name":"forged"}}}`))
+				// Skipping alias validation on UPDATE must not make data mutable.
+				err := patch(denied, obj, `{"data":{"unrelated":"changed"}}`)
+				if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "immutable") {
+					t.Fatalf("expected immutable revision data rejection, got %v", err)
+				}
+				must(t, denied.Delete(ctx, obj))
+				must(t, denied.Get(ctx, client.ObjectKeyFromObject(obj), obj))
+				if obj.GetDeletionTimestamp() == nil {
+					t.Fatal("expected deletion to wait for the finalizer")
+				}
+				obj.SetFinalizers(nil)
+				must(t, denied.Update(ctx, obj))
+				if err := denied.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
+					t.Fatalf("expected revision deletion after finalizer removal, got %v", err)
+				}
+			})
 		}
 	})
 	t.Run("revision_metadata_paths_require_canonical_field_names", func(t *testing.T) {
