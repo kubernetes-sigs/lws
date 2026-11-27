@@ -122,6 +122,16 @@ func HarnessObserve(ctx context.Context, reader client.Reader, key client.Object
 			}
 		}
 		inputs := buildRolloutInputs(ds, old, target, desired, readiness)
+		if inputs.proportionalCanary && len(missing) == 0 {
+			stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, readiness)
+			if compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
+				admitted, _, err := canaryDemandForRoles(ds, stable, desired)
+				if err != nil {
+					return nil, err
+				}
+				inputs = buildRolloutInputs(ds, old, target, admitted, readiness)
+			}
+		}
 		candidates := []map[string]any{}
 		var steadyBounds any
 		restoration := []map[string]any{}

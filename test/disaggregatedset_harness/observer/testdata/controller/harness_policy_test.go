@@ -91,7 +91,7 @@ func TestHarnessObserveIndependentScalingPolicies(t *testing.T) {
 }
 
 func TestHarnessCanaryShowsEffectivePoliciesAndSeparatesReversePreview(t *testing.T) {
-	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 8}, [2]int{1, 1}, [2]int{})
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 16}, [2]int{1, 1}, [2]int{})
 	ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 	ds.Spec.RolloutStrategy = &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25)}}
 	ds.Spec.ScalingPolicy = &disaggv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: disaggv1.RolloutScalingDeferred, ScaleDownDuringRollout: disaggv1.RolloutScalingDeferred}
@@ -118,6 +118,7 @@ func TestHarnessCanaryShowsEffectivePoliciesAndSeparatesReversePreview(t *testin
 	require.True(t, forward.ProportionalCanary)
 	require.True(t, forward.ScaleUpDuringRollout)
 	require.True(t, forward.ScaleDownDuringRollout)
+	require.Equal(t, RoleReplicaState{4, 8}, forward.Target.DesiredReplicas, "Deferred queues the new 8/16 demand; previews must use admitted counts")
 	require.Equal(t, "old", slice["stableRevision"])
 	reverse := slice["canaryRestoration"].([]map[string]any)[0]
 	require.Equal(t, "restore-stable-share", reverse["direction"])
