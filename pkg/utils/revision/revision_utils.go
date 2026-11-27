@@ -27,6 +27,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	appsv1 "k8s.io/api/apps/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -400,7 +401,9 @@ func TruncateRevisions(ctx context.Context, k8sClient client.Client, lws *leader
 
 	for i, revision := range revisions {
 		if GetRevisionKey(revision) != revisionKey {
-			if err := k8sClient.Delete(ctx, revisions[i]); err != nil {
+			// The list comes from the cache, which can still hold a revision
+			// that an earlier reconcile already deleted.
+			if err := k8sClient.Delete(ctx, revisions[i]); err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
 		}
