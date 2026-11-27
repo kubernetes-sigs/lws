@@ -274,6 +274,26 @@
         "id": "gating",
         "title": "Revision gating with llm-d",
         "source": "/animations/gating.json"
+      },
+      {
+        "id": "canary-promotion",
+        "title": "Promote a canary from 0% to 100%",
+        "source": "/animations/canary-promotion.json"
+      },
+      {
+        "id": "canary-replacement",
+        "title": "Keep A while B rolls to C",
+        "source": "/animations/canary-replacement.json"
+      },
+      {
+        "id": "canary-reversal",
+        "title": "Reverse a canary from 50% to 0%",
+        "source": "/animations/canary-reversal.json"
+      },
+      {
+        "id": "canary-scaling",
+        "title": "Scale both shares during a canary",
+        "source": "/animations/canary-scaling.json"
       }
     ]
   }
