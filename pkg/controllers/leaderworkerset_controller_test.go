@@ -55,6 +55,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -2814,20 +2815,47 @@ func TestLeaderWorkerSetReconcilerInitializesMetrics(t *testing.T) {
 	}
 }
 
+func TestLeaderPodTemplateClearsLegacyPlacementAnnotations(t *testing.T) {
+	lws := wrappers.BuildLeaderWorkerSet("default").Size(2).ExclusivePlacementPolicy().Obj()
+	lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations = map[string]string{
+		"user": "keep",
+		leaderworkerset.ExclusiveScopeAnnotationKey:               string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.ExclusiveEnforcementAnnotationKey:         string(leaderworkerset.PlacementPreferred),
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey:       string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey: string(leaderworkerset.PlacementPreferred),
+	}
+	podTemplate, err := buildLeaderPodTemplateApplyConfiguration(lws, "revision-1")
+	if err != nil {
+		t.Fatalf("failed with error: %s", err.Error())
+	}
+	if got := podTemplate.Annotations["user"]; got != "keep" {
+		t.Errorf("user annotation = %q, want %q", got, "keep")
+	}
+	for _, key := range utils.ManagedPlacementAnnotationKeys() {
+		if value, ok := podTemplate.Annotations[key]; ok {
+			t.Errorf("legacy managed annotation %s = %q, want it cleared by the All/Required policy", key, value)
+		}
+	}
+}
+
 func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 	annotations := map[string]string{
 		leaderworkerset.ExclusiveKeyAnnotationKey:         "zone",
 		leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack",
 	}
 	tests := []struct {
-		name            string
-		annotations     map[string]string
-		policy          *leaderworkerset.PlacementPolicy
-		wantGroupKey    string
-		wantSubGroupKey string
+		name                    string
+		annotations             map[string]string
+		policy                  *leaderworkerset.PlacementPolicy
+		wantGroupKey            string
+		wantSubGroupKey         string
+		wantGroupScope          string
+		wantSubGroupScope       string
+		wantGroupEnforcement    string
+		wantSubGroupEnforcement string
 	}{
 		{
-			name: "placementPolicy",
+			name: "placementPolicy with the All scope",
 			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
 			wantGroupKey:    "block",
@@ -2849,6 +2877,45 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 			wantGroupKey:    "zone",
 			wantSubGroupKey: "rack",
 		},
+		{
+			name: "the Own scope is stamped at both levels",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
+			wantGroupKey:      "block",
+			wantSubGroupKey:   "host",
+			wantGroupScope:    string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope: string(leaderworkerset.PlacementScopeOwn),
+		},
+		{
+			name: "an Own subgroup next to an All group",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
+			wantGroupKey:      "block",
+			wantSubGroupKey:   "host",
+			wantSubGroupScope: string(leaderworkerset.PlacementScopeOwn),
+		},
+		{
+			name: "a Preferred group enforcement is stamped",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
+				Enforcement: leaderworkerset.PlacementPreferred,
+				SubGroup:    &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"}},
+			wantGroupKey:         "block",
+			wantSubGroupKey:      "host",
+			wantGroupScope:       string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope:    string(leaderworkerset.PlacementScopeOwn),
+			wantGroupEnforcement: string(leaderworkerset.PlacementPreferred),
+		},
+		{
+			name: "a Preferred subgroup enforcement is stamped",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "block",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host",
+					Enforcement: leaderworkerset.PlacementPreferred}},
+			wantGroupKey:            "block",
+			wantSubGroupKey:         "host",
+			wantGroupScope:          string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupScope:       string(leaderworkerset.PlacementScopeOwn),
+			wantSubGroupEnforcement: string(leaderworkerset.PlacementPreferred),
+		},
 	}
 
 	for _, tc := range tests {
@@ -2865,6 +2932,22 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 			}
 			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; got != tc.wantSubGroupKey {
 				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
+			}
+			// A missing scope resolves as All, so the default scope must stay
+			// unstamped to keep upgrade rollouts away.
+			if got := podTemplate.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey]; got != tc.wantGroupScope {
+				t.Errorf("exclusive-scope annotation = %q, want %q", got, tc.wantGroupScope)
+			}
+			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey]; got != tc.wantSubGroupScope {
+				t.Errorf("subgroup-exclusive-scope annotation = %q, want %q", got, tc.wantSubGroupScope)
+			}
+			// A missing enforcement resolves as Required, for the same
+			// upgrade reason as the scope.
+			if got := podTemplate.Annotations[leaderworkerset.ExclusiveEnforcementAnnotationKey]; got != tc.wantGroupEnforcement {
+				t.Errorf("exclusive-enforcement annotation = %q, want %q", got, tc.wantGroupEnforcement)
+			}
+			if got := podTemplate.Annotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey]; got != tc.wantSubGroupEnforcement {
+				t.Errorf("subgroup-exclusive-enforcement annotation = %q, want %q", got, tc.wantSubGroupEnforcement)
 			}
 		})
 	}

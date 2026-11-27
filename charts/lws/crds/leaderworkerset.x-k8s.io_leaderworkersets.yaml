@@ -17531,11 +17531,57 @@ spec:
                     setting a level in both with different values is rejected. Changing the
                     effective placement creates a new revision.
                   properties:
+                    enforcement:
+                      default: Required
+                      description: |-
+                        enforcement selects how the exclusive placement is enforced. Required
+                        keeps the injected anti-affinity required, so a group without a free
+                        domain stays Pending; Preferred makes it a scheduling preference, so
+                        the scheduler favors spreading the groups across domains. Co-location is
+                        best-effort: a group may share a domain even while a free domain
+                        remains, if the other scheduler scores favor it. Defaults to Required.
+                      enum:
+                        - Required
+                        - Preferred
+                      type: string
+                    scope:
+                      default: All
+                      description: |-
+                        scope selects the pods the exclusive anti-affinity repels. The injected
+                        term omits the namespace fields, so both values apply within the pod's
+                        namespace. All keeps every other group in that namespace out of the
+                        domain, matching the deprecated annotations and the physical exclusivity
+                        hardware-sliced accelerators need; Own keeps only the groups of this
+                        LeaderWorkerSet out, so groups of other LeaderWorkerSets may share the
+                        domain. Defaults to All.
+                      enum:
+                        - All
+                        - Own
+                      type: string
                     subGroup:
                       description: |-
                         subGroup defines the topology placement of each subgroup within a group.
                         It requires leaderWorkerTemplate.subGroupPolicy.
                       properties:
+                        enforcement:
+                          default: Required
+                          description: |-
+                            enforcement selects how the exclusive placement is enforced, as at the
+                            group level. Defaults to Required.
+                          enum:
+                            - Required
+                            - Preferred
+                          type: string
+                        scope:
+                          default: All
+                          description: |-
+                            scope selects the pods the exclusive anti-affinity repels, as at the
+                            group level, and likewise applies within the pod's namespace. Defaults
+                            to All.
+                          enum:
+                            - All
+                            - Own
+                          type: string
                         topology:
                           description: |-
                             topology is the node label key that defines the topology domain of a
@@ -17554,6 +17600,10 @@ spec:
                           rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
                         - message: topology must be empty when type is None
                           rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
+                        - message: enforcement must be Required when type is None
+                          rule: self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'
+                        - message: scope must be All when type is None
+                          rule: self.type != 'None' || !has(self.scope) || self.scope == 'All'
                     topology:
                       description: |-
                         topology is the node label key that defines the topology domain of a
@@ -17573,6 +17623,10 @@ spec:
                       rule: self.type != 'ExclusiveTopology' || (has(self.topology) && size(self.topology) > 0)
                     - message: topology must be empty when type is None
                       rule: self.type == 'ExclusiveTopology' || !has(self.topology) || size(self.topology) == 0
+                    - message: enforcement must be Required when type is None
+                      rule: self.type != 'None' || !has(self.enforcement) || self.enforcement == 'Required'
+                    - message: scope must be All when type is None
+                      rule: self.type != 'None' || !has(self.scope) || self.scope == 'All'
                 podTerminationPolicy:
                   default: Sequential
                   description: |-

@@ -127,10 +127,10 @@ func ExpectValidLeaderStatefulSet(ctx context.Context, k8sClient client.Client, 
 		if sts.Labels[leaderworkerset.SetNameLabelKey] == "" {
 			return errors.New("leader StatefulSet should have label leaderworkerset.sigs.k8s.io/name")
 		}
-		if topologyKey, _ := utils.ExclusiveTopologyKey(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+		if topologyKey, _, _ := utils.ExclusivePlacement(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 			return fmt.Errorf("mismatch exclusive placement annotation between leader statefulset and leaderworkerset")
 		}
-		if topologyKey, _ := utils.SubGroupExclusiveTopologyKey(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
+		if topologyKey, _, _ := utils.SubGroupExclusivePlacement(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
 			return fmt.Errorf("mismatch subgroup exclusive placement annotation between leader statefulset and leaderworkerset")
 		}
 		sizeAnnotation := sts.Spec.Template.Annotations[leaderworkerset.SizeAnnotationKey]
@@ -225,7 +225,7 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 		if leaderPodScheduled && len(statefulSetList.Items)-1 != int(stsNumber) {
 			return fmt.Errorf("running worker statefulsets replicas not right, want %d, got %d", len(statefulSetList.Items)-1, stsNumber)
 		}
-		if _, exclusive := utils.ExclusiveTopologyKey(&lws); exclusive && !leaderPodScheduled && len(statefulSetList.Items) != 1 {
+		if _, _, exclusive := utils.ExclusivePlacement(&lws); exclusive && !leaderPodScheduled && len(statefulSetList.Items) != 1 {
 			return fmt.Errorf("when exclusive placement is enabled, only expect sts count to be 1")
 		}
 		var podList corev1.PodList
@@ -276,10 +276,10 @@ func ExpectValidWorkerStatefulSets(ctx context.Context, leaderWorkerSet *leaderw
 			if sts.Spec.Template.Annotations[leaderworkerset.LeaderPodNameAnnotationKey] != sts.Name {
 				return fmt.Errorf("worker statefulset pod template misses leader pod name annotation")
 			}
-			if topologyKey, _ := utils.ExclusiveTopologyKey(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
+			if topologyKey, _, _ := utils.ExclusivePlacement(&lws); topologyKey != sts.Spec.Template.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
-			if subGroupTopologyKey, _ := utils.SubGroupExclusiveTopologyKey(&lws); subGroupTopologyKey != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
+			if subGroupTopologyKey, _, _ := utils.SubGroupExclusivePlacement(&lws); subGroupTopologyKey != sts.Spec.Template.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] {
 				return fmt.Errorf("mismatch subgroup exclusive placement annotation between worker statefulset and leaderworkerset")
 			}
 			cr, err := revisionutils.NewRevision(ctx, k8sClient, &lws, "")

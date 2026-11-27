@@ -534,3 +534,66 @@ func TestGetSlices(t *testing.T) {
 		assert.Equal(t, int32(3), GetSlices(ds))
 	})
 }
+
+func TestComputeRevisionPlacement(t *testing.T) {
+	role := func(policy *leaderworkersetv1.PlacementPolicy) []disaggregatedsetv1.DisaggregatedRoleSpec {
+		return []disaggregatedsetv1.DisaggregatedRoleSpec{{
+			Name: testUtilsRolePrefill,
+			LeaderWorkerSetTemplateSpec: leaderworkersetv1.LeaderWorkerSetTemplateSpec{
+				Spec: leaderworkersetv1.LeaderWorkerSetSpec{PlacementPolicy: policy},
+			},
+		}}
+	}
+	own := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Scope: leaderworkersetv1.PlacementScopeOwn, Topology: topology}
+	}
+	all := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Topology: topology}
+	}
+	subGroupOwn := func(topology string) *leaderworkersetv1.PlacementPolicy {
+		return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone,
+			SubGroup: &leaderworkersetv1.SubGroupPlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Scope: leaderworkersetv1.PlacementScopeOwn, Topology: topology}}
+	}
+
+	// Both revision algorithms must see the same placement identities: All and
+	// Required hash as the absent fields, every exclusive change rolls.
+	for name, compute := range map[string]func([]disaggregatedsetv1.DisaggregatedRoleSpec) string{
+		"V1": ComputeRevisionV1,
+		"V2": ComputeRevision,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, compute(role(nil)), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementNone, Topology: "rack"})),
+				"a topology key on a None level does not change the identity")
+			assert.Equal(t, compute(role(nil)), compute(role(&leaderworkersetv1.PlacementPolicy{})),
+				"an empty policy does not change the identity")
+			assert.Equal(t, compute(role(all("rack"))), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Scope: leaderworkersetv1.PlacementScopeAll, Topology: "rack"})),
+				"an explicit All scope hashes as the absent field")
+
+			assert.NotEqual(t, compute(role(nil)), compute(role(own("rack"))),
+				"enabling the Own scope must roll out")
+			assert.NotEqual(t, compute(role(own("rack"))), compute(role(own("block"))),
+				"changing the Own scope topology must roll out")
+			assert.NotEqual(t, compute(role(all("rack"))), compute(role(own("rack"))),
+				"switching between the exclusive scopes must roll out")
+			assert.NotEqual(t, compute(role(own("rack"))), compute(role(nil)),
+				"removing the Own scope must roll out")
+
+			assert.NotEqual(t, compute(role(nil)), compute(role(subGroupOwn("rack"))),
+				"enabling a subgroup Own scope must roll out")
+			assert.NotEqual(t, compute(role(subGroupOwn("rack"))), compute(role(subGroupOwn("host"))),
+				"changing the subgroup Own scope topology must roll out")
+
+			preferred := func(topology string) *leaderworkersetv1.PlacementPolicy {
+				return &leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Scope: leaderworkersetv1.PlacementScopeOwn, Topology: topology,
+					Enforcement: leaderworkersetv1.PlacementPreferred}
+			}
+			assert.Equal(t, compute(role(own("rack"))), compute(role(&leaderworkersetv1.PlacementPolicy{Type: leaderworkersetv1.PlacementExclusiveTopology, Scope: leaderworkersetv1.PlacementScopeOwn, Topology: "rack",
+				Enforcement: leaderworkersetv1.PlacementRequired})),
+				"a Required enforcement hashes as the absent field, so existing revisions stay valid")
+			assert.NotEqual(t, compute(role(own("rack"))), compute(role(preferred("rack"))),
+				"switching the enforcement to Preferred must roll out")
+			assert.NotEqual(t, compute(role(preferred("rack"))), compute(role(preferred("host"))),
+				"the topology of a preferred placement is still part of the identity")
+		})
+	}
+}

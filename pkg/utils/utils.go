@@ -35,6 +35,29 @@ const (
 	defaultNamespace = "lws-system"
 )
 
+// ManagedPlacementAnnotationKeys returns the placement annotations the
+// controller writes on a pod template. Admission rejects user-set values, but
+// an object created by an older controller can still carry them, and a stale
+// value would otherwise outlive the placementPolicy it was written for.
+func ManagedPlacementAnnotationKeys() []string {
+	return []string{
+		leaderworkerset.ExclusiveScopeAnnotationKey,
+		leaderworkerset.ExclusiveEnforcementAnnotationKey,
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey,
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey,
+	}
+}
+
+// ClearManagedPlacementAnnotations removes the controller-managed placement
+// annotations from a pod template annotation map. Callers then stamp the values
+// the effective placement resolves to, so a stale Own or Preferred value cannot
+// relax an All or Required policy.
+func ClearManagedPlacementAnnotations(annotations map[string]string) {
+	for _, key := range ManagedPlacementAnnotationKeys() {
+		delete(annotations, key)
+	}
+}
+
 // Sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
 func Sha1Hash(s string) string {
 	h := sha1.New()
@@ -105,42 +128,82 @@ func CalculatePGMinResources(lws *leaderworkerset.LeaderWorkerSet) corev1.Resour
 	return totalResources
 }
 
-// ExclusiveTopologyKey returns the topology key for group level exclusive
-// placement and whether it is enabled. An ExclusiveTopology spec.placementPolicy
-// takes precedence over the exclusive-topology annotation. A None type falls
-// back to the annotation, because the API server defaults the type to None
-// whenever placementPolicy is set, including when only subGroup is.
-func ExclusiveTopologyKey(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
-	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.Type == leaderworkerset.PlacementExclusiveTopology {
-		return policy.Topology, true
-	}
-	annotation := lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
-	return annotation, annotation != ""
+// IsExclusivePlacement reports whether the placement type injects exclusive
+// placement terms. The scope decides which pods those terms repel.
+func IsExclusivePlacement(t leaderworkerset.PlacementType) bool {
+	return t == leaderworkerset.PlacementExclusiveTopology
 }
 
-// SubGroupExclusiveTopologyKey returns the topology key for subgroup level
-// exclusive placement and whether it is enabled. An ExclusiveTopology
-// spec.placementPolicy.subGroup takes precedence over the
-// subgroup-exclusive-topology annotation. Subgroup placement needs subgroups,
-// so it is disabled without a subGroupPolicy.
-func SubGroupExclusiveTopologyKey(lws *leaderworkerset.LeaderWorkerSet) (string, bool) {
-	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
-		return "", false
+// ExclusivePlacement returns the topology key, the placement scope and whether
+// group level exclusive placement is enabled. An ExclusiveTopology
+// spec.placementPolicy takes precedence over the exclusive-topology annotation.
+// A None type falls back to the annotation, because the API server defaults the
+// type to None whenever placementPolicy is set, including when only subGroup is.
+// The annotation repels every workload, so it resolves as All.
+func ExclusivePlacement(lws *leaderworkerset.LeaderWorkerSet) (string, leaderworkerset.PlacementScope, bool) {
+	if policy := lws.Spec.PlacementPolicy; policy != nil && IsExclusivePlacement(policy.Type) {
+		return policy.Topology, placementScope(policy.Scope), true
 	}
-	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.SubGroup != nil && policy.SubGroup.Type == leaderworkerset.PlacementExclusiveTopology {
-		return policy.SubGroup.Topology, true
+	annotation := lws.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]
+	return annotation, leaderworkerset.PlacementScopeAll, annotation != ""
+}
+
+// placementScope resolves an absent scope as All, so objects that predate the
+// field keep the behavior the annotations always had.
+func placementScope(scope leaderworkerset.PlacementScope) leaderworkerset.PlacementScope {
+	if scope == leaderworkerset.PlacementScopeOwn {
+		return leaderworkerset.PlacementScopeOwn
+	}
+	return leaderworkerset.PlacementScopeAll
+}
+
+// SubGroupExclusivePlacement returns the topology key, the placement scope and
+// whether subgroup level exclusive placement is enabled. An ExclusiveTopology
+// spec.placementPolicy.subGroup takes precedence over the
+// subgroup-exclusive-topology annotation, which resolves as All. Subgroup
+// placement needs subgroups, so it is disabled without a subGroupPolicy.
+func SubGroupExclusivePlacement(lws *leaderworkerset.LeaderWorkerSet) (string, leaderworkerset.PlacementScope, bool) {
+	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
+		return "", leaderworkerset.PlacementScopeAll, false
+	}
+	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.SubGroup != nil && IsExclusivePlacement(policy.SubGroup.Type) {
+		return policy.SubGroup.Topology, placementScope(policy.SubGroup.Scope), true
 	}
 	annotation := lws.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]
-	return annotation, annotation != ""
+	return annotation, leaderworkerset.PlacementScopeAll, annotation != ""
+}
+
+// ExclusiveEnforcement returns the enforcement of the group level exclusive
+// placement. The deprecated exclusive-topology annotation has always been
+// required, so it resolves as Required; only spec.placementPolicy can make
+// the enforcement Preferred.
+func ExclusiveEnforcement(lws *leaderworkerset.LeaderWorkerSet) leaderworkerset.PlacementEnforcement {
+	if policy := lws.Spec.PlacementPolicy; policy != nil && IsExclusivePlacement(policy.Type) && policy.Enforcement == leaderworkerset.PlacementPreferred {
+		return leaderworkerset.PlacementPreferred
+	}
+	return leaderworkerset.PlacementRequired
+}
+
+// SubGroupExclusiveEnforcement returns the enforcement of the subgroup level
+// exclusive placement, mirroring ExclusiveEnforcement.
+func SubGroupExclusiveEnforcement(lws *leaderworkerset.LeaderWorkerSet) leaderworkerset.PlacementEnforcement {
+	if policy := lws.Spec.PlacementPolicy; policy != nil && policy.SubGroup != nil &&
+		IsExclusivePlacement(policy.SubGroup.Type) && policy.SubGroup.Enforcement == leaderworkerset.PlacementPreferred {
+		return leaderworkerset.PlacementPreferred
+	}
+	return leaderworkerset.PlacementRequired
 }
 
 // EffectivePlacementPolicy returns the placement that the field and the
 // exclusive-topology annotations resolve to, or nil when neither level is
 // exclusive. Both sources of the same placement give the same result, so it is
-// what a revision records.
+// what a revision records. Only an Own scope and a Preferred enforcement are
+// recorded, since they are the only values that change the injected affinity:
+// All and Required resolve as the absent fields, so existing revisions keep
+// their hash.
 func EffectivePlacementPolicy(lws *leaderworkerset.LeaderWorkerSet) *leaderworkerset.PlacementPolicy {
-	groupKey, group := ExclusiveTopologyKey(lws)
-	subGroupKey, subGroup := SubGroupExclusiveTopologyKey(lws)
+	groupKey, groupScope, group := ExclusivePlacement(lws)
+	subGroupKey, subGroupScope, subGroup := SubGroupExclusivePlacement(lws)
 	if !group && !subGroup {
 		return nil
 	}
@@ -148,11 +211,23 @@ func EffectivePlacementPolicy(lws *leaderworkerset.LeaderWorkerSet) *leaderworke
 	if group {
 		policy.Type = leaderworkerset.PlacementExclusiveTopology
 		policy.Topology = groupKey
+		if groupScope == leaderworkerset.PlacementScopeOwn {
+			policy.Scope = leaderworkerset.PlacementScopeOwn
+		}
+		if ExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			policy.Enforcement = leaderworkerset.PlacementPreferred
+		}
 	}
 	if subGroup {
 		policy.SubGroup = &leaderworkerset.SubGroupPlacementPolicy{
 			Type:     leaderworkerset.PlacementExclusiveTopology,
 			Topology: subGroupKey,
+		}
+		if subGroupScope == leaderworkerset.PlacementScopeOwn {
+			policy.SubGroup.Scope = leaderworkerset.PlacementScopeOwn
+		}
+		if SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			policy.SubGroup.Enforcement = leaderworkerset.PlacementPreferred
 		}
 	}
 	return policy

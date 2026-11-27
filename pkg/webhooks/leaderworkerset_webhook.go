@@ -142,6 +142,9 @@ func (r *LeaderWorkerSetWebhook) ValidateCreate(ctx context.Context, lws *v1.Lea
 	allErrs = append(allErrs, r.validateVolcanoTopology(nil, lws)...)
 	warnings, cdErrs := r.validateComputeDomain(nil, lws)
 	allErrs = append(allErrs, cdErrs...)
+	templatePath := field.NewPath("spec", "leaderWorkerTemplate")
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(templatePath.Child("leaderTemplate"), lws.Spec.LeaderWorkerTemplate.LeaderTemplate, nil)...)
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(templatePath.Child("workerTemplate"), &lws.Spec.LeaderWorkerTemplate.WorkerTemplate, nil)...)
 	return append(warnings, placementPolicyWarnings(lws)...), allErrs.ToAggregate()
 }
 
@@ -153,6 +156,9 @@ func (r *LeaderWorkerSetWebhook) ValidateUpdate(ctx context.Context, oldLws, new
 	allErrs = append(allErrs, r.validateVolcanoTopology(oldLws, newLws)...)
 	warnings, cdErrs := r.validateComputeDomain(oldLws, newLws)
 	allErrs = append(allErrs, cdErrs...)
+	placementTemplatePath := field.NewPath("spec", "leaderWorkerTemplate")
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(placementTemplatePath.Child("leaderTemplate"), newLws.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLws.Spec.LeaderWorkerTemplate.LeaderTemplate)...)
+	allErrs = append(allErrs, ValidateTemplateInternalPlacementAnnotations(placementTemplatePath.Child("workerTemplate"), &newLws.Spec.LeaderWorkerTemplate.WorkerTemplate, &oldLws.Spec.LeaderWorkerTemplate.WorkerTemplate)...)
 	specPath := field.NewPath("spec")
 	subGroupSizePath := specPath.Child("leaderWorkerTemplate", "subGroupPolicy", "subGroupSize")
 	newSubGroupPolicy := newLws.Spec.LeaderWorkerTemplate.SubGroupPolicy
@@ -865,11 +871,31 @@ func ValidateTemplateComputeDomainContainers(templatePath *field.Path, tpl *core
 // that already carry it remain updatable. Exported for DisaggregatedSet webhook
 // reuse.
 func ValidateTemplateInternalComputeDomainAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl,
+		[]string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey})
+}
+
+// ValidateTemplateInternalPlacementAnnotations rejects the controller-managed
+// exclusive-scope and exclusive-enforcement annotations on a user
+// PodTemplateSpec. The pod webhook derives the placement scope and enforcement
+// from them, so a user-set value could relax the guarantee spec.placementPolicy
+// asks for, silently: the workload reports Ready while the domain is exclusive
+// against a wider set of pods, or not exclusive at all, than the one
+// configured. A value unchanged from oldTpl is allowed so objects that already
+// carry it remain updatable. Exported for DisaggregatedSet webhook reuse.
+func ValidateTemplateInternalPlacementAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec) field.ErrorList {
+	return validateTemplateInternalAnnotations(templatePath, tpl, oldTpl, utils.ManagedPlacementAnnotationKeys())
+}
+
+// validateTemplateInternalAnnotations rejects the controller-managed
+// annotation keys on a user PodTemplateSpec, allowing a value unchanged from
+// oldTpl so objects that already carry it remain updatable.
+func validateTemplateInternalAnnotations(templatePath *field.Path, tpl, oldTpl *corev1.PodTemplateSpec, keys []string) field.ErrorList {
 	if tpl == nil {
 		return nil
 	}
 	var allErrs field.ErrorList
-	for _, key := range []string{v1.ComputeDomainPrefixAnnotationKey, v1.ComputeDomainNameAnnotationKey} {
+	for _, key := range keys {
 		val, exists := tpl.Annotations[key]
 		if !exists {
 			continue
@@ -927,13 +953,13 @@ func validatePlacementPolicy(specPath *field.Path, lws *v1.LeaderWorkerSet) fiel
 	subGroupFromField := false
 	if policy.SubGroup != nil {
 		allErrs = append(allErrs, validateTopologyKey(policy.SubGroup.Topology, subGroupPath.Child("topology"))...)
-		subGroupFromField = policy.SubGroup.Type == v1.PlacementExclusiveTopology
+		subGroupFromField = utils.IsExclusivePlacement(policy.SubGroup.Type)
 		if subGroupFromField && lws.Spec.LeaderWorkerTemplate.SubGroupPolicy == nil {
 			allErrs = append(allErrs, field.Invalid(subGroupPath, policy.SubGroup, "requires leaderWorkerTemplate.subGroupPolicy"))
 		}
 	}
-	groupKey, group := utils.ExclusiveTopologyKey(lws)
-	subGroupKey, subGroup := utils.SubGroupExclusiveTopologyKey(lws)
+	groupKey, _, group := utils.ExclusivePlacement(lws)
+	subGroupKey, _, subGroup := utils.SubGroupExclusivePlacement(lws)
 	if group && subGroup && groupKey == subGroupKey {
 		path := policyPath.Child("topology")
 		if subGroupFromField {
@@ -956,27 +982,60 @@ func validateTopologyKey(topology string, fldPath *field.Path) field.ErrorList {
 	return allErrs
 }
 
-// validatePlacementPolicyAnnotations rejects an ExclusiveTopology placement
-// that disagrees with the exclusive-topology annotation of the same level. A
-// matching pair is accepted so a value can be moved from the annotation to the
-// field in two steps. A level whose type is None falls back to the annotation,
-// since the API server defaults the type whenever placementPolicy is set.
+// validatePlacementPolicyAnnotations rejects an exclusive placement that
+// disagrees with the exclusive-topology annotation of the same level on the LWS
+// metadata. A matching ExclusiveTopology pair is accepted so a value can be
+// moved from the annotation to the field in two steps. A level whose type is
+// None falls back to the annotation, since the API server defaults the type
+// whenever placementPolicy is set. An Own scope is rejected while the
+// annotation of the same level is set at all: the annotation repels every
+// workload, so keeping it would silently widen the repelled set.
+//
+// An annotation on a pod template is not a source here: whenever the field sets
+// the level, the controller stamps the field topology over the template's
+// annotation, so the template value never reaches a pod.
 func validatePlacementPolicyAnnotations(policyPath *field.Path, lws *v1.LeaderWorkerSet) field.ErrorList {
 	policy := lws.Spec.PlacementPolicy
 	if policy == nil {
 		return nil
 	}
-	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
+	allErrs := validatePlacementPolicyAnnotation(policy.Type, policy.Scope, policy.Topology, lws.Annotations[v1.ExclusiveKeyAnnotationKey],
 		v1.ExclusiveKeyAnnotationKey, policyPath.Child("topology"))
 	if policy.SubGroup != nil {
-		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
+		allErrs = append(allErrs, validatePlacementPolicyAnnotation(policy.SubGroup.Type, policy.SubGroup.Scope, policy.SubGroup.Topology, lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey],
 			v1.SubGroupExclusiveKeyAnnotationKey, policyPath.Child("subGroup", "topology"))...)
 	}
 	return allErrs
 }
 
-func validatePlacementPolicyAnnotation(placementType v1.PlacementType, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
-	if placementType != v1.PlacementExclusiveTopology || annotationValue == "" || topology == annotationValue {
+// annotationSource is one place a deprecated exclusive-topology annotation can
+// live on. Name locates it in warnings; it is empty for the LWS metadata so
+// existing messages stay unchanged.
+type annotationSource struct {
+	Name        string
+	Annotations map[string]string
+}
+
+// exclusiveAnnotationSources returns every place a deprecated
+// exclusive-topology annotation can be read from for warnings: the LWS metadata
+// and the pod templates. The effective leader template is the leader template,
+// or the worker template when no leader template is set, and workers always use
+// the worker template.
+func exclusiveAnnotationSources(lws *v1.LeaderWorkerSet) []annotationSource {
+	template := lws.Spec.LeaderWorkerTemplate
+	sources := []annotationSource{{Annotations: lws.Annotations}}
+	if template.LeaderTemplate != nil {
+		sources = append(sources, annotationSource{Name: "leader template", Annotations: template.LeaderTemplate.Annotations})
+	}
+	sources = append(sources, annotationSource{Name: "worker template", Annotations: template.WorkerTemplate.Annotations})
+	return sources
+}
+
+func validatePlacementPolicyAnnotation(placementType v1.PlacementType, scope v1.PlacementScope, topology, annotationValue, annotation string, fldPath *field.Path) field.ErrorList {
+	if placementType == v1.PlacementExclusiveTopology && scope == v1.PlacementScopeOwn && annotationValue != "" {
+		return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("requires removing annotation %s first: the annotation repels every workload", annotation))}
+	}
+	if !utils.IsExclusivePlacement(placementType) || annotationValue == "" || topology == annotationValue {
 		return nil
 	}
 	return field.ErrorList{field.Invalid(fldPath, topology, fmt.Sprintf("conflicts with annotation %s=%s", annotation, annotationValue))}
@@ -995,14 +1054,24 @@ var kueueTopologyAnnotations = []string{
 // Kueue topology-aware scheduling, which does not see the injected affinity.
 func placementPolicyWarnings(lws *v1.LeaderWorkerSet) admission.Warnings {
 	var warnings admission.Warnings
-	if _, found := lws.Annotations[v1.ExclusiveKeyAnnotationKey]; found {
-		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy instead", v1.ExclusiveKeyAnnotationKey))
+	deprecated := [][2]string{
+		{v1.ExclusiveKeyAnnotationKey, "spec.placementPolicy"},
+		{v1.SubGroupExclusiveKeyAnnotationKey, "spec.placementPolicy.subGroup"},
 	}
-	if _, found := lws.Annotations[v1.SubGroupExclusiveKeyAnnotationKey]; found {
-		warnings = append(warnings, fmt.Sprintf("annotation %s is deprecated, use spec.placementPolicy.subGroup instead", v1.SubGroupExclusiveKeyAnnotationKey))
+	for _, where := range exclusiveAnnotationSources(lws) {
+		for _, dep := range deprecated {
+			annotation, field := dep[0], dep[1]
+			if value, found := where.Annotations[annotation]; found {
+				location := ""
+				if where.Name != "" {
+					location = " on the " + where.Name
+				}
+				warnings = append(warnings, fmt.Sprintf("annotation %s=%s%s is deprecated, use %s instead", annotation, value, location, field))
+			}
+		}
 	}
-	_, exclusive := utils.ExclusiveTopologyKey(lws)
-	_, subGroupExclusive := utils.SubGroupExclusiveTopologyKey(lws)
+	_, _, exclusive := utils.ExclusivePlacement(lws)
+	_, _, subGroupExclusive := utils.SubGroupExclusivePlacement(lws)
 	if !exclusive && !subGroupExclusive {
 		return warnings
 	}

@@ -49,6 +49,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -1496,6 +1497,49 @@ func TestWorkerStatefulSetApplyConfigCarriesLeaderGroupIncarnation(t *testing.T)
 				t.Errorf("worker template workload name = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestWorkerStatefulSetClearsLegacyPlacementAnnotations(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(1).
+		WorkerTemplateSpec(wrappers.MakeWorkerPodSpec()).
+		Size(2).
+		Obj()
+	lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations = map[string]string{
+		"user": "keep",
+		leaderworkerset.ExclusiveScopeAnnotationKey:               string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.ExclusiveEnforcementAnnotationKey:         string(leaderworkerset.PlacementPreferred),
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey:       string(leaderworkerset.PlacementScopeOwn),
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey: string(leaderworkerset.PlacementPreferred),
+	}
+	// The leader runs with All/Required, so it carries none of the managed
+	// annotations; the worker template's stale values must not survive.
+	leaderPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sample-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				leaderworkerset.SetNameLabelKey:         "test-sample",
+				leaderworkerset.GroupIndexLabelKey:      "0",
+				leaderworkerset.GroupUniqueHashLabelKey: "test-key",
+				leaderworkerset.RevisionKey:             "rev1",
+			},
+		},
+	}
+
+	statefulSetConfig, err := constructWorkerStatefulSetApplyConfiguration(leaderPod, *lws)
+	if err != nil {
+		t.Fatalf("failed with error %s", err.Error())
+	}
+	annotations := statefulSetConfig.Spec.Template.Annotations
+	if got := annotations["user"]; got != "keep" {
+		t.Errorf("user annotation = %q, want %q", got, "keep")
+	}
+	for _, key := range utils.ManagedPlacementAnnotationKeys() {
+		if value, ok := annotations[key]; ok {
+			t.Errorf("legacy managed annotation %s = %q, want it cleared before copying the leader placement", key, value)
+		}
 	}
 }
 

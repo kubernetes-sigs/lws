@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -52,6 +53,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/replicagroups"
+	"sigs.k8s.io/lws/pkg/utils"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 	disaggwebhook "sigs.k8s.io/lws/pkg/webhooks/disaggregatedset"
@@ -1570,6 +1572,44 @@ func TestManagerCreate(t *testing.T) {
 
 			// ExclusiveTopology => same-set spread + cross-set exclusion = two anti-affinity terms.
 			require.Len(t, tmpl.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 2, "%s podAntiAffinity terms", name)
+		}
+	})
+
+	t.Run("strips legacy managed placement annotations from child templates", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		manager := NewLeaderWorkerSetManager(fakeClient)
+
+		ds, role := testManagerDSWithRole("test-deploy")
+		role.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(2))
+		legacy := map[string]string{
+			"user": "keep",
+			leaderworkersetv1.ExclusiveScopeAnnotationKey:               string(leaderworkersetv1.PlacementScopeOwn),
+			leaderworkersetv1.ExclusiveEnforcementAnnotationKey:         string(leaderworkersetv1.PlacementPreferred),
+			leaderworkersetv1.SubGroupExclusiveScopeAnnotationKey:       string(leaderworkersetv1.PlacementScopeOwn),
+			leaderworkersetv1.SubGroupExclusiveEnforcementAnnotationKey: string(leaderworkersetv1.PlacementPreferred),
+		}
+		role.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Annotations: maps.Clone(legacy)},
+		}
+		role.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Annotations: maps.Clone(legacy)},
+		}
+		revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+
+		require.NoError(t, manager.Create(context.Background(), ds, role, 0, revision, 2, nil))
+
+		var lws leaderworkersetv1.LeaderWorkerSet
+		require.NoError(t, fakeClient.Get(context.Background(),
+			client.ObjectKey{Name: disaggregatedsetutils.GenerateName(ds.Name, 0, revision, role.Name), Namespace: ds.Namespace}, &lws))
+		for name, annotations := range map[string]map[string]string{
+			"leader": lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations,
+			"worker": lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations,
+		} {
+			require.Equal(t, "keep", annotations["user"], "%s user annotation", name)
+			for _, key := range utils.ManagedPlacementAnnotationKeys() {
+				_, exists := annotations[key]
+				require.False(t, exists, "%s managed annotation %s must be stripped", name, key)
+			}
 		}
 	})
 

@@ -60,6 +60,7 @@ import (
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
+	"sigs.k8s.io/lws/pkg/utils"
 	acceleratorutils "sigs.k8s.io/lws/pkg/utils/accelerators"
 	controllerutils "sigs.k8s.io/lws/pkg/utils/controller"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
@@ -1815,16 +1816,37 @@ func constructWorkerStatefulSetApplyConfiguration(leaderPod corev1.Pod, lws lead
 	// pod template with live size/subGroupPolicy/networkConfig breaks the group.
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.Size))
 	podAnnotations[leaderworkerset.LeaderPodNameAnnotationKey] = leaderPod.Name
+	// A worker template written before admission rejected the managed placement
+	// annotations can still carry Own or Preferred values. They would survive
+	// the conditional copy below and make recreated workers use a different
+	// placement from their leader, so drop all four from the converted template
+	// annotations (WithAnnotations below merges into that map) before copying
+	// the leader's authoritative values.
+	utils.ClearManagedPlacementAnnotations(podTemplateApplyConfiguration.Annotations)
 	// Exclusive placement keys are copied from the leader pod so workers of an
-	// old-revision group keep the placement their leader was created with.
+	// old-revision group keep the placement their leader was created with. The
+	// scope travels with the key: it decides how widely the pod webhook scopes
+	// the injected anti-affinity.
 	if topologyKey := leaderPod.Annotations[leaderworkerset.ExclusiveKeyAnnotationKey]; topologyKey != "" {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		if scope := leaderPod.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey]; scope != "" {
+			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = scope
+		}
+		if enforcement := leaderPod.Annotations[leaderworkerset.ExclusiveEnforcementAnnotationKey]; enforcement != "" {
+			podAnnotations[leaderworkerset.ExclusiveEnforcementAnnotationKey] = enforcement
+		}
 	}
 	if currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(ptr.Deref(currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type, leaderworkerset.SubGroupPolicyTypeLeaderWorker))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*currentLws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
 		if topologyKey := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey]; topologyKey != "" {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
+			if scope := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey]; scope != "" {
+				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = scope
+			}
+			if enforcement := leaderPod.Annotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey]; enforcement != "" {
+				podAnnotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey] = enforcement
+			}
 		}
 	}
 	acceleratorutils.AddTPUAnnotations(leaderPod, podAnnotations)

@@ -2506,14 +2506,38 @@ func buildLeaderPodTemplateApplyConfiguration(lws *leaderworkerset.LeaderWorkerS
 	})
 	podAnnotations := make(map[string]string)
 	podAnnotations[leaderworkerset.SizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.Size))
-	if topologyKey, ok := utils.ExclusiveTopologyKey(lws); ok {
+	// The template may carry controller-managed placement annotations written
+	// before admission rejected them. A stale Own or Preferred value would
+	// otherwise survive the stamp below and make an All or Required policy run
+	// with the weaker placement it recorded. Clear all four keys from the
+	// template's annotations, which WithAnnotations below merges into; the
+	// non-default values of the resolved policy are stamped below.
+	utils.ClearManagedPlacementAnnotations(podTemplateApplyConfiguration.Annotations)
+	if topologyKey, scope, ok := utils.ExclusivePlacement(lws); ok {
 		podAnnotations[leaderworkerset.ExclusiveKeyAnnotationKey] = topologyKey
+		// A missing scope resolves as All, so only the Own scope is stamped:
+		// stamping the default would change the template of existing groups on
+		// controller upgrade and roll them without a revision.
+		if scope == leaderworkerset.PlacementScopeOwn {
+			podAnnotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(scope)
+		}
+		// A missing enforcement resolves as Required, for the same upgrade
+		// reason as the scope.
+		if utils.ExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+			podAnnotations[leaderworkerset.ExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+		}
 	}
 	if lws.Spec.LeaderWorkerTemplate.SubGroupPolicy != nil {
 		podAnnotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] = string(ptr.Deref(lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.Type, leaderworkerset.SubGroupPolicyTypeLeaderWorker))
 		podAnnotations[leaderworkerset.SubGroupSizeAnnotationKey] = strconv.Itoa(int(*lws.Spec.LeaderWorkerTemplate.SubGroupPolicy.SubGroupSize))
-		if topologyKey, ok := utils.SubGroupExclusiveTopologyKey(lws); ok {
+		if topologyKey, scope, ok := utils.SubGroupExclusivePlacement(lws); ok {
 			podAnnotations[leaderworkerset.SubGroupExclusiveKeyAnnotationKey] = topologyKey
+			if scope == leaderworkerset.PlacementScopeOwn {
+				podAnnotations[leaderworkerset.SubGroupExclusiveScopeAnnotationKey] = string(scope)
+			}
+			if utils.SubGroupExclusiveEnforcement(lws) == leaderworkerset.PlacementPreferred {
+				podAnnotations[leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey] = string(leaderworkerset.PlacementPreferred)
+			}
 		}
 	}
 

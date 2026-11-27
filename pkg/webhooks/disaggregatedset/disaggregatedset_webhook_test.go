@@ -1767,6 +1767,18 @@ func TestValidatePlacementWithRolePlacement(t *testing.T) {
 			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
 		},
 		{
+			name:     "group Own scope placementPolicy",
+			policy:   &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: sliceTopology},
+			errorMsg: "spec.roles[0].spec.placementPolicy.type: Forbidden",
+		},
+		{
+			name: "subgroup Own scope placementPolicy",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: sliceTopology}},
+			subGroups: true,
+			errorMsg:  "spec.roles[0].spec.placementPolicy.subGroup.type: Forbidden",
+		},
+		{
 			// The slice affinity and the group affinity are both required, so
 			// later groups of a slice cannot satisfy both and the slice splits.
 			name:     "group placementPolicy on a finer topology",
@@ -1899,4 +1911,65 @@ func TestDisaggregatedSetTPUSubGroup(t *testing.T) {
 		_, err := webhook.ValidateUpdate(ctx, oldObj, updated)
 		require.ErrorContains(t, err, divergeDetail)
 	})
+}
+
+func internalPlacementDisaggregatedSet(annotationKey string) *disaggv1.DisaggregatedSet {
+	return &disaggv1.DisaggregatedSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: disaggv1.DisaggregatedSetSpec{
+			Roles: []disaggv1.DisaggregatedRoleSpec{{
+				Name: "prefill",
+				LeaderWorkerSetTemplateSpec: leaderworkerset.LeaderWorkerSetTemplateSpec{
+					Spec: leaderworkerset.LeaderWorkerSetSpec{
+						Replicas: ptr.To(int32(1)),
+						LeaderWorkerTemplate: leaderworkerset.LeaderWorkerTemplate{
+							Size: ptr.To(int32(1)),
+							WorkerTemplate: corev1.PodTemplateSpec{
+								ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{annotationKey: string(leaderworkerset.PlacementPreferred)}},
+							},
+						},
+					},
+				},
+			}},
+		},
+	}
+}
+
+// The DisaggregatedSet webhook must reject the controller-managed placement
+// annotations on a role template at admission; otherwise the DisaggregatedSet
+// is admitted and the LeaderWorkerSet webhook then rejects every child it
+// creates.
+func TestValidateTemplateInternalPlacementAnnotations(t *testing.T) {
+	for _, key := range []string{
+		leaderworkerset.ExclusiveScopeAnnotationKey,
+		leaderworkerset.ExclusiveEnforcementAnnotationKey,
+		leaderworkerset.SubGroupExclusiveScopeAnnotationKey,
+		leaderworkerset.SubGroupExclusiveEnforcementAnnotationKey,
+	} {
+		t.Run(key, func(t *testing.T) {
+			webhook := &DisaggregatedSetWebhook{}
+			_, err := webhook.ValidateCreate(context.Background(), internalPlacementDisaggregatedSet(key))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "is managed by the LeaderWorkerSet controller and cannot be set")
+		})
+	}
+}
+
+func TestValidateTemplateInternalPlacementAnnotationsOnUpdate(t *testing.T) {
+	// An object that already carries the annotation stays updatable when the
+	// template does not change.
+	webhook := &DisaggregatedSetWebhook{}
+	oldDs := internalPlacementDisaggregatedSet(leaderworkerset.ExclusiveEnforcementAnnotationKey)
+	newDs := oldDs.DeepCopy()
+	newDs.Spec.Roles[0].Spec.Replicas = ptr.To(int32(2))
+	_, err := webhook.ValidateUpdate(context.Background(), oldDs, newDs)
+	require.NoError(t, err)
+
+	// Adding another internal annotation is a new value, so it is rejected.
+	oldDs = internalPlacementDisaggregatedSet(leaderworkerset.ExclusiveEnforcementAnnotationKey)
+	newDs = internalPlacementDisaggregatedSet(leaderworkerset.ExclusiveEnforcementAnnotationKey)
+	newDs.Spec.Roles[0].Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations[leaderworkerset.ExclusiveScopeAnnotationKey] = string(leaderworkerset.PlacementScopeOwn)
+	_, err = webhook.ValidateUpdate(context.Background(), oldDs, newDs)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), leaderworkerset.ExclusiveScopeAnnotationKey)
 }

@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
 	"sigs.k8s.io/lws/pkg/replicagroups"
+	"sigs.k8s.io/lws/pkg/utils"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
 
@@ -306,6 +307,12 @@ func (manager *LeaderWorkerSetManager) Create(
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Labels = mergeLabels(role.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels, labels)
 	// Defensive copy: struct copy is shallow, so maps are shared with the original config.
 	lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations = copyAnnotations(role.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
+	// The parent admits an unchanged legacy managed placement annotation so the
+	// object stays updatable, but a new child LeaderWorkerSet is created without
+	// an old template to compare against and its webhook would reject that same
+	// annotation. The child controller stamps the placement its policy resolves
+	// to, so strip the managed keys from the copied template.
+	utils.ClearManagedPlacementAnnotations(lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Annotations)
 	// Inject placement affinity (no-op when no policy is set). The helper deep-copies
 	// any existing affinity, so the shared worker template is not mutated.
 	disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.WorkerTemplate.Spec, disaggregatedSet.Name, slice, disaggregatedSet.Spec.PlacementPolicy)
@@ -314,6 +321,7 @@ func (manager *LeaderWorkerSetManager) Create(
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate = lwsSpec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Labels = mergeLabels(role.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels, labels)
 		lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations = copyAnnotations(role.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
+		utils.ClearManagedPlacementAnnotations(lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Annotations)
 		disaggregatedsetutils.SetPlacementAffinities(&lwsSpec.LeaderWorkerTemplate.LeaderTemplate.Spec, disaggregatedSet.Name, slice, disaggregatedSet.Spec.PlacementPolicy)
 	}
 

@@ -38,6 +38,7 @@ import (
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/utils"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
 )
@@ -191,8 +192,32 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	cdWarnings, cdErrs := w.validateComputeDomain(obj, oldObj, oldRoles)
 	warnings = append(warnings, cdWarnings...)
 	allErrs = append(allErrs, cdErrs...)
+	allErrs = append(allErrs, validateTemplateInternalPlacements(obj, oldRoles)...)
 
 	return warnings, allErrs
+}
+
+// validateTemplateInternalPlacements rejects the controller-managed
+// exclusive-scope and exclusive-enforcement annotations on a role's pod
+// templates, mirroring what the LeaderWorkerSet webhook does for a standalone
+// LeaderWorkerSet. Without this the DisaggregatedSet is admitted and its child
+// LeaderWorkerSets are then rejected by that webhook, leaving the
+// DisaggregatedSet unable to create any child.
+func validateTemplateInternalPlacements(obj *disaggv1.DisaggregatedSet, oldRoles map[string]*disaggv1.DisaggregatedRoleSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	rolesPath := field.NewPath("spec", "roles")
+	for i := range obj.Spec.Roles {
+		role := &obj.Spec.Roles[i]
+		templatePath := rolesPath.Index(i).Child("spec", "leaderWorkerTemplate")
+		var oldLeaderTemplate, oldWorkerTemplate *corev1.PodTemplateSpec
+		if oldRole := oldRoles[role.Name]; oldRole != nil {
+			oldLeaderTemplate = oldRole.Spec.LeaderWorkerTemplate.LeaderTemplate
+			oldWorkerTemplate = &oldRole.Spec.LeaderWorkerTemplate.WorkerTemplate
+		}
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalPlacementAnnotations(templatePath.Child("leaderTemplate"), role.Spec.LeaderWorkerTemplate.LeaderTemplate, oldLeaderTemplate)...)
+		allErrs = append(allErrs, webhooks.ValidateTemplateInternalPlacementAnnotations(templatePath.Child("workerTemplate"), &role.Spec.LeaderWorkerTemplate.WorkerTemplate, oldWorkerTemplate)...)
+	}
+	return allErrs
 }
 
 func isExternal(scaling *disaggv1.RoleScaling) bool {
@@ -575,17 +600,17 @@ func (w *DisaggregatedSetWebhook) validatePlacement(obj, oldObj *disaggv1.Disagg
 }
 
 // rolePlacementPolicy returns the path of the first exclusive placement in a role's
-// spec.placementPolicy, at the group or subgroup level.
+// spec.placementPolicy, at the group or subgroup level, for either exclusive type.
 func rolePlacementPolicy(role disaggv1.DisaggregatedRoleSpec, rolePath *field.Path) (*field.Path, bool) {
 	policy := role.Spec.PlacementPolicy
 	if policy == nil {
 		return nil, false
 	}
 	policyPath := rolePath.Child("spec", "placementPolicy")
-	if policy.Type == leaderworkerset.PlacementExclusiveTopology {
+	if utils.IsExclusivePlacement(policy.Type) {
 		return policyPath.Child("type"), true
 	}
-	if policy.SubGroup != nil && policy.SubGroup.Type == leaderworkerset.PlacementExclusiveTopology {
+	if policy.SubGroup != nil && utils.IsExclusivePlacement(policy.SubGroup.Type) {
 		return policyPath.Child("subGroup", "type"), true
 	}
 	return nil, false

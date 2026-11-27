@@ -244,21 +244,25 @@ func Test_GetOperatorNamespace(t *testing.T) {
 	}
 }
 
-func Test_ExclusiveTopologyKey(t *testing.T) {
+func Test_ExclusivePlacement(t *testing.T) {
 	testCases := []struct {
-		name       string
-		annotation *string
-		policyType leaderworkerset.PlacementType
-		topology   string
-		wantKey    string
-		wantOK     bool
+		name        string
+		annotation  *string
+		policyType  leaderworkerset.PlacementType
+		policyScope leaderworkerset.PlacementScope
+		topology    string
+		wantKey     string
+		wantScope   leaderworkerset.PlacementScope
+		wantOK      bool
 	}{
 		{name: "neither set"},
-		{name: "annotation only", annotation: ptr.To("rack"), wantKey: "rack", wantOK: true},
+		{name: "annotation only", annotation: ptr.To("rack"), wantKey: "rack", wantScope: leaderworkerset.PlacementScopeAll, wantOK: true},
 		{name: "empty annotation", annotation: ptr.To("")},
-		{name: "placementPolicy only", policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
-		{name: "placementPolicy takes precedence over the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantOK: true},
-		{name: "placementPolicy None falls back to the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementNone, wantKey: "rack", wantOK: true},
+		{name: "All scope only", policyType: leaderworkerset.PlacementExclusiveTopology, policyScope: leaderworkerset.PlacementScopeAll, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementScopeAll, wantOK: true},
+		{name: "a missing scope resolves as All", policyType: leaderworkerset.PlacementExclusiveTopology, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementScopeAll, wantOK: true},
+		{name: "Own scope", policyType: leaderworkerset.PlacementExclusiveTopology, policyScope: leaderworkerset.PlacementScopeOwn, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementScopeOwn, wantOK: true},
+		{name: "placementPolicy takes precedence over the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementExclusiveTopology, policyScope: leaderworkerset.PlacementScopeOwn, topology: "block", wantKey: "block", wantScope: leaderworkerset.PlacementScopeOwn, wantOK: true},
+		{name: "placementPolicy None falls back to the annotation", annotation: ptr.To("rack"), policyType: leaderworkerset.PlacementNone, wantKey: "rack", wantScope: leaderworkerset.PlacementScopeAll, wantOK: true},
 		{name: "placementPolicy None without the annotation", policyType: leaderworkerset.PlacementNone},
 	}
 
@@ -269,10 +273,14 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 				lws.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: *tc.annotation}
 			}
 			if tc.policyType != "" {
-				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: tc.policyType, Topology: tc.topology}
+				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{Type: tc.policyType, Scope: tc.policyScope, Topology: tc.topology}
 			}
-			if gotKey, gotOK := ExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
-				t.Errorf("ExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			gotKey, gotScope, gotOK := ExclusivePlacement(lws)
+			if gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("ExclusivePlacement() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+			if gotOK && gotScope != tc.wantScope {
+				t.Errorf("ExclusivePlacement() scope = %q, want %q", gotScope, tc.wantScope)
 			}
 		})
 		t.Run("subgroup/"+tc.name, func(t *testing.T) {
@@ -284,11 +292,15 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 			if tc.policyType != "" {
 				lws.Spec.PlacementPolicy = &leaderworkerset.PlacementPolicy{
 					Type:     leaderworkerset.PlacementNone,
-					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: tc.policyType, Topology: tc.topology},
+					SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: tc.policyType, Scope: tc.policyScope, Topology: tc.topology},
 				}
 			}
-			if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != tc.wantKey || gotOK != tc.wantOK {
-				t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			gotKey, gotScope, gotOK := SubGroupExclusivePlacement(lws)
+			if gotKey != tc.wantKey || gotOK != tc.wantOK {
+				t.Errorf("SubGroupExclusivePlacement() = (%q, %t), want (%q, %t)", gotKey, gotOK, tc.wantKey, tc.wantOK)
+			}
+			if gotOK && gotScope != tc.wantScope {
+				t.Errorf("SubGroupExclusivePlacement() scope = %q, want %q", gotScope, tc.wantScope)
 			}
 		})
 	}
@@ -296,15 +308,84 @@ func Test_ExclusiveTopologyKey(t *testing.T) {
 	t.Run("subgroup/annotation without subGroupPolicy", func(t *testing.T) {
 		lws := &leaderworkerset.LeaderWorkerSet{}
 		lws.Annotations = map[string]string{leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "rack"}
-		if gotKey, gotOK := SubGroupExclusiveTopologyKey(lws); gotKey != "" || gotOK {
-			t.Errorf("SubGroupExclusiveTopologyKey() = (%q, %t), want (\"\", false)", gotKey, gotOK)
+		if gotKey, _, gotOK := SubGroupExclusivePlacement(lws); gotKey != "" || gotOK {
+			t.Errorf("SubGroupExclusivePlacement() = (%q, %t), want (\"\", false)", gotKey, gotOK)
 		}
 	})
+}
+
+func Test_ExclusiveEnforcement(t *testing.T) {
+	preferred := leaderworkerset.PlacementPreferred
+	required := leaderworkerset.PlacementRequired
+	testCases := []struct {
+		name       string
+		annotation *string
+		policy     *leaderworkerset.PlacementPolicy
+		subGroup   *leaderworkerset.SubGroupPlacementPolicy
+		want       leaderworkerset.PlacementEnforcement
+		wantSubUp  leaderworkerset.PlacementEnforcement
+	}{
+		{name: "no policy", want: required, wantSubUp: required},
+		{
+			name:       "the deprecated annotation is always required",
+			annotation: ptr.To("rack"),
+			want:       required, wantSubUp: required,
+		},
+		{
+			name: "Preferred from the field",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "rack",
+				Enforcement: preferred},
+			want: preferred, wantSubUp: required,
+		},
+		{
+			name: "Preferred from the subgroup field",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone,
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "rack", Enforcement: preferred}},
+			want: required, wantSubUp: preferred,
+		},
+		{
+			name: "a Required enforcement stays Required",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
+				Enforcement: required},
+			want: required, wantSubUp: required,
+		},
+		{
+			name: "a Preferred group level does not leak into the subgroup level",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "rack",
+				Enforcement: preferred},
+			subGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "host"},
+			want:     preferred, wantSubUp: required,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			lws := &leaderworkerset.LeaderWorkerSet{}
+			if tc.annotation != nil {
+				lws.Annotations = map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: *tc.annotation}
+			}
+			if tc.policy != nil {
+				lws.Spec.PlacementPolicy = tc.policy
+			}
+			if tc.subGroup != nil {
+				lws.Spec.LeaderWorkerTemplate.SubGroupPolicy = &leaderworkerset.SubGroupPolicy{SubGroupSize: ptr.To[int32](2)}
+			}
+			if got := ExclusiveEnforcement(lws); got != tc.want {
+				t.Errorf("ExclusiveEnforcement() = %q, want %q", got, tc.want)
+			}
+			if got := SubGroupExclusiveEnforcement(lws); got != tc.wantSubUp {
+				t.Errorf("SubGroupExclusiveEnforcement() = %q, want %q", got, tc.wantSubUp)
+			}
+		})
+	}
 }
 
 func Test_EffectivePlacementPolicy(t *testing.T) {
 	exclusive := func(topology string) *leaderworkerset.PlacementPolicy {
 		return &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: topology}
+	}
+	own := func(topology string) *leaderworkerset.PlacementPolicy {
+		return &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: topology}
 	}
 	testCases := []struct {
 		name        string
@@ -315,17 +396,31 @@ func Test_EffectivePlacementPolicy(t *testing.T) {
 		{name: "no placement"},
 		{name: "None field without annotations", policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementNone}},
 		{
-			name:        "annotations",
+			name:        "annotations resolve as All",
 			annotations: map[string]string{leaderworkerset.ExclusiveKeyAnnotationKey: "rack", leaderworkerset.SubGroupExclusiveKeyAnnotationKey: "host"},
 			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
 		},
 		{
-			name: "field",
-			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
-				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			name: "All scope is the absent field",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeAll, Topology: "rack",
+				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeAll, Topology: "host"}},
 			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "rack",
 				SubGroup: &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+		},
+		{
+			name:   "Own scope",
+			policy: own("rack"),
+			want:   own("rack"),
+		},
+		{
+			name: "Own scope with a Preferred enforcement",
+			policy: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "rack",
+				Enforcement: leaderworkerset.PlacementPreferred,
+				SubGroup:    &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
+			want: &leaderworkerset.PlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Scope: leaderworkerset.PlacementScopeOwn, Topology: "rack",
+				Enforcement: leaderworkerset.PlacementPreferred,
+				SubGroup:    &leaderworkerset.SubGroupPlacementPolicy{Type: leaderworkerset.PlacementExclusiveTopology, Topology: "host"}},
 		},
 		{
 			name:        "group field and subgroup annotation",
