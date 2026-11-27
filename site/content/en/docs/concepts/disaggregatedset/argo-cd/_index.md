@@ -205,6 +205,8 @@ The requested replicas remain one; status reports the observed extra group and e
 
 If Decode first scales to zero and then resumes at one, its one group starts on A. LWS keeps the existing Prefill A/B groups rather than restarting Prefill. B cannot serve without its own Decode, so further canary growth waits until Decode can split. The retained B Prefill is not counted as serving capacity and this is not a settled hold.
 
+With Ordinal virtual roles, shrinking the shared LWS can move sub-role labels to already-running low-index groups before deleting higher ordinals. These sub-roles share a Pod template, so survivors can provide Prefill without starting new Pods. Do not expect the same Prefill Pod names when another sub-role shrinks.
+
 Serving-capacity status follows admitted demand. A Deferred request to scale Decode to zero does not make Decode optional while the request is queued. Conversely, a queued increase from an admitted zero does not reactivate it yet. Requested counts in status still show the latest autoscaler request.
 
 Set an autoscaler minimum of two for each required role/sub-role if the canary must both start and reach an exact hold without this boundary. This is optional for avoiding repeated restarts: an already-running pair is protected even when the request drops to one.
