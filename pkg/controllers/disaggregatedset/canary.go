@@ -101,19 +101,32 @@ const (
 // counts on A before planning so restarts and new targets cannot admit a queued
 // request. Historical initial counts seed the record; surge is not demand.
 func (executor *RollingUpdateExecutor) admitCanaryDemand(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, desired map[string]int) (map[string]int, error) {
+	admitted, byRole, err := canaryDemandForRoles(ds, stable, desired)
+	if err != nil {
+		return nil, err
+	}
+	if err := executor.recordCanaryStable(ctx, ds, stable, true, byRole); err != nil {
+		return nil, err
+	}
+	return admitted, nil
+}
+
+// Keep calculation separate from persistence so read-only planner previews use
+// the same demand gate without writing baseline annotations.
+func canaryDemandForRoles(ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, desired map[string]int) (map[string]int, map[string]map[string]int, error) {
 	admitted := maps.Clone(desired)
 	byRole := make(map[string]map[string]int, len(ds.Spec.Roles))
 	for _, role := range ds.Spec.Roles {
 		lws := stable.Roles[role.Name]
 		counts, err := subRoleCounts(lws, canaryDemandAnnotation)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if counts == nil {
 			if len(role.SubRoles) == 0 {
 				counts = map[string]int{"": stable.GetInitialReplicasPerRole(role.Name)}
 			} else if counts, err = subRoleCounts(lws, disaggv1.InitialSubRoleReplicasAnnotationKey); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		for _, leaf := range roleLeaves(&role) {
@@ -121,7 +134,7 @@ func (executor *RollingUpdateExecutor) admitCanaryDemand(ctx context.Context, ds
 			previous, known := counts[leaf.Name]
 			requested, resolved := desired[name]
 			if !known || !resolved {
-				return nil, fmt.Errorf("cannot determine admitted canary demand for role %s", name)
+				return nil, nil, fmt.Errorf("cannot determine admitted canary demand for role %s", name)
 			}
 			if requested > previous && !scaleUpDuringRolloutEnabled(ds) || requested < previous && !scaleDownDuringRolloutEnabled(ds) {
 				admitted[name] = previous
@@ -129,15 +142,12 @@ func (executor *RollingUpdateExecutor) admitCanaryDemand(ctx context.Context, ds
 			counts[leaf.Name] = admitted[name]
 		}
 		if err := validateSubRoleCounts(counts); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		admitted[role.Name] = countSubRoles(counts)
 		byRole[role.Name] = counts
 	}
-	if err := executor.recordCanaryStable(ctx, ds, stable, true, byRole); err != nil {
-		return nil, err
-	}
-	return admitted, nil
+	return admitted, byRole, nil
 }
 
 func canaryDimension(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
