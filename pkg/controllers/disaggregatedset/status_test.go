@@ -795,10 +795,51 @@ func TestServingCapacityRequiresTargets(t *testing.T) {
 			for _, workload := range tc.workloads {
 				capacity.observeWorkload(workload, workload.Labels[disaggregatedsetv1.RoleLabelKey])
 			}
-			capacity.requireTargets(ds, "current", tc.desired)
+			capacity.requireTargets(ds, "current", tc.desired, tc.workloads)
 			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill", ReadyReplicas: 10}, {Name: "decode", ReadyReplicas: 10}}
 			capacity.setAvailableReplicas(statuses)
 			assert.Equal(t, tc.want, statuses[0].AvailableReplicas)
+		})
+	}
+}
+
+func TestCanaryServingUsesAdmittedDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		admitted, requested int
+		available           int32
+		restoreBaseline     bool
+	}{
+		{"queued zero still requires Decode", 4, 0, 1, false},
+		{"admitted zero releases Decode", 0, 0, 4, false},
+		{"queued increase does not reactivate Decode", 0, 4, 4, false},
+		{"Git rollback uses current demand", 0, 4, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 4}, [2]int{1, 1}, [2]int{})
+			setCanaryPercent(ds, 25)
+			objects := revisionLWSObjects("A", [2]int32{3, 3}, [2]int32{3, 0}, [2]int32{4, 4}, time.Unix(1, 0))
+			for i, object := range objects {
+				lws := object.(*leaderworkersetv1.LeaderWorkerSet)
+				lws.Annotations[canaryStableAnnotation] = "true"
+				lws.Annotations[canaryDemandAnnotation] = `{"":4}`
+				if i == 1 {
+					lws.Annotations[canaryDemandAnnotation] = fmt.Sprintf(`{"":%d}`, tc.admitted)
+				}
+			}
+			objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{4, 4}, time.Unix(2, 0))...)
+			manager := newTestLWSManager(newTestClient(objects...))
+			desired := map[string]int{"prefill": 4, "decode": tc.requested}
+			target := "B"
+			if tc.restoreBaseline {
+				target = "A"
+			}
+			statuses, _, _, err := manager.collectRoleStatuses(t.Context(), ds, testRoleNames(), target, desired)
+			require.NoError(t, err)
+			require.Equal(t, tc.available, statuses[0].AvailableReplicas)
+			setMinAvailableReplicas(ds, statuses, desired, 1)
+			condition := minimumReplicasAvailableCondition(ds, statuses)
+			require.Equal(t, tc.admitted == 0 && tc.requested == 0, condition.Status == metav1.ConditionTrue)
 		})
 	}
 }

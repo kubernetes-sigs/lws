@@ -201,7 +201,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 			}
 		}
 	}
-	capacity.requireTargets(ds, revision, desiredReplicasByRole)
+	capacity.requireTargets(ds, revision, desiredReplicasByRole, all)
 	capacity.setAvailableReplicas(statuses)
 	return statuses, allAssigned, observedCanaryStatus(ds, revision, all), nil
 }
@@ -322,20 +322,48 @@ func (revision *servingRevision) requireSubRoles(role string, layouts ...map[str
 // requireTargets makes the current revision require every role with a positive
 // target in each slice, so a role whose workload is missing still stops its peers
 // from counting as available.
-func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.DisaggregatedSet, revision string, desiredReplicasByRole map[string]int) {
+func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.DisaggregatedSet, revision string, desiredReplicasByRole map[string]int, workloads []*leaderworkersetv1.LeaderWorkerSet) {
 	for slice := range disaggregatedsetutils.GetSlices(ds) {
 		current := capacity.revisionAt(servingRevisionKey{strconv.Itoa(int(slice)), revision})
 		for _, leaf := range rolloutRoleNames(ds) {
 			current.observe(leaf, 0, desiredReplicasByRole[leaf] > 0)
 		}
 	}
-	if _, canary := canaryPercent(ds); canary {
-		for name, desired := range desiredReplicasByRole {
-			if desired == 0 {
-				for _, observed := range capacity {
-					delete(observed.required, name)
-				}
-			}
+	if _, canary := canaryPercent(ds); !canary {
+		return
+	}
+	// A queued zero is not an inactive role. Use the counts the planner has
+	// actually admitted, including an admitted zero followed by a queued increase.
+	// Keep slices independent; conflicting records conservatively require a role.
+	admitted := map[string]map[string]int{}
+	restored := sets.New[string]()
+	for _, lws := range workloads {
+		if lws.Annotations[canaryStableAnnotation] != "true" || lws.DeletionTimestamp != nil {
+			continue
+		}
+		slice, role := lws.Labels[disaggregatedsetv1.SliceLabelKey], lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+			restored.Insert(slice) // Git restored A; this slice uses ordinary rollout demand.
+			continue
+		}
+		counts, err := subRoleCounts(lws, canaryDemandAnnotation)
+		if err != nil || counts == nil {
+			continue // Until demand is recorded, retain the observed requirements.
+		}
+		if admitted[slice] == nil {
+			admitted[slice] = map[string]int{}
+		}
+		for child, replicas := range counts {
+			name := childRoleKey(role, child)
+			admitted[slice][name] = max(admitted[slice][name], replicas)
+		}
+	}
+	for key, observed := range capacity {
+		if restored.Has(key.slice) {
+			continue
+		}
+		for name, replicas := range admitted[key.slice] {
+			observed.required[name] = replicas > 0
 		}
 	}
 }
