@@ -10,16 +10,23 @@ export function observationState(frame) {
   return JSON.stringify([frame.roles, observedPercent(frame), frame.deltas?.find(line => line.startsWith('Canary status:'))]);
 }
 
-function requestPhase(step) {
+function requestPhase(step, scenario) {
   const request = step.title.match(/^Request (\d+)% new at (\d+) Prefill \/ (\d+) Decode: (.+)\.$/);
   if (request) {
     const [, percent, prefill, decode, split] = request;
     let instruction = 'Open readiness as groups arrive; preserve the availability minimum.';
     if (percent === '100') instruction = 'Advance to 100%; replace the remaining A groups with B.';
     else if (percent === '0') instruction = 'Hold A; B stays at zero.';
-    else instruction = 'Immediate admits resizing; Deferred keeps its admitted counts. Promotion still proceeds.';
+    else if (scenario.policy === 'Immediate' && prefill === '1') {
+      instruction = decode === '1' ? 'Keep Prefill A1+B1; Decode resumes on A only. B cannot serve yet.'
+        : 'Keep the last Prefill group on A and B: one extra group avoids restarting the canary.';
+    } else instruction = 'Immediate admits resizing; Deferred keeps its admitted counts. Promotion still proceeds.';
+    const lines = [`Expected ${split}.`, instruction];
+    if (scenario.policy === 'Immediate' && scenario.id.includes('subroles') && scenario.identity === 'Ordinal' && prefill === '1' && decode === '0') {
+      lines.push('As the shared LWS shrinks, Ordinal can relabel already-running low-index groups.');
+    }
     return {title: `${percent}% new · ${prefill} Prefill / ${decode} Decode`,
-      lines: [`Expected ${split}.`, instruction]};
+      lines};
   }
   if (step.title.startsWith('Reject 50%')) return {
     title: 'Reject a percentage decrease', lines: ['50% → 25% must be rejected by admission.', 'Keep every current group; rollback requires restoring templates.']};
@@ -58,7 +65,7 @@ export function buildCanaryTimeline(scenario) {
 
   let visited = 0;
   for (const step of scenario.steps) {
-    const nextPhase = requestPhase(step);
+    const nextPhase = requestPhase(step, scenario);
     if (nextPhase) {
       phase = nextPhase; phaseIndex++;
       push({key: `${step.id}/compact-trigger`, heading: 'Scenario trigger', kind: 'trigger', lines: phase.lines}, 4);

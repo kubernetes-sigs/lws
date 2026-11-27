@@ -257,62 +257,62 @@
     "scenarios": [
       {
         "id": "canary--Ordinal--Deferred",
-        "title": "Percentage canary: promote, reverse and autoscale · Ordinal · Deferred · A → B",
+        "title": "Canary promotion, scaling and retained pairs · Ordinal · Deferred",
         "source": "/trace-player/scenarios/canary/canary--Ordinal--Deferred.json.gz"
       },
       {
         "id": "canary--Ordinal--Immediate",
-        "title": "Percentage canary: promote, reverse and autoscale · Ordinal · Immediate · A → B",
+        "title": "Canary promotion, scaling and retained pairs · Ordinal · Immediate",
         "source": "/trace-player/scenarios/canary/canary--Ordinal--Immediate.json.gz"
       },
       {
         "id": "canary--Hash--Deferred",
-        "title": "Percentage canary: promote, reverse and autoscale · Hash · Deferred · A → B",
+        "title": "Canary promotion, scaling and retained pairs · Hash · Deferred",
         "source": "/trace-player/scenarios/canary/canary--Hash--Deferred.json.gz"
       },
       {
         "id": "canary--Hash--Immediate",
-        "title": "Percentage canary: promote, reverse and autoscale · Hash · Immediate · A → B",
+        "title": "Canary promotion, scaling and retained pairs · Hash · Immediate",
         "source": "/trace-player/scenarios/canary/canary--Hash--Immediate.json.gz"
       },
       {
         "id": "canary-subroles--Ordinal--Deferred",
-        "title": "Virtual-role canary: promote, reverse and autoscale · Ordinal · Deferred · A → B",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Ordinal · Deferred",
         "source": "/trace-player/scenarios/canary/canary-subroles--Ordinal--Deferred.json.gz"
       },
       {
         "id": "canary-subroles--Ordinal--Immediate",
-        "title": "Virtual-role canary: promote, reverse and autoscale · Ordinal · Immediate · A → B",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Ordinal · Immediate",
         "source": "/trace-player/scenarios/canary/canary-subroles--Ordinal--Immediate.json.gz"
       },
       {
         "id": "canary-subroles--Hash--Deferred",
-        "title": "Virtual-role canary: promote, reverse and autoscale · Hash · Deferred · A → B",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Hash · Deferred",
         "source": "/trace-player/scenarios/canary/canary-subroles--Hash--Deferred.json.gz"
       },
       {
         "id": "canary-subroles--Hash--Immediate",
-        "title": "Virtual-role canary: promote, reverse and autoscale · Hash · Immediate · A → B",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Hash · Immediate",
         "source": "/trace-player/scenarios/canary/canary-subroles--Hash--Immediate.json.gz"
       },
       {
         "id": "canary-chain--Ordinal--Deferred",
-        "title": "Keep the stable half while B rolls to C · Ordinal · Deferred · A → B → C",
+        "title": "A stays fixed while B rolls to C · Ordinal · Deferred",
         "source": "/trace-player/scenarios/canary/canary-chain--Ordinal--Deferred.json.gz"
       },
       {
         "id": "canary-chain--Hash--Deferred",
-        "title": "Keep the stable half while B rolls to C · Hash · Deferred · A → B → C",
+        "title": "A stays fixed while B rolls to C · Hash · Deferred",
         "source": "/trace-player/scenarios/canary/canary-chain--Hash--Deferred.json.gz"
       },
       {
         "id": "canary-chain-subroles--Ordinal--Deferred",
-        "title": "Virtual-role canary: keep A while B rolls to C · Ordinal · Deferred · A → B → C",
+        "title": "Virtual roles: A stays fixed while B rolls to C · Ordinal · Deferred",
         "source": "/trace-player/scenarios/canary/canary-chain-subroles--Ordinal--Deferred.json.gz"
       },
       {
         "id": "canary-chain-subroles--Hash--Deferred",
-        "title": "Virtual-role canary: keep A while B rolls to C · Hash · Deferred · A → B → C",
+        "title": "Virtual roles: A stays fixed while B rolls to C · Hash · Deferred",
         "source": "/trace-player/scenarios/canary/canary-chain-subroles--Hash--Deferred.json.gz"
       }
     ]

@@ -126,6 +126,12 @@ replace B within the experimental half. A's LWS spec, Pod UIDs and subrole label
 must remain unchanged while C starts, waits for readiness, and replaces B.
 The final hold requires A and C at 2 Prefill / 4 Decode each, with no B groups.
 
+The bundled canary diagrams were re-recorded on November 27, 2026. All twelve
+selected cases passed across a full run and focused reruns; each diagram uses
+one complete recording, with its actual controller/component commits and raw
+input hashes. See `site/static/trace-player/README.md` for the selection and
+verification details. The small/large non-canary recordings were not rerun.
+
 The tests check observed whole-group availability and physical requested surge,
 including a no-worsening serving floor while admitted demand grows. A revision
 with a newly reactivated but missing role is no longer serving. They do not treat

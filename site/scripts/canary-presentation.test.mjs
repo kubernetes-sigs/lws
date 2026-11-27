@@ -56,3 +56,17 @@ test('decreases are rejected and resizing distinguishes policies from final prom
   assert.match(triggers[4].card.lines.join('\n'), /Advance to 100%/);
   assert.doesNotMatch(triggers[4].card.lines.join('\n'), /Resize|same percentage/);
 });
+
+test('only Immediate describes the retained pair and warm Ordinal reassignment', () => {
+  for (const policy of ['Deferred', 'Immediate']) {
+    const timeline = buildCanaryTimeline({id: 'canary-subroles', identity: 'Ordinal', policy, frames: [],
+      steps: [{id: 'peer-zero', title: 'Request 50% new at 1 Prefill / 0 Decode: A=1/0, B=1/0.', frame_indices: []}],
+      outcome: {passed: true}});
+    const explanation = timeline.moments.find(moment => moment.card.kind === 'trigger').card.lines.join('\n');
+    if (policy === 'Immediate') assert.match(explanation, /one extra group.*\n.*relabel already-running/);
+    else {
+      assert.match(explanation, /Deferred keeps its admitted counts/);
+      assert.doesNotMatch(explanation, /extra group|relabel/);
+    }
+  }
+});
