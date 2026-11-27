@@ -1,0 +1,11 @@
+# Upper bounds on the measurements of each phase of the baseline workload, by
+# their names in summary.yaml. They are loose on purpose until the periodic job
+# has produced enough runs to set them from data: for now they catch a run that
+# hangs or regresses by a large factor.
+phases:
+  create:
+    wallTimeMs: 600000
+  scale-up:
+    wallTimeMs: 600000
+  scale-down:
+    wallTimeMs: 600000

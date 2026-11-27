@@ -777,24 +777,138 @@ func TestKubernetesProviderIdempotentReconcileDoesNotWrite(t *testing.T) {
 
 func TestUpdateMutablePodGroupFieldsAcceptsAPIDefaults(t *testing.T) {
 	lws := testScheduledLWS()
-	desired := &schedulingv1beta1.PodGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "test-group",
-			Namespace:       lws.Namespace,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
-		},
-		Spec: schedulingv1beta1.PodGroupSpec{
-			SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
-				Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
-			},
-		},
-	}
-	current := desired.DeepCopy()
-	current.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{Single: &schedulingv1beta1.SingleDisruptionMode{}}
-	current.Spec.Priority = ptr.To[int32](0)
-	current.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
+	for _, tc := range []struct {
+		name              string
+		priorityClassName string
+		priority          int32
+	}{
+		{name: "without global default PriorityClass", priorityClassName: "", priority: 0},
+		{name: "with global default PriorityClass", priorityClassName: "global-default", priority: 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired := &schedulingv1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "test-group",
+					Namespace:       lws.Namespace,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+				},
+				Spec: schedulingv1beta1.PodGroupSpec{
+					SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+						Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					},
+				},
+			}
+			current := desired.DeepCopy()
+			current.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{Single: &schedulingv1beta1.SingleDisruptionMode{}}
+			current.Spec.PriorityClassName = tc.priorityClassName
+			current.Spec.Priority = ptr.To(tc.priority)
+			current.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
 
-	require.NoError(t, updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, minCountImmutable))
+			require.NoError(t, updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, minCountImmutable))
+		})
+	}
+}
+
+func TestUpdateMutablePodGroupFieldsRejectsExplicitPriorityClassDrift(t *testing.T) {
+	lws := testScheduledLWS()
+	for _, tc := range []struct {
+		name         string
+		currentClass string
+		desiredClass string
+	}{
+		{name: "different class", currentClass: "global-default", desiredClass: "high-priority"},
+		{name: "missing class on persisted PodGroup", currentClass: "", desiredClass: "high-priority"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired := &schedulingv1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "test-group",
+					Namespace:       lws.Namespace,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+				},
+				Spec: schedulingv1beta1.PodGroupSpec{
+					PriorityClassName: tc.desiredClass,
+					SchedulingPolicy: schedulingv1beta1.PodGroupSchedulingPolicy{
+						Gang: &schedulingv1beta1.GangSchedulingPolicy{MinCount: 3},
+					},
+				},
+			}
+			current := desired.DeepCopy()
+			current.Spec.PriorityClassName = tc.currentClass
+
+			err := updateMutablePodGroupFields(context.Background(), newKubernetesFakeClientBuilder().Build(), current, desired, minCountImmutable)
+			require.ErrorContains(t, err, "immutable scheduling configuration drift")
+		})
+	}
+}
+
+func TestKubernetesProviderToleratesGlobalDefaultPriorityClass(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("whole-LWS reconcile and scale preserve server-defaulted priorityClassName", func(t *testing.T) {
+		lws := testScheduledLWS()
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName = ""
+		lws.Spec.Scheduling = &leaderworkerset.LeaderWorkerSetScheduling{
+			SchedulingPolicy: &schedulingv1alpha3.WorkloadCompositePodGroupSchedulingPolicy{
+				Gang: &schedulingv1alpha3.WorkloadCompositePodGroupGangSchedulingPolicy{},
+			},
+		}
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(lws).Build()
+		provider := NewKubernetesProvider(fakeClient)
+
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+
+		// Simulate the Kubernetes Priority admission controller populating the
+		// cluster's global default PriorityClass on PodGroup creation.
+		pgKey := types.NamespacedName{
+			Namespace: lws.Namespace,
+			Name:      KubernetesLWSGroupName(lws),
+		}
+		pg := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, pgKey, pg))
+		pg.Spec.PriorityClassName = "global-default"
+		pg.Spec.Priority = ptr.To[int32](100)
+		pg.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
+		pg.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{Single: &schedulingv1beta1.SingleDisruptionMode{}}
+		require.NoError(t, fakeClient.Update(ctx, pg))
+
+		// Subsequent reconcile and scale must succeed without reporting drift
+		// and preserve the server-populated priorityClassName.
+		lws.Spec.Replicas = ptr.To[int32](3)
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 3, "revision-1"))
+
+		updated := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, pgKey, updated))
+		assert.Equal(t, "global-default", updated.Spec.PriorityClassName)
+		require.NotNil(t, updated.Spec.SchedulingPolicy.Gang)
+		assert.Equal(t, int32(9), updated.Spec.SchedulingPolicy.Gang.MinCount)
+	})
+
+	t.Run("gated replica leader retry succeeds with server-defaulted priorityClassName", func(t *testing.T) {
+		lws := testScheduledLWS()
+		lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.PriorityClassName = ""
+		fakeClient := newKubernetesFakeClientBuilder().WithObjects(lws).Build()
+		provider := NewKubernetesProvider(fakeClient)
+
+		require.NoError(t, provider.ReconcileScheduling(ctx, lws, 2, "revision-1"))
+		leader := ordinalLeaderPod(lws, "0")
+		leader.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: leaderworkerset.GroupReplacementSchedulingGate}}
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+		pgKey := types.NamespacedName{
+			Namespace: lws.Namespace,
+			Name:      KubernetesPodGroupName(lws, "0", "revision-1"),
+		}
+		pg := &schedulingv1beta1.PodGroup{}
+		require.NoError(t, fakeClient.Get(ctx, pgKey, pg))
+		pg.Spec.PriorityClassName = "global-default"
+		pg.Spec.Priority = ptr.To[int32](100)
+		pg.Spec.PreemptionPolicy = ptr.To(schedulingv1beta1.PreemptLowerPriority)
+		pg.Spec.DisruptionMode = &schedulingv1beta1.DisruptionMode{Single: &schedulingv1beta1.SingleDisruptionMode{}}
+		require.NoError(t, fakeClient.Update(ctx, pg))
+
+		require.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	})
 }
 
 func TestUpdateMutablePodGroupFieldsAddsWorkloadOwnerRef(t *testing.T) {

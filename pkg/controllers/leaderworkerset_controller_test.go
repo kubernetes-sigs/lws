@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +53,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -1933,11 +1935,31 @@ func TestLeaderWorkerSetPodWatchPredicate(t *testing.T) {
 		r := &LeaderWorkerSetReconciler{SchedulerProvider: k8sProvider}
 		pred := r.podWatchPredicate()
 
+		hashWorkerPod := workerPod.DeepCopy()
+		hashWorkerPod.Annotations = map[string]string{
+			leaderworkerset.GroupIdentityAnnotationKey: string(leaderworkerset.GroupIdentityHash),
+		}
+		unindexedPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-pod",
+				Namespace: "default",
+				Labels: map[string]string{
+					leaderworkerset.SetNameLabelKey: "test-lws",
+				},
+			},
+		}
+
 		if !pred.Create(event.CreateEvent{Object: leaderPod}) {
 			t.Errorf("expected Create(leaderPod) to be true, got false")
 		}
-		if pred.Create(event.CreateEvent{Object: workerPod}) {
-			t.Errorf("expected Create(workerPod) to be false, got true")
+		if !pred.Create(event.CreateEvent{Object: workerPod}) {
+			t.Errorf("expected Create(Ordinal workerPod) to be true, got false")
+		}
+		if pred.Create(event.CreateEvent{Object: hashWorkerPod}) {
+			t.Errorf("expected Create(Hash workerPod) to be false, got true")
+		}
+		if pred.Create(event.CreateEvent{Object: unindexedPod}) {
+			t.Errorf("expected Create(unindexedPod) to be false, got true")
 		}
 		if pred.Create(event.CreateEvent{Object: nil}) {
 			t.Errorf("expected Create(nil) to be false, got true")
@@ -2478,56 +2500,6 @@ func TestPruneScaledDownGroupRestartCountsPreservesActiveSurgeReplica(t *testing
 	}
 }
 
-func TestCalculateContinuousReadyReplicas(t *testing.T) {
-	tests := []struct {
-		name   string
-		states []replicaState
-		want   int32
-	}{
-		{
-			name:   "no replicas",
-			states: nil,
-			want:   0,
-		},
-		{
-			name: "all replicas ready and updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-			},
-			want: 3,
-		},
-		{
-			name: "counting stops at the first replica that is not updated",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: false},
-				{ready: true, updated: true},
-			},
-			want: 1,
-		},
-		{
-			name: "an updated but not ready tail replica counts as zero",
-			states: []replicaState{
-				{ready: true, updated: true},
-				{ready: true, updated: true},
-				{ready: false, updated: true},
-			},
-			want: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := calculateContinuousReadyReplicas(tc.states)
-			if got != tc.want {
-				t.Fatalf("calculateContinuousReadyReplicas()=%d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestCalculateLWSUnreadyReplicas(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -2788,6 +2760,60 @@ func TestPodTerminationPolicyApplyConfigAndDeletion(t *testing.T) {
 	})
 }
 
+func TestLeaderWorkerSetReconcilerClearsMetricsOfDeletedLWS(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	gone := types.NamespacedName{Namespace: "metrics-deleted", Name: "test-sample"}
+	kept := types.NamespacedName{Namespace: "metrics-kept", Name: "test-sample"}
+	metrics.GroupRecreated(gone.Namespace, gone.Name, metrics.GroupRecreateReasonPodRestart)
+	metrics.GroupRecreated(gone.Namespace, gone.Name, metrics.GroupRecreateReasonUpgradeSplit)
+	metrics.GroupRestartBudgetExhausted(gone.Namespace, gone.Name)
+	metrics.GroupRestartBackedOff(gone.Namespace, gone.Name)
+	metrics.GroupRecreated(kept.Namespace, kept.Name, metrics.GroupRecreateReasonPodRestart)
+	t.Cleanup(func() { metrics.ClearLeaderWorkerSet(kept.Namespace, kept.Name) })
+
+	r := NewLeaderWorkerSetReconciler(fake.NewClientBuilder().WithScheme(scheme).Build(), scheme, fakeEventRecorder{})
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: gone}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	// DeleteLabelValues reports whether the series existed.
+	for name, existed := range map[string]bool{
+		"group_recreations_total PodRestart":   metrics.GroupRecreationsTotal.DeleteLabelValues(gone.Namespace, gone.Name, metrics.GroupRecreateReasonPodRestart),
+		"group_recreations_total UpgradeSplit": metrics.GroupRecreationsTotal.DeleteLabelValues(gone.Namespace, gone.Name, metrics.GroupRecreateReasonUpgradeSplit),
+		"group_restart_budget_exhausted_total": metrics.GroupRestartBudgetExhaustedTotal.DeleteLabelValues(gone.Namespace, gone.Name),
+		"group_restart_backoffs_total":         metrics.GroupRestartBackoffsTotal.DeleteLabelValues(gone.Namespace, gone.Name),
+	} {
+		if existed {
+			t.Errorf("the deleted LeaderWorkerSet still has a %s series", name)
+		}
+	}
+	if got := testutil.ToFloat64(metrics.GroupRecreationsTotal.WithLabelValues(kept.Namespace, kept.Name, metrics.GroupRecreateReasonPodRestart)); got != 1 {
+		t.Errorf("group_recreations_total of another LeaderWorkerSet = %v, want 1", got)
+	}
+}
+
+func TestLeaderWorkerSetReconcilerInitializesMetrics(t *testing.T) {
+	scheme := podCtrlTestScheme(t)
+	lws := wrappers.BuildLeaderWorkerSet("metrics-init").Obj()
+	t.Cleanup(func() { metrics.ClearLeaderWorkerSet(lws.Namespace, lws.Name) })
+
+	r := NewLeaderWorkerSetReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).WithStatusSubresource(lws).Build(), scheme, fakeEventRecorder{})
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(lws)}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	for name, existed := range map[string]bool{
+		"group_recreations_total PodRestart":   metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonPodRestart),
+		"group_recreations_total UpgradeSplit": metrics.GroupRecreationsTotal.DeleteLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonUpgradeSplit),
+		"group_restart_budget_exhausted_total": metrics.GroupRestartBudgetExhaustedTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+		"group_restart_backoffs_total":         metrics.GroupRestartBackoffsTotal.DeleteLabelValues(lws.Namespace, lws.Name),
+	} {
+		if !existed {
+			t.Errorf("the LeaderWorkerSet has no %s series", name)
+		}
+	}
+}
+
 func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 	annotations := map[string]string{
 		leaderworkerset.ExclusiveKeyAnnotationKey:         "zone",
@@ -2841,5 +2867,61 @@ func TestLeaderPodTemplateExclusivePlacement(t *testing.T) {
 				t.Errorf("subgroup-exclusive-topology annotation = %q, want %q", got, tc.wantSubGroupKey)
 			}
 		})
+	}
+}
+
+func TestResolveRollingUpdateBudget(t *testing.T) {
+	tests := []struct {
+		name                       string
+		surge, unavailable         intstr.IntOrString
+		replicas                   int
+		wantSurge, wantUnavailable int
+	}{
+		{name: "percentage that rounds to zero is raised to one", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 4, wantSurge: 0, wantUnavailable: 1},
+		{name: "percentage at the rounding threshold", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 5, wantSurge: 0, wantUnavailable: 1},
+		{name: "percentage above the rounding threshold", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 45, wantSurge: 0, wantUnavailable: 9},
+		{name: "surge carries progress", surge: intstr.FromString("10%"), unavailable: intstr.FromString("20%"), replicas: 4, wantSurge: 1, wantUnavailable: 0},
+		{name: "explicit surge only", surge: intstr.FromInt32(1), unavailable: intstr.FromInt32(0), replicas: 4, wantSurge: 1, wantUnavailable: 0},
+		{name: "zero replicas keep a zero budget", surge: intstr.FromInt32(0), unavailable: intstr.FromString("20%"), replicas: 0, wantSurge: 0, wantUnavailable: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			surge, unavailable, err := resolveRollingUpdateBudget(&leaderworkerset.RollingUpdateConfiguration{MaxSurge: tc.surge, MaxUnavailable: tc.unavailable}, tc.replicas)
+			if err != nil {
+				t.Fatalf("resolveRollingUpdateBudget() unexpected error: %v", err)
+			}
+			if surge != tc.wantSurge || unavailable != tc.wantUnavailable {
+				t.Fatalf("resolveRollingUpdateBudget() = (%d, %d), want (%d, %d)", surge, unavailable, tc.wantSurge, tc.wantUnavailable)
+			}
+		})
+	}
+}
+
+// A percentage maxUnavailable that rounds down to 0 with maxSurge=0 must still
+// let one group roll at a time instead of pinning the floor at the baseline.
+func TestRolloutFloorPercentageRoundsToZero(t *testing.T) {
+	lws := wrappers.BuildBasicLeaderWorkerSet("test-sample", "default").
+		Replica(4).
+		Size(1).
+		RolloutStrategy(leaderworkerset.RolloutStrategy{
+			Type: leaderworkerset.RollingUpdateStrategyType,
+			RollingUpdateConfiguration: &leaderworkerset.RollingUpdateConfiguration{
+				Partition:      ptr.To[int32](0),
+				MaxUnavailable: intstr.FromString("20%"),
+				MaxSurge:       intstr.FromInt32(0),
+			},
+		}).Obj()
+
+	floor, err := rolloutFloor(lws, 4, 4)
+	if err != nil {
+		t.Fatalf("rolloutFloor() unexpected error: %v", err)
+	}
+	if floor != 3 {
+		t.Fatalf("rolloutFloor() = %d, want 3", floor)
+	}
+
+	states := []replicaState{{ready: true}, {ready: true}, {ready: true}, {ready: true}}
+	if partition := rollingUpdatePartitionWithFloor(states, floor, 4, 0); partition != 3 {
+		t.Fatalf("rollingUpdatePartitionWithFloor() = %d, want 3", partition)
 	}
 }

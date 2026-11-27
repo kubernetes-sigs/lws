@@ -190,7 +190,8 @@ func (p *PodWebhook) Default(ctx context.Context, pod *corev1.Pod) error {
 			if pod.Annotations[leaderworkerset.GroupIdentityAnnotationKey] == string(leaderworkerset.GroupIdentityHash) {
 				subGroupKeyInput = pod.Labels[leaderworkerset.GroupUniqueHashLabelKey]
 			}
-			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex)
+			leaderExcluded := pod.Annotations[leaderworkerset.SubGroupPolicyTypeAnnotationKey] == string(leaderworkerset.SubGroupPolicyTypeLeaderExcluded)
+			subGroupIndexKey := getSubGroupIndex(podCount, subGroupSizeInt, workerIndex, leaderExcluded)
 			pod.Labels[leaderworkerset.SubGroupIndexLabelKey] = subGroupIndexKey
 			subGroupUniqueKey := genGroupUniqueKey(subGroupKeyInput, subGroupIndexKey)
 			pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey] = subGroupUniqueKey
@@ -268,9 +269,6 @@ func hashLeaderHostname(lwsName, groupUniqueKey string) string {
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
 func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey string, podAffinityKey string) {
-	if exclusiveAffinityApplied(*pod, topologyKey) {
-		return
-	}
 	if pod.Spec.Affinity == nil {
 		pod.Spec.Affinity = &corev1.Affinity{}
 	}
@@ -282,56 +280,63 @@ func SetExclusiveAffinities(pod *corev1.Pod, groupUniqueKey string, topologyKey 
 	}
 
 	// Pod affinity ensures the pods of this set land on the same topology domain.
-	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
-		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
-		})
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, topologyKey, podAffinityKey) {
+		pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+			corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{groupUniqueKey},
+					},
+				}},
+				TopologyKey: topologyKey,
+			})
+	}
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
-	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
-		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpExists,
-				},
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{groupUniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
-		})
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, topologyKey, podAffinityKey) {
+		pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+			corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpExists,
+					},
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{groupUniqueKey},
+					},
+				}},
+				TopologyKey: topologyKey,
+			})
+	}
 }
 
-// exclusiveAffinityApplied return true if the exclusive placement terms have been applied
-func exclusiveAffinityApplied(pod corev1.Pod, topologyKey string) bool {
-	if pod.Spec.Affinity == nil || pod.Spec.Affinity.PodAffinity == nil || pod.Spec.Affinity.PodAntiAffinity == nil {
-		return false
-	}
-	hasAffinity := false
-	hasAntiAffinity := false
-	for _, podAffinityTerm := range pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if podAffinityTerm.TopologyKey == topologyKey {
-			hasAffinity = true
+// hasExclusiveTerm reports whether the exclusive placement of one level is
+// already present: a term on topologyKey whose selector references
+// podAffinityKey. The label key is matched rather than the value it carries,
+// because a hash identity group derives a fresh key on every admission pass, so
+// a value comparison would append a second term and leave the pod unschedulable.
+func hasExclusiveTerm(terms []corev1.PodAffinityTerm, topologyKey, podAffinityKey string) bool {
+	for _, term := range terms {
+		if term.TopologyKey != topologyKey || term.LabelSelector == nil {
+			continue
+		}
+		for _, requirement := range term.LabelSelector.MatchExpressions {
+			if requirement.Key == podAffinityKey {
+				return true
+			}
 		}
 	}
-	for _, term := range pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-		if term.TopologyKey == topologyKey {
-			hasAntiAffinity = true
-		}
-	}
-	return hasAffinity && hasAntiAffinity
+	return false
 }
 
-func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int) string {
+func getSubGroupIndex(podCount int, subGroupSize int, workerIndex int, leaderExcluded bool) string {
+	// LeaderExcluded: workers alone fill subgroups starting at 0 (see KEP-257).
+	if leaderExcluded {
+		return fmt.Sprint((workerIndex - 1) / subGroupSize)
+	}
 	if (podCount-1)%subGroupSize == 0 && podCount%subGroupSize != 0 {
 		// Leader is considered as extra pod, it is part of the first group
 		return fmt.Sprint((workerIndex - 1) / subGroupSize)

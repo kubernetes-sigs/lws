@@ -156,6 +156,7 @@ The following table lists the configurable parameters of the LWS chart and their
 | `image.manager.pullPolicy`                 | Pull policy for manager image                  | `Always`                                            |
 | `podAnnotations`                           | Annotations for pods                           | `{}`                                                |
 | `podSecurityContext.runAsNonRoot`          | Run pod as non-root user                       | `true`                                              |
+| `podSecurityContext.seccompProfile.type`   | Seccomp profile for the pod                    | `RuntimeDefault`                                    |
 | `securityContext.allowPrivilegeEscalation` | Allow privilege escalation in security context | `false`                                             |
 | `securityContext.readOnlyRootFilesystem`   | Mount the container root filesystem read-only  | `true`                                              |
 | `securityContext.capabilities.drop`        | Drop all capabilities in security context      | `["ALL"]`                                           |

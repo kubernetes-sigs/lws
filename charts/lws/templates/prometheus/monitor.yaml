@@ -18,6 +18,7 @@ spec:
     - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       path: /metrics
       port: https
+      honorLabels: true
       scheme: https
       tlsConfig:
         {{- if .Values.enableCertManager }}

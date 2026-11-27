@@ -144,8 +144,11 @@ func TestHashLeaderSubGroupLabels(t *testing.T) {
 	if got, want := pod.Labels[leaderworkerset.SubGroupUniqueHashLabelKey], genGroupUniqueKey(key, "0"); got != want {
 		t.Errorf("expected subgroup hash derived from the group key %q, got %q", want, got)
 	}
-	if !exclusiveAffinityApplied(*pod, "topo") {
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, "topo", leaderworkerset.SubGroupUniqueHashLabelKey) {
 		t.Error("expected subgroup exclusive placement affinity to be applied")
+	}
+	if !hasExclusiveTerm(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, "topo", leaderworkerset.SubGroupUniqueHashLabelKey) {
+		t.Error("expected subgroup exclusive placement anti-affinity to be applied")
 	}
 }
 

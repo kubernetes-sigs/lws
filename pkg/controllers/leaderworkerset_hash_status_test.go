@@ -484,6 +484,69 @@ func TestReconcileHash(t *testing.T) {
 		}
 	})
 
+	t.Run("rollback during an update reuses the revision of the previous template", func(t *testing.T) {
+		lws := lwsStatusHashLWS(2)
+		reconciler, k8sClient := lwsStatusNewReconciler(t, lws)
+
+		if _, err := reconciler.reconcileHash(ctx, lws); err != nil {
+			t.Fatalf("reconcileHash() first call unexpected error: %v", err)
+		}
+		key := types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}
+		var deploy appsv1.Deployment
+		if err := k8sClient.Get(ctx, key, &deploy); err != nil {
+			t.Fatalf("leader deployment was not created: %v", err)
+		}
+		firstRevisionKey := revisionutils.GetRevisionKey(&deploy)
+		var revisions appsv1.ControllerRevisionList
+		if err := k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace)); err != nil {
+			t.Fatalf("listing revisions: %v", err)
+		}
+		if len(revisions.Items) != 1 {
+			t.Fatalf("got %d controller revisions, want 1", len(revisions.Items))
+		}
+		firstRevisionName := revisions.Items[0].Name
+
+		originalImage := lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "nginx:updated"
+		if _, err := reconciler.reconcileHash(ctx, lws); err != nil {
+			t.Fatalf("reconcileHash() second call unexpected error: %v", err)
+		}
+		if err := k8sClient.Get(ctx, key, &deploy); err != nil {
+			t.Fatalf("reading back the leader deployment: %v", err)
+		}
+		if got := revisionutils.GetRevisionKey(&deploy); got == firstRevisionKey {
+			t.Fatalf("leader deployment revision key = %q, want it to change after the template update", got)
+		}
+		if err := k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace)); err != nil {
+			t.Fatalf("listing revisions: %v", err)
+		}
+		if len(revisions.Items) != 2 {
+			t.Fatalf("got %d controller revisions after the template update, want 2", len(revisions.Items))
+		}
+		// Revert before the deployment reports the update as done, so the first revision is still kept.
+		lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = originalImage
+		if _, err := reconciler.reconcileHash(ctx, lws); err != nil {
+			t.Fatalf("reconcileHash() third call unexpected error: %v", err)
+		}
+
+		if err := k8sClient.Get(ctx, key, &deploy); err != nil {
+			t.Fatalf("reading back the leader deployment: %v", err)
+		}
+		if got := revisionutils.GetRevisionKey(&deploy); got != firstRevisionKey {
+			t.Errorf("leader deployment revision key = %q, want the first revision key %q", got, firstRevisionKey)
+		}
+		if err := k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{leaderworkerset.RevisionKey: firstRevisionKey}); err != nil {
+			t.Fatalf("listing revisions: %v", err)
+		}
+		if len(revisions.Items) != 1 || revisions.Items[0].Name != firstRevisionName {
+			names := make([]string, 0, len(revisions.Items))
+			for _, revision := range revisions.Items {
+				names = append(names, revision.Name)
+			}
+			t.Errorf("revisions under key %s = %v, want only the first revision %s", firstRevisionKey, names, firstRevisionName)
+		}
+	})
+
 	t.Run("rollout completes, stale revisions are truncated", func(t *testing.T) {
 		lws := lwsStatusHashLWS(2)
 		reconciler, k8sClient := lwsStatusNewReconciler(t, lws)

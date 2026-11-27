@@ -38,6 +38,11 @@ aliases:
 [**Axlearn**](https://github.com/apple/axlearn): Axlearn is a library built on top of JAX and XLA to support the development of large-scale deep learning models. It uses LeaderWorkerSet to deploy multi-host
 inference workloads to use during training workflows.
 
+[**KServe**](https://github.com/kserve/kserve): KServe is a Kubernetes-native platform for serving predictive and generative AI models.
+Its LLMInferenceService, built on the llm-d framework, uses LeaderWorkerSet and DisaggregatedSet
+to deploy and manage multi-node and disaggregated LLM inference workloads. See the
+[documentation](https://kserve.github.io/website/docs/model-serving/generative-inference/llmisvc/llmisvc-dependencies).
+
 [**Kubeflow Trainer**](https://github.com/kubeflow/trainer): Kubeflow Trainer is a Kubernetes-native
 project designed for scalable LLMs fine-tuning and distributed AI model training. Kubeflow Trainer
 uses the LeaderWorkerSet API to orchestrate an in-memory,
@@ -60,7 +65,7 @@ For first-party multi-role (prefill/decode) orchestration on Kubernetes, see the
 [**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo): NVIDIA Dynamo is a high-throughput low-latency inference framework designed for serving generative AI and reasoning models in multi-node distributed environments especially the disaggregated prefill & decode inference. It uses LeaderWorkerSet to support multi-node deployment on Kubernetes.
 
 [**OME**](https://github.com/sgl-project/ome): OME is a Kubernetes operator for enterprise-grade management and serving of LLMs.
-it leverages LWS for multi-node inference, see documentation [here](https://docs.sglang.ai/ome/docs/concepts/inference_service/#multi-node-mode)
+it leverages LWS for multi-node inference, see documentation [here](https://ome-project.org/docs/concepts/serving/inference-services#multi-node-serving)
 
 [**SGLang**](https://github.com/sgl-project/sglang): SGLang, a fast serving framework for large language models and vision language models. It can be deployed with LWS on Kubernetes for
 distributed model serving, see documentation [here](https://docs.sglang.ai/references/multi_node_deployment/deploy_on_k8s.html)

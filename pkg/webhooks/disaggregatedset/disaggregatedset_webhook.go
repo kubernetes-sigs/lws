@@ -695,13 +695,8 @@ func (w *DisaggregatedSetWebhook) validateRoleRolloutStrategy(role disaggv1.Disa
 			))
 		}
 
-		// External roles ignore spec.replicas, so their target is unknown.
 		replicas := ptr.Deref(validationReplicasForRole(role), 0)
-		if replicas > 0 && role.Scaling != nil && role.Scaling.Mode == disaggv1.RoleScalingExternal {
-			allErrs = append(allErrs, webhooks.ValidateUnknownTargetRollingUpdateBudget(ruc, rucPath)...)
-		} else {
-			allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
-		}
+		allErrs = append(allErrs, webhooks.ValidateRollingUpdateBudget(ruc, replicas, rucPath)...)
 	}
 
 	return allErrs

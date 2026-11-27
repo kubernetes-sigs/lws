@@ -21,6 +21,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	leaderworkerset "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/lws/pkg/controllers"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/schedulerprovider"
 	revisionutils "sigs.k8s.io/lws/pkg/utils/revision"
 	testing "sigs.k8s.io/lws/test/testutils"
@@ -514,23 +516,49 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 				},
 			},
 		}),
-		ginkgo.Entry("leader statefulset deleted will be recreated", &testCase{
-			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
-			updates: []*update{
-				{
-					// Fetch the headless service and force delete it, so we can test if it is recreated.
-					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
-						var leaderSts appsv1.StatefulSet
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
-						gomega.Expect(k8sClient.Delete(ctx, &leaderSts)).To(gomega.Succeed())
-					},
-					// Service should be recreated during reconciliation
-					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
-						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+		ginkgo.Entry("leader statefulset deleted will be recreated", func() *testCase {
+			var deletedStsUID types.UID
+			var originalRevisionName string
+			return &testCase{
+				makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
+				updates: []*update{
+					{
+						// Fetch the leader StatefulSet and force delete it, so we can test if it is recreated.
+						lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+							var leaderSts appsv1.StatefulSet
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+							deletedStsUID = leaderSts.UID
+
+							var revisions appsv1.ControllerRevisionList
+							gomega.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{
+								leaderworkerset.SetNameLabelKey: lws.Name,
+							})).To(gomega.Succeed())
+							gomega.Expect(revisions.Items).To(gomega.HaveLen(1))
+							originalRevisionName = revisions.Items[0].Name
+
+							gomega.Expect(k8sClient.Delete(ctx, &leaderSts)).To(gomega.Succeed())
+						},
+						// Leader StatefulSet should be recreated during reconciliation while reusing the existing revision.
+						checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+							gomega.Eventually(func(g gomega.Gomega) {
+								var leaderSts appsv1.StatefulSet
+								g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderSts)).To(gomega.Succeed())
+								g.Expect(leaderSts.UID).NotTo(gomega.Equal(deletedStsUID))
+							}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+							testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+							testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+
+							var revisions appsv1.ControllerRevisionList
+							gomega.Expect(k8sClient.List(ctx, &revisions, client.InNamespace(lws.Namespace), client.MatchingLabels{
+								leaderworkerset.SetNameLabelKey: lws.Name,
+							})).To(gomega.Succeed())
+							gomega.Expect(revisions.Items).To(gomega.HaveLen(1))
+							gomega.Expect(revisions.Items[0].Name).To(gomega.Equal(originalRevisionName))
+						},
 					},
 				},
-			},
-		}),
+			}
+		}()),
 		ginkgo.Entry("Able to get scale subResource information", &testCase{
 			makeLeaderWorkerSet: wrappers.BuildLeaderWorkerSet,
 			updates: []*update{
@@ -911,9 +939,17 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						// we could only check the leader pod is marked for deletion since it will be pending on its dependents; and the dependents
 						// won't be deleted automatically in integration test
 						var leaderPod corev1.Pod
-						gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
-						gomega.Expect(leaderPod.DeletionTimestamp != nil).To(gomega.BeTrue())
+						// The controller deletes the leader pod asynchronously after
+						// observing the worker pod deletion, so poll until it is marked
+						// for deletion.
+						gomega.Eventually(func() bool {
+							gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &leaderPod)).To(gomega.Succeed())
+							return leaderPod.DeletionTimestamp != nil
+						}, testing.Timeout, testing.Interval).Should(gomega.BeTrue())
 						testing.ValidateEvent(ctx, k8sClient, "RecreateGroup", corev1.EventTypeNormal, "Worker pod test-sample-0-1 failed, deleted leader pod test-sample-0 to recreate group 0", lws.Namespace)
+						gomega.Eventually(func() float64 {
+							return testutil.ToFloat64(metrics.GroupRecreationsTotal.WithLabelValues(lws.Namespace, lws.Name, metrics.GroupRecreateReasonPodRestart))
+						}, testing.Timeout, testing.Interval).Should(gomega.Equal(float64(1)))
 					},
 				},
 			},
@@ -1590,8 +1626,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						// When scaling up the Replicas, Partition will not change, so the new created Pods will apply with the new template.
-						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 4)
+						// With baseline=4 and default maxUnavailable=1 (floor=3), Pending scale-up
+						// ordinals 4..5 do not consume baseline budget, so partition steps to 3.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
 						// We haven't set the replica-4, replica-5 to ready, so the readyReplicas is 4, the updatedReplicas is 0.
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 0)
 					},
@@ -1609,6 +1646,250 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNotProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 6)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("combined template update and scale-up replaces baseline replica while addition stays Pending (#717)", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(1).Size(2)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 1)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							sts.Status.ObservedGeneration = sts.Generation
+							sts.Status.Replicas = *sts.Spec.Replicas
+							sts.Status.UpdateRevision = "sts-" + sts.Labels[leaderworkerset.RevisionKey]
+							sts.Status.CurrentRevision = sts.Status.UpdateRevision
+							g.Expect(k8sClient.Status().Update(ctx, &sts)).To(gomega.Succeed())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Scale 1 -> 2 and update worker template while new ordinal 1 stays Pending;
+					// simulate a StatefulSetController without native maxUnavailable that observes generations without deleting ordinal 0.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func(g gomega.Gomega) {
+							var current leaderworkerset.LeaderWorkerSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+							current.Spec.Replicas = ptr.To[int32](2)
+							current.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "new-worker"
+							g.Expect(k8sClient.Update(ctx, &current)).To(gomega.Succeed())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+						// Wait for leader StatefulSet to scale to 2 on the new revision, then create Pending ordinal 1.
+						var leaderSts appsv1.StatefulSet
+						gomega.Eventually(func(g gomega.Gomega) {
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &leaderSts)).To(gomega.Succeed())
+							g.Expect(*leaderSts.Spec.Replicas).To(gomega.Equal(int32(2)))
+							g.Expect(leaderSts.Annotations["leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"]).To(gomega.Equal("1"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 1, 2)).To(gomega.Succeed())
+						testing.SetPodToPending(ctx, k8sClient, lws.Name+"-1", lws)
+
+						// Acknowledge each leader StatefulSet generation so partition drops to 0
+						// and stale ordinal 0 is foreground-deleted despite Pending ordinal 1.
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							if sts.Status.ObservedGeneration < sts.Generation {
+								sts.Status.ObservedGeneration = sts.Generation
+								sts.Status.Replicas = *sts.Spec.Replicas
+								sts.Status.UpdateRevision = "sts-" + sts.Labels[leaderworkerset.RevisionKey]
+								g.Expect(k8sClient.Status().Update(ctx, &sts)).To(gomega.Succeed())
+							}
+							g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(gomega.Equal(int32(0)))
+							var pod0 corev1.Pod
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &pod0)).To(gomega.Succeed())
+							g.Expect(pod0.DeletionTimestamp).NotTo(gomega.BeNil())
+							g.Expect(pod0.Finalizers).To(gomega.ContainElement(metav1.FinalizerDeleteDependents))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Simulate GC finishing foreground deletion and StatefulSetController recreating ordinal 0 on the new revision.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						var oldWorkerSts appsv1.StatefulSet
+						if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &oldWorkerSts); err == nil {
+							gomega.Expect(k8sClient.Delete(ctx, &oldWorkerSts)).To(gomega.Succeed())
+						}
+						gomega.Eventually(func(g gomega.Gomega) {
+							var pod0 corev1.Pod
+							err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &pod0)
+							if err == nil && len(pod0.Finalizers) > 0 {
+								pod0.Finalizers = nil
+								g.Expect(k8sClient.Update(ctx, &pod0)).To(gomega.Succeed())
+							}
+							g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name + "-0", Namespace: lws.Namespace}, &pod0)).NotTo(gomega.Succeed())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+						var leaderSts appsv1.StatefulSet
+						testing.GetLeaderStatefulset(ctx, lws, k8sClient, &leaderSts)
+						gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 0, 1)).To(gomega.Succeed())
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							sts.Status.ObservedGeneration = sts.Generation
+							sts.Status.Replicas = *sts.Spec.Replicas
+							sts.Status.CurrentRevision = sts.Status.UpdateRevision
+							g.Expect(k8sClient.Status().Update(ctx, &sts)).To(gomega.Succeed())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							g.Expect(sts.Annotations).NotTo(gomega.HaveKey("leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("combined template update and scale-up with maxUnavailable=0 waits for whole-group ready addition", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2).MaxUnavailable(0).MaxSurge(1)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Scale 2 -> 4 and update worker template: with maxUnavailable=0 (floor=2),
+					// partition stays at 2 even if ordinal 2's leader is Ready while its worker is not.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func(g gomega.Gomega) {
+							var current leaderworkerset.LeaderWorkerSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &current)).To(gomega.Succeed())
+							current.Spec.Replicas = ptr.To[int32](4)
+							current.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "new-worker"
+							g.Expect(k8sClient.Update(ctx, &current)).To(gomega.Succeed())
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+
+						var leaderSts appsv1.StatefulSet
+						gomega.Eventually(func(g gomega.Gomega) {
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &leaderSts)).To(gomega.Succeed())
+							g.Expect(*leaderSts.Spec.Replicas).To(gomega.Equal(int32(5)))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+						gomega.Expect(testing.CreateLeaderPods(ctx, leaderSts, k8sClient, lws, 2, 5)).To(gomega.Succeed())
+						// Make ONLY leader pod of group 2 Ready (worker StatefulSet remains unready).
+						testing.SetLeaderPodToReady(ctx, k8sClient, lws.Name+"-2", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 5)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Once group 2 is whole-group Ready, partition advances from 2 to 1.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-2", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 5)
+						testing.DeleteLeaderPods(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("combined rollout handles growth beyond surge and subsequent scale-down", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(2).Size(2).MaxUnavailable(0).MaxSurge(1)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 2)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+					},
+				},
+				{
+					// Start a pure template rollout at replicas=2 with maxSurge=1 (sts.Spec.Replicas=3, baseline="2"),
+					// then grow desired replicas beyond active surge to 5 while baseline stays "2" (floor=2).
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 3)
+						testing.UpdateReplicaCount(ctx, k8sClient, lws, 5)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// Pass 1 grows sts to 5, pass 2 expands surge to 6 while preserving partition=2 and baseline="2".
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 6)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							g.Expect(sts.Annotations["leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"]).To(gomega.Equal("2"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+				{
+					// Scale down mid-rollout below baseline (5 -> 1): baseline clamps to "1" and sts shrinks to 2 (1 + 1 surge).
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateReplicaCount(ctx, k8sClient, lws, 1)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 2)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							g.Expect(sts.Annotations["leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"]).To(gomega.Equal("1"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+				},
+				{
+					// Once surge group 1 is whole-group Ready on the new revision, partition drops to 0;
+					// once group 0 finishes updating, surge is reclaimed and baseline is cleared.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-1", lws)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-0", lws)
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 1)
+						testing.DeleteLeaderPods(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 1)
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						gomega.Eventually(func(g gomega.Gomega) {
+							var sts appsv1.StatefulSet
+							g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(lws), &sts)).To(gomega.Succeed())
+							g.Expect(sts.Annotations).NotTo(gomega.HaveKey("leaderworkerset.sigs.k8s.io/rollout-baseline-replicas"))
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
 					},
 				},
 			},
@@ -1684,7 +1965,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						// Baseline remains 4 (floor=3); with groups 3, 4, 5 Ready on the new revision,
+						// surviving Ready updated groups already meet floor, so partition drops to 0.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 3)
 					},
 				},
@@ -2142,7 +2425,8 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 2)
+						// With baseline=2 and default maxUnavailable=1 (floor=1), partition advances to 1.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 					},
 				},
 				{
@@ -2388,7 +2672,9 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetUnavailable(ctx, k8sClient, lws, "All replicas are ready")
 						testing.ExpectLeaderWorkerSetProgressing(ctx, k8sClient, lws, "Replicas are progressing")
 						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
-						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 3)
+						// Baseline=4 (floor=3): group 0 (Ready old) + groups 6, 7 (Ready updated) = 3 >= floor,
+						// so partition advances to 1 despite Pending ordinals 4 and 5.
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 1)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 6, 2)
 					},
 				},
@@ -2570,6 +2856,71 @@ var _ = ginkgo.Describe("LeaderWorkerSet controller", func() {
 						testing.ExpectLeaderWorkerSetNoUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
 						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
 						testing.ExpectLeaderWorkerSetStatusReplicas(ctx, k8sClient, lws, 4, 4)
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+			},
+		}),
+		ginkgo.Entry("rollback during a rolling update reuses the revision of the previous template", &testCase{
+			makeLeaderWorkerSet: func(nsName string) *wrappers.LeaderWorkerSetWrapper {
+				return wrappers.BuildLeaderWorkerSet(nsName).Replica(4)
+			},
+			updates: []*update{
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Update group 3 to the new template.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetPodGroupToReady(ctx, k8sClient, lws.Name+"-3", lws)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectUpdatedWorkerStatefulSet(ctx, k8sClient, lws, lws.Name+"-3")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					// Roll back to the previous template before the update completes.
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						gomega.Eventually(func() error {
+							var leaderworkerset leaderworkerset.LeaderWorkerSet
+							if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &leaderworkerset); err != nil {
+								return err
+							}
+							leaderworkerset.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Name = "worker"
+							return k8sClient.Update(ctx, &leaderworkerset)
+						}, testing.Timeout, testing.Interval).Should(gomega.Succeed())
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						// Group 3 still runs the new template, so the rollback is a rolling update.
+						// The previous template still has its revision, which is reused rather than created a second time.
+						testing.ExpectLeaderWorkerSetUpgradeInProgress(ctx, k8sClient, lws, "Rolling Upgrade is in progress")
+						testing.ExpectRevisions(ctx, k8sClient, lws, 2)
+					},
+				},
+				{
+					lwsUpdateFn: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.SetSuperPodToReady(ctx, k8sClient, lws, 4)
+					},
+					checkLWSState: func(lws *leaderworkerset.LeaderWorkerSet) {
+						testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
+						testing.ExpectStatefulsetPartitionEqualTo(ctx, k8sClient, lws, 0)
+						// Truncation leaves a single revision for the restored template.
 						testing.ExpectRevisions(ctx, k8sClient, lws, 1)
 					},
 				},

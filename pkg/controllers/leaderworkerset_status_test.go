@@ -453,6 +453,66 @@ func TestUpdateConditions(t *testing.T) {
 			wantConditions:      []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
 		},
 		{
+			name: "an old-revision group without a worker statefulset keeps the rollout open",
+			lws:  wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(2).Obj(),
+			objs: func() []client.Object {
+				lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+				return []client.Object{
+					lwsStatusLeaderPod(lws, 0, currentRevision, true), lwsStatusWorkerSts(lws, 0, currentRevision, true),
+					// For example a LeaderReady leader that never became Ready,
+					// so its worker statefulset was never created.
+					lwsStatusLeaderPod(lws, 1, oldRevision, false),
+				}
+			}(),
+			wantUpdate:          true,
+			wantUpdateDone:      false,
+			wantReadyReplicas:   1,
+			wantUpdatedReplicas: 1,
+			wantConditions: []string{
+				string(leaderworkerset.LeaderWorkerSetProgressing),
+				string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
+			},
+		},
+		{
+			name: "an old-revision group without a worker statefulset does not end UpdateInProgress",
+			lws: func() *leaderworkerset.LeaderWorkerSet {
+				lws := wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(2).Obj()
+				lws.Status.Conditions = []metav1.Condition{makeCondition(leaderworkerset.LeaderWorkerSetUpdateInProgress, lws)}
+				return lws
+			}(),
+			objs: func() []client.Object {
+				lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+				return []client.Object{
+					lwsStatusLeaderPod(lws, 0, currentRevision, true), lwsStatusWorkerSts(lws, 0, currentRevision, true),
+					lwsStatusLeaderPod(lws, 1, oldRevision, false),
+				}
+			}(),
+			wantUpdate:          true,
+			wantUpdateDone:      false,
+			wantReadyReplicas:   1,
+			wantUpdatedReplicas: 1,
+			wantConditions: []string{
+				string(leaderworkerset.LeaderWorkerSetProgressing),
+				string(leaderworkerset.LeaderWorkerSetUpdateInProgress),
+			},
+		},
+		{
+			name: "old-revision groups below the partition without a worker statefulset do not open a rollout",
+			lws:  wrappers.BuildLeaderWorkerSet("default").Replica(2).Size(2).Partition(1).Obj(),
+			objs: func() []client.Object {
+				lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+				return []client.Object{
+					lwsStatusLeaderPod(lws, 0, oldRevision, false),
+					lwsStatusLeaderPod(lws, 1, currentRevision, true), lwsStatusWorkerSts(lws, 1, currentRevision, true),
+				}
+			}(),
+			wantUpdate:          true,
+			wantUpdateDone:      false,
+			wantReadyReplicas:   1,
+			wantUpdatedReplicas: 1,
+			wantConditions:      []string{string(leaderworkerset.LeaderWorkerSetProgressing)},
+		},
+		{
 			name: "burst replicas count towards status but not towards rollout completion",
 			lws:  wrappers.BuildLeaderWorkerSet("default").Replica(1).Size(2).Obj(),
 			objs: func() []client.Object {
