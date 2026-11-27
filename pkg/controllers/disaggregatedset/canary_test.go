@@ -19,6 +19,7 @@ package disaggregatedset
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,6 +91,7 @@ func settleCanary(t *testing.T, state *RolloutState) {
 }
 
 func TestCanaryRoundingAndLogicalRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range [][3]int{{0, 25, 0}, {1, 25, 1}, {2, 1, 1}, {2, 99, 1}, {4, 0, 4}, {4, 25, 3}, {8, 25, 6}, {37, 25, 27}, {0, 100, 0}, {1, 100, 0}, {8, 100, 0}} {
 		require.Equal(t, tc[2], canaryOldReplicas(tc[0], tc[1]))
 	}
@@ -116,6 +118,7 @@ func TestCanaryRoundingAndLogicalRoles(t *testing.T) {
 }
 
 func TestCanaryPlannerPromotesThroughHolds(t *testing.T) {
+	t.Parallel()
 	for _, budget := range [][2]int{{1, 0}, {0, 1}} {
 		state := newSimulationState([]int{4, 8}, []int{4, 8}, canaryConfigs(budget[0], budget[1], []int{0, 0}))
 		state.ProportionalCanary = true
@@ -134,6 +137,7 @@ func TestCanaryPlannerPromotesThroughHolds(t *testing.T) {
 }
 
 func TestCanaryResizesBothRevisions(t *testing.T) {
+	t.Parallel()
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
 			ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
@@ -257,6 +261,7 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 }
 
 func TestCanaryDemandPolicies(t *testing.T) {
+	t.Parallel()
 	for _, subRoles := range []bool{false, true} {
 		for _, up := range []disaggv1.RolloutScalingPolicy{disaggv1.RolloutScalingDeferred, disaggv1.RolloutScalingImmediate} {
 			for _, down := range []disaggv1.RolloutScalingPolicy{disaggv1.RolloutScalingDeferred, disaggv1.RolloutScalingImmediate} {
@@ -320,6 +325,7 @@ func TestCanaryDemandPolicies(t *testing.T) {
 }
 
 func TestCanaryDeferredDemandStillPromotes(t *testing.T) {
+	t.Parallel()
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
 			t.Run(fmt.Sprintf("%s/%s", identity, mode), func(t *testing.T) {
@@ -391,6 +397,7 @@ func TestCanaryDeferredDemandStillPromotes(t *testing.T) {
 }
 
 func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                       string
 		percent, desired, old, new int
@@ -437,6 +444,7 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 }
 
 func TestCanaryExistingRolesCanResize(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                             string
 		initial, old, current, desired, wantOld, wantNew [2]int32
@@ -466,10 +474,20 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 				}
 				list := &leaderv1.LeaderWorkerSetList{}
 				require.NoError(t, c.List(t.Context(), list))
+				settled := true
 				for i := range list.Items {
 					lws := &list.Items[i]
+					want := tc.wantOld
+					if lws.Labels[disaggv1.RevisionLabelKey] == "new" {
+						want = tc.wantNew
+					}
+					role := slices.Index(testRoleNames(), lws.Labels[disaggv1.RoleLabelKey])
+					settled = settled && getLWSReplicas(lws) == want[role] && lws.Status.ReadyReplicas == want[role]
 					lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
 					require.NoError(t, c.Status().Update(t.Context(), lws))
+				}
+				if settled {
+					break
 				}
 			}
 			assertRevisionReplicas(t, c, "old", tc.wantOld)
@@ -490,6 +508,7 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 }
 
 func TestCanarySingletonTargets(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                      string
 		percent, desired, old, new, target, floor int
@@ -523,6 +542,7 @@ func TestCanarySingletonTargets(t *testing.T) {
 }
 
 func TestCanarySingletonPeerPreservesIssuedGroups(t *testing.T) {
+	t.Parallel()
 	for _, p := range []int32{1, 4} {
 		t.Run(fmt.Sprint(p), func(t *testing.T) {
 			ds := newTwoRoleTestDisaggregatedSet([2]int32{p, 1}, [2]int{1, 1}, [2]int{})
@@ -555,6 +575,7 @@ func TestCanarySingletonPeerPreservesIssuedGroups(t *testing.T) {
 }
 
 func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
+	t.Parallel()
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		for _, subRoles := range []bool{false, true} {
 			for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
@@ -701,6 +722,7 @@ func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 }
 
 func TestCanaryInitialCreationIgnoresHold(t *testing.T) {
+	t.Parallel()
 	ds := newDSWithRoles("ds", staticRole("prefill"))
 	ds.Spec.Roles[0].Spec.Replicas = ptr.To[int32](4)
 	setCanaryPercent(ds, 0)
@@ -718,6 +740,7 @@ func TestCanaryInitialCreationIgnoresHold(t *testing.T) {
 }
 
 func TestCanaryStableGrowthCountsEveryOldRevision(t *testing.T) {
+	t.Parallel()
 	ds := newDSWithRoles("test", staticRole("prefill"))
 	allowCanaryScaling(ds)
 	ds.UID = "uid"
@@ -753,6 +776,7 @@ func TestCanaryStableGrowthCountsEveryOldRevision(t *testing.T) {
 }
 
 func TestCanaryIndependentRoleScaleUpCanPromote(t *testing.T) {
+	t.Parallel()
 	// At 25%, only Prefill scaled from 4 to 20 while Decode stayed at 8.
 	// Stable growth left 15/6 old and 5/2 new. Now promote to 50%.
 	for _, ordinary := range []bool{false, true} {
@@ -779,6 +803,7 @@ func TestCanaryIndependentRoleScaleUpCanPromote(t *testing.T) {
 }
 
 func TestCanaryCoordinatesCanaryHistoryWithoutDrainingAnchor(t *testing.T) {
+	t.Parallel()
 	desired := []int{20, 8}
 	old := [][]int{{10, 4}, {5, 2}}
 	target := []int{5, 2}
@@ -826,6 +851,7 @@ func TestCanaryCoordinatesCanaryHistoryWithoutDrainingAnchor(t *testing.T) {
 }
 
 func TestCanaryHoldRequiresEveryGroupAndSlice(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		oldReady, targetSpec, targetReady RoleReplicaState
 		held                              bool
@@ -847,6 +873,7 @@ func TestCanaryHoldRequiresEveryGroupAndSlice(t *testing.T) {
 }
 
 func TestCanaryHoldWakesOnEvents(t *testing.T) {
+	t.Parallel()
 	for _, ready := range []int32{0, 2} {
 		desired := [2]int32{4, 8}
 		ds := newTwoRoleTestDisaggregatedSet(desired, [2]int{1, 1}, [2]int{})
@@ -864,6 +891,7 @@ func TestCanaryHoldWakesOnEvents(t *testing.T) {
 }
 
 func TestCanaryHoldCondition(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                     string
 		percent                  int32
@@ -897,6 +925,7 @@ func TestCanaryHoldCondition(t *testing.T) {
 }
 
 func TestCanaryForwardPlannerDoesNotSpendTheHeldShare(t *testing.T) {
+	t.Parallel()
 	// Demand reduction does not authorize draining the held stable share.
 	// The planner must remove surplus current groups instead.
 	state := rolloutState([]int{4, 4}, []int{3, 3}, []int{3, 3}, nil, nil, []int{2, 2}, []int{2, 2}, []int{4, 4}, canaryConfigs(1, 0, []int{3, 3}))
@@ -915,6 +944,7 @@ func TestCanaryForwardPlannerDoesNotSpendTheHeldShare(t *testing.T) {
 }
 
 func TestCanaryKeepsAnchorDuringNestedRollout(t *testing.T) {
+	t.Parallel()
 	for _, budget := range [][2]int{{1, 0}, {0, 1}} {
 		t.Run(fmt.Sprint(budget), func(t *testing.T) {
 			// A holds half of each role throughout B -> C. Only the other half
@@ -951,6 +981,7 @@ func TestCanaryKeepsAnchorDuringNestedRollout(t *testing.T) {
 }
 
 func TestCanarySingletonReplacement(t *testing.T) {
+	t.Parallel()
 	for _, budget := range [][2]int{{0, 1}, {1, 0}, {1, 1}, {0, 2}} {
 		t.Run(fmt.Sprint(budget), func(t *testing.T) {
 			ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 8}, [2]int{budget[0], budget[0]}, [2]int{budget[1], budget[1]})
@@ -970,8 +1001,17 @@ func TestCanarySingletonReplacement(t *testing.T) {
 				list := &leaderv1.LeaderWorkerSetList{}
 				require.NoError(t, c.List(t.Context(), list))
 				prefill := 0
+				settled := true
 				for i := range list.Items {
 					lws := &list.Items[i]
+					want := int32(0)
+					if lws.Labels[disaggv1.RevisionLabelKey] != "b" {
+						want = 4
+						if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
+							want = 1
+						}
+					}
+					settled = settled && getLWSReplicas(lws) == want && lws.Status.ReadyReplicas == want
 					if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
 						prefill += int(*lws.Spec.Replicas)
 					}
@@ -980,6 +1020,9 @@ func TestCanarySingletonReplacement(t *testing.T) {
 				}
 				require.GreaterOrEqual(t, prefill, 2, "never lose the last canary-side group")
 				require.LessOrEqual(t, prefill, max(2, 1+budget[0])+1, "retention plus at most one temporary bootstrap group")
+				if settled {
+					break
+				}
 			}
 			assertRevisionReplicas(t, c, "b", [2]int32{})
 			assertRevisionReplicas(t, c, "c", [2]int32{1, 4})
@@ -988,6 +1031,7 @@ func TestCanarySingletonReplacement(t *testing.T) {
 }
 
 func TestCanaryReverseDoesNotInventStableReadiness(t *testing.T) {
+	t.Parallel()
 	for _, raw := range [][]int{{4, 0}, {4, 4}} {
 		t.Run(fmt.Sprint(raw), func(t *testing.T) {
 			inputs, old, target := canaryReverseTestInputs([]int{12, 12}, []int{4, 4}, []int{4, 4}, []int{4, 4}, 1, 0)
@@ -1018,6 +1062,7 @@ func TestCanaryReverseDoesNotInventStableReadiness(t *testing.T) {
 }
 
 func TestCanaryMixedScalingAndRestart(t *testing.T) {
+	t.Parallel()
 	ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
 	allowCanaryScaling(ds)
 	ds.UID = "uid"
@@ -1070,6 +1115,7 @@ func TestCanaryMixedScalingAndRestart(t *testing.T) {
 }
 
 func TestCanaryFailedOldGroupsStillHoldWithFullUnavailability(t *testing.T) {
+	t.Parallel()
 	for _, ready := range [][]int{{0, 0}, {0, 8}} {
 		state := rolloutState([]int{8, 8}, []int{8, 8}, ready, nil, nil, []int{0, 0}, []int{0, 0}, []int{8, 8}, canaryConfigs(0, 8, []int{6, 6}))
 		state.ProportionalCanary = true
@@ -1094,6 +1140,7 @@ func TestCanaryFailedOldGroupsStillHoldWithFullUnavailability(t *testing.T) {
 }
 
 func TestCanaryReverseReservesPendingCurrentDeletion(t *testing.T) {
+	t.Parallel()
 	inputs, old, target := canaryReverseTestInputs([]int{8, 8}, []int{4, 4}, []int{0, 0}, []int{3, 3}, 1, 0)
 	for _, name := range inputs.allRoleNames {
 		inputs.readiness[target.Roles[name].Name] = replicaReadiness{raw: 4, committed: 2}
@@ -1113,6 +1160,7 @@ func TestCanaryReverseReservesPendingCurrentDeletion(t *testing.T) {
 }
 
 func TestCanaryRestoresAnchorAcrossInterruptedRollouts(t *testing.T) {
+	t.Parallel()
 	for _, budget := range [][2]int{{1, 0}, {0, 1}} {
 		for _, histories := range []int{2, 3} {
 			t.Run(fmt.Sprintf("budgets%v/old%d", budget, histories), func(t *testing.T) {
@@ -1184,6 +1232,7 @@ func TestCanaryRestoresAnchorAcrossInterruptedRollouts(t *testing.T) {
 }
 
 func TestCanaryHoldRequiresServingHistory(t *testing.T) {
+	t.Parallel()
 	// A complete stable revision does not make two other, complementary broken
 	// revisions serve. Every issued group is Ready, but only3/8 can serve.
 	state := rolloutState([]int{8, 8}, []int{1, 1}, []int{1, 1}, nil, nil, []int{2, 2}, []int{2, 2}, []int{8, 8}, canaryConfigs(1, 0, []int{6, 6}))
@@ -1199,6 +1248,7 @@ func TestCanaryHoldRequiresServingHistory(t *testing.T) {
 }
 
 func TestCanaryRejectsPlanBelowAnchorFloor(t *testing.T) {
+	t.Parallel()
 	state := rolloutState([]int{4, 4}, []int{3, 3}, []int{3, 3}, nil, nil, []int{1, 1}, []int{1, 1}, []int{4, 4}, canaryConfigs(0, 4, []int{3, 3}))
 	state.ProportionalCanary = true
 	// Availability and coordination alone permit this deletion; the explicit
@@ -1208,6 +1258,7 @@ func TestCanaryRejectsPlanBelowAnchorFloor(t *testing.T) {
 }
 
 func TestCanaryAnchorIdentityIsDurable(t *testing.T) {
+	t.Parallel()
 	inputs, old, target := canaryReverseTestInputs([]int{8, 8}, []int{4, 4}, []int{2, 2}, []int{2, 2}, 1, 0)
 	revisions := append(append(disaggutils.RevisionRolesList{}, old...), target)
 	for _, revision := range revisions {
@@ -1223,6 +1274,7 @@ func TestCanaryAnchorIdentityIsDurable(t *testing.T) {
 }
 
 func TestCanaryGitRevertDoesNotPromoteAnotherAnchor(t *testing.T) {
+	t.Parallel()
 	inputs, old, target := canaryReverseTestInputs([]int{8, 8}, []int{4, 4}, []int{2, 2}, []int{2, 2}, 1, 0)
 	old[0].Roles["prefill"].Annotations[canaryStableAnnotation] = "true"
 	ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
@@ -1238,6 +1290,7 @@ func TestCanaryGitRevertDoesNotPromoteAnotherAnchor(t *testing.T) {
 }
 
 func TestCanaryWholeSetZeroAndResume(t *testing.T) {
+	t.Parallel()
 	for _, percent := range []int32{25, 50, 100} {
 		t.Run(fmt.Sprint(percent), func(t *testing.T) {
 			ds := newDSWithRoles("test", staticRole("prefill"), staticRole("decode"))
@@ -1305,16 +1358,18 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 }
 
 func TestCanaryPromotionAndFinalization(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
 		for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 			t.Run(fmt.Sprintf("%s/%s", mode, identity), func(t *testing.T) {
-				unit := int32(1)
+				t.Parallel()
+				unit, sliceCount := int32(1), 4
 				if mode == disaggv1.CanaryDimensionGroups {
-					unit = 4
+					unit, sliceCount = 4, 2
 				}
 				ds := newTwoRoleTestDisaggregatedSet([2]int32{unit, unit}, [2]int{1, 1}, [2]int{})
 				allowCanaryScaling(ds)
-				ds.Spec.Slices = ptr.To[int32](8)
+				ds.Spec.Slices = ptr.To(int32(sliceCount))
 				ds.Annotations = map[string]string{disaggv1.RevisionHashVersionAnnotationKey: disaggv1.RevisionHashVersion}
 				setCanaryPercent(ds, 25)
 				ds.Spec.RolloutStrategy.Canary.Dimension = mode
@@ -1322,7 +1377,7 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 				for i := range ds.Spec.Roles {
 					ds.Spec.Roles[i].Spec.GroupIdentity = identity
 				}
-				for slice := range 8 {
+				for slice := range sliceCount {
 					for _, name := range testRoleNames() {
 						lws := revisionLWS("stable", name, unit, unit, time.Unix(1, 0), unit)
 						lws.Name = fmt.Sprintf("test-%d-stable-%s", slice, name)
@@ -1372,7 +1427,7 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 							if phase.percent >= 0 && phase.percent < 100 {
 								if mode == disaggv1.CanaryDimensionGroups {
 									oldDesired = int32(canaryOldReplicas(int(phase.replicas), int(phase.percent)))
-								} else if slice >= 8-canaryOldReplicas(8, int(phase.percent)) {
+								} else if slice >= sliceCount-canaryOldReplicas(sliceCount, int(phase.percent)) {
 									oldDesired = phase.replicas
 								}
 							}
@@ -1391,11 +1446,11 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 							lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = getLWSReplicas(lws), getLWSReplicas(lws), getLWSReplicas(lws)
 							require.NoError(t, c.Status().Update(t.Context(), lws))
 						}
-						wantStable := 16
+						wantStable := 2 * sliceCount
 						if phase.percent < 0 || phase.percent == 100 {
 							wantStable = 0
 						}
-						settled = settled && stableCount == wantStable && targetCount == 16
+						settled = settled && stableCount == wantStable && targetCount == 2*sliceCount
 						if settled {
 							break
 						}
@@ -1439,6 +1494,7 @@ func canaryReverseTestInputs(desired, stable, previous, current RoleReplicaState
 }
 
 func TestCanaryRestorationReleasesUnschedulableBootstrapCapacity(t *testing.T) {
+	t.Parallel()
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
 			desired := [2]int32{1, 4}
@@ -1484,6 +1540,7 @@ func TestCanaryRestorationReleasesUnschedulableBootstrapCapacity(t *testing.T) {
 }
 
 func TestCanaryMixedResizeCanDrainWhileBaselineLoads(t *testing.T) {
+	t.Parallel()
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		t.Run(string(identity), func(t *testing.T) {
 			// Demand changed in opposite directions. Stable Prefill is still
