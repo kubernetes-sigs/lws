@@ -315,7 +315,7 @@ func demandExceedsOldBaseline(snapshot rolloutSnapshot) bool {
 // beyond the latest ceiling during opt-in scaling or an increase in demand.
 func boundDrainingSnapshotTargets(snapshot rolloutSnapshot, proposed RoleReplicaState) RoleReplicaState {
 	old := snapshot.ActiveOld
-	bounded := boundDrainingRoleTargetsToWindow(old.SpecReplicas, old.InitialReplicas, proposed)
+	var bounded RoleReplicaState
 	if snapshot.ProportionalCanary {
 		// Replenished old groups belong to today's desired split. Count parked
 		// revisions once, then translate the aggregate bound back to this candidate.
@@ -327,6 +327,8 @@ func boundDrainingSnapshotTargets(snapshot rolloutSnapshot, proposed RoleReplica
 		for i := range bounded {
 			bounded[i] -= snapshot.old.spec[i] - old.SpecReplicas[i]
 		}
+	} else {
+		bounded = boundDrainingRoleTargetsToWindow(old.SpecReplicas, old.InitialReplicas, proposed)
 	}
 	if snapshot.ScaleDownDuringRollout || demandExceedsOldBaseline(snapshot) {
 		for i, desired := range snapshot.Target.DesiredReplicas {
