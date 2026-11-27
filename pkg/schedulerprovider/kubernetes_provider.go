@@ -497,6 +497,11 @@ func updateMutablePodGroupFields(ctx context.Context, c client.Client, current, 
 	ownerMatches := controllerReferencesEqual(currentOwner, desiredOwner)
 	currentSpec := current.Spec.DeepCopy()
 	desiredSpec := desired.Spec.DeepCopy()
+	if desiredSpec.PriorityClassName == "" {
+		// The Priority admission controller populates an omitted priorityClassName
+		// from the cluster's global default PriorityClass on PodGroup creation.
+		desiredSpec.PriorityClassName = currentSpec.PriorityClassName
+	}
 	desiredSpec.Priority = currentSpec.Priority
 	desiredSpec.PreemptionPolicy = currentSpec.PreemptionPolicy
 	defaultDisruptionMode := func(spec *schedulingv1beta1.PodGroupSpec) {
