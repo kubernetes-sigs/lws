@@ -355,10 +355,13 @@ func buildRolloutInputs(
 		desiredReplicasByRole = retained
 	}
 	if canary && canaryDimension(disaggregatedSet) != disaggregatedsetv1.CanaryDimensionSlices && canarySingletonRole(allRoleNames, desiredReplicasByRole) != "" {
-		// A slice serves only with every required role on the same revision.
-		// Keep it on A while indivisible, but continue all requested scaling.
+		// Do not start an incomplete canary, but keep groups already issued for
+		// other roles when a zero-demand peer resumes at one. They can complete
+		// their serving revision when that peer becomes splittable again.
+		revisions := append(slices.Clone(oldRevisions), targetRevision)
 		for i, name := range allRoleNames {
-			config[i].CanaryOldReplicas = desiredReplicasByRole[name]
+			issued := readiness.totalReplicas(revisions, name) - readiness.role(stable, name).spec
+			config[i].CanaryOldReplicas = max(config[i].CanaryOldReplicas, desiredReplicasByRole[name]-issued)
 		}
 	}
 	// Partial canary demand was admitted separately. Both planner directions

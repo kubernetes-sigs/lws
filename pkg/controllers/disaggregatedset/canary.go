@@ -78,7 +78,7 @@ func retainedCanaryTargets(names []string, desired map[string]int, revisions dis
 		}
 		old := readiness.role(stable, name).spec
 		if old == 0 || readiness.totalReplicas(revisions, name) <= old {
-			return desired // A canary that has not started still uses the singleton fallback.
+			continue // This role waits on A, without cancelling another role's pair.
 		}
 		if retained == nil {
 			retained = maps.Clone(desired)
@@ -321,7 +321,7 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 		if len(retained) > 0 {
 			executor.canaryMessage = fmt.Sprintf("Deferring the final scale-down of roles %s: keeping one baseline and one canary group while their admitted count is one. An admitted zero request or finalization releases them. This is a one-group exception when maxSurge is zero; other roles follow their scaling policies", listRoles(retained))
 		} else {
-			executor.canaryMessage = fmt.Sprintf("Keeping this slice on the stable revision because role %s has only one replica group; scaling continues there until every active role can run on both revisions", name)
+			executor.canaryMessage = fmt.Sprintf("Role %s has only one replica group: keeping it on the stable revision and preserving already-issued canary groups; further canary growth waits until every active role can run on both revisions", name)
 		}
 	}
 	if percent > 0 && percent < 100 && canaryDimension(ds) == disaggv1.CanaryDimensionSlices && disaggutils.GetSlices(ds) == 1 {

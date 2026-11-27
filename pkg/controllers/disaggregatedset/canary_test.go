@@ -522,6 +522,38 @@ func TestCanarySingletonTargets(t *testing.T) {
 	}
 }
 
+func TestCanarySingletonPeerPreservesIssuedGroups(t *testing.T) {
+	for _, p := range []int32{1, 4} {
+		t.Run(fmt.Sprint(p), func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{p, 1}, [2]int{1, 1}, [2]int{})
+			allowCanaryScaling(ds)
+			setCanaryPercent(ds, 50)
+			share := max(1, p/2)
+			objects := revisionLWSObjects("A", [2]int32{share, 0}, [2]int32{share, 0}, [2]int32{max(2, p), 2}, time.Unix(1, 0))
+			objects = append(objects, revisionLWSObjects("B", [2]int32{share, 0}, [2]int32{share, 0}, [2]int32{max(2, p), 2}, time.Unix(2, 0))...)
+			c := newTestClient(objects...)
+			for _, d := range []int32{1, 2} {
+				ds.Spec.Roles[1].Spec.Replicas = ptr.To(d)
+				for range 20 {
+					reconcileExistingForTest(t, newTestExecutor(c), ds, "B")
+					list := &leaderv1.LeaderWorkerSetList{}
+					require.NoError(t, c.List(t.Context(), list))
+					for i := range list.Items {
+						lws := &list.Items[i]
+						if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
+							require.Equal(t, share, *lws.Spec.Replicas, "a peer resuming must not restart Prefill")
+						}
+						lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
+						require.NoError(t, c.Status().Update(t.Context(), lws))
+					}
+				}
+				assertRevisionReplicas(t, c, "A", [2]int32{share, 1})
+				assertRevisionReplicas(t, c, "B", [2]int32{share, d - 1})
+			}
+		})
+	}
+}
+
 func TestCanaryNativeGroupsAndSubRoles(t *testing.T) {
 	for _, identity := range []leaderv1.GroupIdentityType{leaderv1.GroupIdentityOrdinal, leaderv1.GroupIdentityHash} {
 		for _, subRoles := range []bool{false, true} {
