@@ -343,7 +343,6 @@ func TestMetadataProtection(t *testing.T) {
 			{"LeaderWorkerSet", []string{"spec", "leaderWorkerTemplate", "workerTemplate", "metadata"}},
 			{"LeaderWorkerSet", []string{"spec", "leaderWorkerTemplate", "leaderTemplate", "metadata"}},
 			{"ControllerRevision", []string{"data", "spec", "template", "metadata"}},
-			{"ControllerRevision", []string{"data", "spec", "leaderWorkerTemplate", "workerTemplate", "metadata"}},
 		}
 		for i, tc := range cases {
 			for _, field := range []string{"labels", "annotations"} {
@@ -416,6 +415,20 @@ func TestMetadataProtection(t *testing.T) {
 			must(t, denied.SubResource("scale").Patch(ctx, obj, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"replicas":3}}`))))
 		}
 	})
+	t.Run("revision_paths_not_replayed_by_statefulsets_remain_usable", func(t *testing.T) {
+		for i, path := range [][]string{
+			{"data", "metadata", "labels"},
+			{"data", "Metadata", "Labels"},
+			{"data", "spec", "leaderWorkerTemplate", "leaderTemplate", "metadata", "labels"},
+			{"data", "spec", "leaderWorkerTemplate", "worKerTemplate", "Metadata", "Annotations"},
+		} {
+			obj := workload("ControllerRevision", fmt.Sprintf("unrelated-path-%d", i))
+			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/name": "unrelated"}, path...))
+			must(t, denied.Create(ctx, obj))
+			// Without these protected object labels LWS cannot select the data.
+			assertDenied(t, patch(denied, obj, `{"metadata":{"labels":{"leaderworkerset.sigs.k8s.io/name":"forged","leaderworkerset.sigs.k8s.io/template-hash":"forged"}}}`))
+		}
+	})
 	t.Run("unrelated_opaque_revision_data_remains_usable", func(t *testing.T) {
 		for i, data := range []any{
 			map[string]any{"spec": "opaque"},
@@ -430,36 +443,27 @@ func TestMetadataProtection(t *testing.T) {
 	t.Run("revision_metadata_paths_require_canonical_field_names", func(t *testing.T) {
 		for _, field := range []string{"labels", "annotations"} {
 			obj := workload("ControllerRevision", "coexisting-alias-"+field)
-			path := []string{"data", "spec", "leaderWorkerTemplate", "workerTemplate", "metadata", field}
+			path := []string{"data", "spec", "template", "metadata", field}
 			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"app": "test"}, path...))
 			must(t, denied.Create(ctx, obj.DeepCopy()))
 			obj.SetName(obj.GetName() + "-protected")
 			path[len(path)-1] = strings.ToUpper(field[:1]) + field[1:]
 			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/worker-index": "0"}, path...))
 			assertDenied(t, denied.Create(ctx, obj))
-		}
-		paths := [][]string{
-			{"data", "metadata"},
-			{"data", "spec", "template", "metadata"},
-			{"data", "spec", "leaderWorkerTemplate", "leaderTemplate", "metadata"},
-			{"data", "spec", "leaderWorkerTemplate", "workerTemplate", "metadata"},
-		}
-		for location, metaPath := range paths {
-			for _, field := range []string{"labels", "annotations"} {
-				path := append(append([]string{}, metaPath...), field)
-				for i := 1; i < len(path); i++ {
-					alias := append([]string{}, path...)
-					alias[i] = strings.ToUpper(alias[i])
-					obj := workload("ControllerRevision", fmt.Sprintf("alias-%d-%s-%d", location, field, i))
-					must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/worker-index": "0"}, alias...))
-					assertDenied(t, denied.Create(ctx, obj))
-				}
+			// The native StatefulSet controller is trusted to write snapshots.
+			must(t, actor("system:serviceaccount:kube-system:statefulset-controller").Create(ctx, obj))
+			for i := 1; i < len(path); i++ {
+				alias := []string{"data", "spec", "template", "metadata", field}
+				alias[i] = strings.ToUpper(alias[i])
+				obj := workload("ControllerRevision", fmt.Sprintf("alias-%s-%d", field, i))
+				must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"leaderworkerset.sigs.k8s.io/worker-index": "0"}, alias...))
+				assertDenied(t, denied.Create(ctx, obj))
 			}
 		}
-		// Go's JSON decoder also folds long S and the Kelvin sign to ASCII S/K.
+		// Go's JSON decoder folds long S to ASCII S, including in labels.
 		for i, path := range [][]string{
-			{"data", "ſpec", "leaderWorkerTemplate", "workerTemplate", "metadata", "labels"},
-			{"data", "spec", "leaderWorkerTemplate", "worKerTemplate", "metadata", "annotations"},
+			{"data", "ſpec", "template", "metadata", "labels"},
+			{"data", "spec", "template", "metadata", "labelſ"},
 		} {
 			obj := workload("ControllerRevision", fmt.Sprintf("unicode-alias-%d", i))
 			must(t, unstructured.SetNestedStringMap(obj.Object, map[string]string{"disaggregatedset.x-k8s.io/name": "model"}, path...))

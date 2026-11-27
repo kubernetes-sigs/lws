@@ -48,8 +48,11 @@ spec:
     message: LWS/DisaggregatedSet controller-owned annotations may only be written
       by their approved controllers, including in templates.
     reason: Forbidden
+  # Revision data is immutable on UPDATE. Check only untrusted new snapshots,
+  # so legacy revisions can still receive metadata and finalizer updates.
   - expression: >-
-      request.resource.group != 'apps' || request.resource.resource != 'controllerrevisions' ||
+      request.operation != 'CREATE' || request.resource.group != 'apps' ||
+      request.resource.resource != 'controllerrevisions' || variables.nativeCreate ||
       variables.revisionFieldMaps.all(m, type(m.value) != map ||
         m.value.all(k, m.names.all(n, k == n || !k.matches('(?i)^' + n + '$'))))
     message: LWS/DisaggregatedSet metadata paths in ControllerRevision data must use canonical field names.
@@ -109,7 +112,7 @@ spec:
         o == null ? [] : [{'id':dyn("object"),'meta':o.metadata}] +
         (request.?subResource.orValue('') == '' && request.resource.group == 'apps' && request.resource.resource in ['deployments','statefulsets','replicasets'] ? [{'id':dyn("podTemplate"),'meta':o.?spec.?template.?metadata.orValue({})}] : []) +
         (request.?subResource.orValue('') == '' && request.resource.group == 'leaderworkerset.x-k8s.io' && request.resource.resource == 'leaderworkersets' ? [{'id':dyn("leaderTemplate"),'meta':o.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}, {'id':dyn("workerTemplate"),'meta':o.?spec.?leaderWorkerTemplate.?workerTemplate.?metadata.orValue({})}] : []) +
-        (request.?subResource.orValue('') == '' && request.resource.group == 'apps' && request.resource.resource == 'controllerrevisions' ? [{'id':dyn("revisionMetadata"),'meta':o.?data.?metadata.orValue({})}, {'id':dyn("revisionPodTemplate"),'meta':o.?data.?spec.?template.?metadata.orValue({})}, {'id':dyn("revisionleaderTemplate"),'meta':o.?data.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}, {'id':dyn("revisionworkerTemplate"),'meta':o.?data.?spec.?leaderWorkerTemplate.?workerTemplate.?metadata.orValue({})}] : []) +
+        (request.?subResource.orValue('') == '' && request.resource.group == 'apps' && request.resource.resource == 'controllerrevisions' ? [{'id':dyn("revisionPodTemplate"),'meta':o.?data.?spec.?template.?metadata.orValue({})}] : []) +
         (request.?subResource.orValue('') == '' && request.resource.group == 'disaggregatedset.x-k8s.io' && request.resource.resource == 'disaggregatedsets' ? (
         o.?spec.?roles.orValue([]).map(r, {'id':dyn('role/' + r.name + '/metadata'), 'meta':r.?metadata.orValue({})}) +
         o.?spec.?roles.orValue([]).map(r, {'id':dyn('role/' + r.name + '/leaderTemplate'), 'meta':r.?spec.?leaderWorkerTemplate.?leaderTemplate.?metadata.orValue({})}) +
@@ -120,20 +123,18 @@ spec:
     expression: variables.entries[0]
   - name: oldEntries
     expression: variables.entries[1]
-  # Raw revision data retains field aliases that encoding/json later folds onto
-  # typed fields. Reject aliases at every structural level before inspecting keys.
-  # RE2's Unicode case folding also covers Go's long-S and Kelvin-sign aliases.
+  # Only the native StatefulSet replay path can copy these fields into Pods.
+  # LWS revisions require protected object labels before LWS will read them.
+  # Raw data retains aliases that encoding/json folds onto typed fields; reject
+  # aliases along the replay path, including Unicode long S via RE2 case folding.
   - name: revisionFieldMaps
     expression: |-
       [
-        {'value':object.?data.orValue({}), 'names':dyn(['metadata','spec'])},
-        {'value':object.?data.?spec.orValue({}), 'names':dyn(['template','leaderWorkerTemplate'])},
+        {'value':object.?data.orValue({}), 'names':dyn(['spec'])},
+        {'value':object.?data.?spec.orValue({}), 'names':dyn(['template'])},
         {'value':object.?data.?spec.?template.orValue({}), 'names':dyn(['metadata'])},
-        {'value':object.?data.?spec.?leaderWorkerTemplate.orValue({}), 'names':dyn(['leaderTemplate','workerTemplate'])},
-        {'value':object.?data.?spec.?leaderWorkerTemplate.?leaderTemplate.orValue({}), 'names':dyn(['metadata'])},
-        {'value':object.?data.?spec.?leaderWorkerTemplate.?workerTemplate.orValue({}), 'names':dyn(['metadata'])}
-      ] + variables.newEntries.filter(e, e.id.startsWith('revision')).map(e,
-        {'value':e.meta, 'names':dyn(['labels','annotations'])})
+        {'value':object.?data.?spec.?template.?metadata.orValue({}), 'names':dyn(['labels','annotations'])}
+      ]
   # Compare both directions to catch additions and removals, including empty values.
   - name: protectedLabelsUnchanged
     expression: |-
