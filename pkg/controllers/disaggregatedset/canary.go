@@ -227,6 +227,7 @@ func canaryStableRevision(revisions disaggutils.RevisionRolesList, names []strin
 // annotation transfer, and completing the rollout removes A and its marker.
 func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, ds *disaggv1.DisaggregatedSet, stable disaggutils.RevisionRoles, retain bool, demand map[string]map[string]int) error {
 	manager := executor.LWSManager
+	mutated := false
 	for name, lws := range stable.Roles {
 		if !metav1.IsControlledBy(lws, ds) {
 			return fmt.Errorf("stable LWS %s is not controlled by DisaggregatedSet %s", lws.Name, ds.Name)
@@ -256,8 +257,9 @@ func (executor *RollingUpdateExecutor) recordCanaryStable(ctx context.Context, d
 			return err
 		}
 		updated.DeepCopyInto(lws)
+		mutated = true
 	}
-	if manager.pending != nil {
+	if mutated && manager.pending != nil {
 		for _, lws := range stable.Roles {
 			return manager.pending.observed(ctx, ds.UID, lws.Labels[disaggv1.SliceLabelKey])
 		}

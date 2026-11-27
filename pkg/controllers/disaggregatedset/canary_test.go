@@ -1360,6 +1360,21 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 	}
 }
 
+func TestCanaryUnchangedMarkerSkipsPendingObservation(t *testing.T) {
+	t.Parallel()
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 8}, [2]int{1, 1}, [2]int{})
+	a := revisionLWS("A", "prefill", 4, 4, time.Unix(1, 0), 4)
+	a.Annotations[canaryStableAnnotation] = "true"
+	c := newTestClient(a)
+	executor := newTestExecutor(c)
+	executor.LWSManager.pending = &pendingWrites{Reader: c, writes: map[client.ObjectKey]*pendingWrite{
+		client.ObjectKeyFromObject(a): {owner: ds.UID, slice: "0", uid: a.UID, receipt: "not-yet-observed"},
+	}}
+	stable := disaggutils.RevisionRoles{Revision: "A", Roles: map[string]*leaderv1.LeaderWorkerSet{"prefill": a}}
+	require.NoError(t, executor.recordCanaryStable(t.Context(), ds, stable, true, nil), "an unchanged marker must not inspect unrelated pending writes")
+	require.Len(t, executor.LWSManager.pending.writes, 1)
+}
+
 func TestCanaryCleanupKeepsOnlyBaseline(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
