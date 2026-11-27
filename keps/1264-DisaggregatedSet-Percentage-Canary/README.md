@@ -118,6 +118,8 @@ The requested count remains one in the spec and status; observed counts show the
 
 The same protection applies when another role resumes from zero at one group. For example, keep an existing A/B Prefill pair while Decode resumes on A only. Do not discard Prefill B or create a second Decode automatically. Further canary growth waits until Decode can split. Until then B is incomplete: its Prefill does not count as serving capacity, and the canary is not settled.
 
+For Ordinal sub-roles, shrinking their shared LWS can reassign sub-role labels to surviving, already-running groups before deleting higher ordinals. Retention does not promise fixed Pod identities when a peer sub-role shrinks; it avoids recreating canary capacity merely because demand crosses one.
+
 In `Slices` mode, apply the same rounding rule to the number of slices. One slice cannot be divided; it stays on A while role scaling continues.
 
 ### Promote the canary or roll back through Git
