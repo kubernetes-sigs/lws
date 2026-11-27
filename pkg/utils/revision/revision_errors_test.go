@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -93,6 +94,46 @@ func TestTruncateRevisionsDeleteError(t *testing.T) {
 
 	if err := TruncateRevisions(ctx, failing, lws, "current"); !errors.Is(err, errBoom) {
 		t.Errorf("TruncateRevisions() error = %v, want %v", err, errBoom)
+	}
+}
+
+// TestTruncateRevisionsIgnoresAlreadyDeleted covers a stale revision that the
+// cache still lists after a previous reconcile deleted it. Its NotFound must
+// not fail the reconcile or stop the remaining stale revisions from going.
+func TestTruncateRevisionsIgnoresAlreadyDeleted(t *testing.T) {
+	ctx := context.Background()
+	lws := wrappers.BuildLeaderWorkerSet("default").Obj()
+
+	seed := fake.NewClientBuilder().Build()
+	newRevision := func(key string) *appsv1.ControllerRevision {
+		cr, err := NewRevision(ctx, seed, lws, key)
+		if err != nil {
+			t.Fatalf("NewRevision(%q): %v", key, err)
+		}
+		cr.Name = revisionName(lws.Name, key, 1)
+		return cr
+	}
+	gone, stale, current := newRevision("gone"), newRevision("stale"), newRevision("current")
+
+	c := fake.NewClientBuilder().
+		WithObjects(gone, stale, current).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if obj.GetName() == gone.Name {
+					return apierrors.NewNotFound(appsv1.Resource("controllerrevisions"), obj.GetName())
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+
+	if err := TruncateRevisions(ctx, c, lws, "current"); err != nil {
+		t.Fatalf("TruncateRevisions() error = %v, want nil when a stale revision is already gone", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(stale), &appsv1.ControllerRevision{}); !apierrors.IsNotFound(err) {
+		t.Errorf("stale revision %s: Get() error = %v, want NotFound", stale.Name, err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(current), &appsv1.ControllerRevision{}); err != nil {
+		t.Errorf("current revision %s: Get() error = %v, want it kept", current.Name, err)
 	}
 }
 
