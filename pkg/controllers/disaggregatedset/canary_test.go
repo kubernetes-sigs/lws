@@ -1357,6 +1357,29 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 	}
 }
 
+func TestCanaryCleanupKeepsOnlyBaseline(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
+		ds := newTwoRoleTestDisaggregatedSet([2]int32{}, [2]int{1, 1}, [2]int{})
+		setCanaryPercent(ds, 50)
+		ds.Spec.RolloutStrategy.Canary.Dimension = mode
+		objects := revisionLWSObjects("A", [2]int32{}, [2]int32{}, [2]int32{4, 8}, time.Unix(1, 0))
+		for _, object := range objects {
+			object.(*leaderv1.LeaderWorkerSet).Annotations[canaryStableAnnotation] = "true"
+		}
+		objects = append(objects, revisionLWSObjects("B", [2]int32{}, [2]int32{}, [2]int32{4, 8}, time.Unix(2, 0))...)
+		objects = append(objects, revisionLWSObjects("C", [2]int32{}, [2]int32{}, [2]int32{4, 8}, time.Unix(3, 0))...)
+		c := newTestClient(objects...)
+		require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "C", false))
+		list := &leaderv1.LeaderWorkerSetList{}
+		require.NoError(t, c.List(t.Context(), list))
+		require.Len(t, list.Items, 4, "%s must retain only A and C", mode)
+		for _, lws := range list.Items {
+			require.NotEqual(t, "B", lws.Labels[disaggv1.RevisionLabelKey])
+		}
+	}
+}
+
 func TestCanaryPromotionAndFinalization(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
@@ -1450,8 +1473,9 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 						if phase.percent < 0 || phase.percent == 100 {
 							wantStable = 0
 						}
-						settled = settled && stableCount == wantStable && targetCount == 2*sliceCount
+						settled = settled && stableCount == wantStable && targetCount == 2*sliceCount && len(list.Items) == stableCount+targetCount
 						if settled {
+							require.Len(t, list.Items, stableCount+targetCount, "only the baseline and current canary survive")
 							break
 						}
 					}

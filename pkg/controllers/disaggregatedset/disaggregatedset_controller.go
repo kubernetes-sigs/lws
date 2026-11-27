@@ -691,8 +691,10 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(
 		}
 	}
 
+	_, canary := canaryPercent(disaggregatedSet)
+	hasRetainedStable := canary && slices.ContainsFunc(drainedRevisions, isCanaryStable)
 	retainedRevision := ""
-	if !rolloutComplete && !hasNonDrainedRevision && len(drainedRevisions) > 0 {
+	if !rolloutComplete && !hasNonDrainedRevision && !hasRetainedStable && len(drainedRevisions) > 0 {
 		retainedRevision = drainedRevisions[0].Revision
 		log.V(1).Info("Retaining newest drained revision until the target is ready", "revision", retainedRevision)
 	}
@@ -701,7 +703,7 @@ func (r *DisaggregatedSetReconciler) cleanupDrainedLWS(
 		if drainedRevision.Revision == retainedRevision {
 			continue
 		}
-		if _, canary := canaryPercent(disaggregatedSet); canary && isCanaryStable(drainedRevision) {
+		if canary && isCanaryStable(drainedRevision) {
 			continue // Keep the templates even when every role is scaled to zero.
 		}
 		for _, lws := range drainedRevision.Roles {
