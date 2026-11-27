@@ -175,11 +175,13 @@ Commit and push the change, then sync the Application. Once Argo CD shows Health
 | `50` | 2 / 4 | 2 / 4 |
 | `100` | 0 / 0 | 4 / 8 |
 
-Argo CD does not choose the next percentage or judge the model's answers: you or your release automation make that decision. Healthy means the requested groups are Ready. Readiness and rollout budgets still govern every transition; temporary surge groups are not shown in the table. If autoscaling changes demand, LWS recalculates both shares.
+Argo CD does not choose the next percentage or judge the model's answers: you or your release automation make that decision. Healthy means the requested groups are Ready. Readiness and rollout budgets still govern every transition; temporary surge groups are not shown in the table. When Immediate admits an autoscaling request, LWS recalculates both shares; Deferred queues the request during a partial canary.
 
 **100% finalizes the canary, like omitting the percentage.** B serves the full desired workload, and A's LWS objects can be cleaned up. During a partial canary, percentage decreases are rejected. Keep the percentage unchanged while evaluating B; use a Git template revert for rollback, before or after completion.
 
 After promoting to 100%, wait for `Available=True` with reason `AllRolesReady` for that generation before starting another canary. Both a partial hold and a finalized rollout appear Healthy with the configuration above; their condition reasons distinguish them. No second edit removing the percentage is required to accept B as the next baseline. Set the next starting percentage together with the new templates.
+
+**Admission enforces this wait.** Changing from `100` or an omitted percentage to a partial percentage is rejected until the current rollout has completed. This prevents a quick `50 → 100 → 25` from undoing a running canary. The same rule applies when starting the first canary on an existing set. Creating a new set with a partial percentage is allowed; without an older revision, there is nothing to hold back.
 
 Once B finishes, a new C canary uses B as its baseline. Keeping `100` configured does not automatically pause the next template update below 100%.
 
@@ -200,6 +202,10 @@ Retention keeps one extra group for each affected role or sub-role, in each slic
 {{% /alert %}}
 
 The requested replicas remain one; status reports the observed extra group and explains the deferred final reduction. `status.canary.settled` is false, and `Progressing` explains the retained pair rather than reporting `CanaryHeld`. The configured Argo CD health check therefore stays Progressing. Demand returning to two removes the excess. An admitted zero request, promotion to 100%, or removing the percentage releases retention. Other roles follow their normal scaling policies; Deferred scale-down continues to queue reductions.
+
+If Decode first scales to zero and then resumes at one, its one group starts on A. LWS keeps the existing Prefill A/B groups rather than restarting Prefill. B cannot serve without its own Decode, so further canary growth waits until Decode can split. The retained B Prefill is not counted as serving capacity and this is not a settled hold.
+
+Serving-capacity status follows admitted demand. A Deferred request to scale Decode to zero does not make Decode optional while the request is queued. Conversely, a queued increase from an admitted zero does not reactivate it yet. Requested counts in status still show the latest autoscaler request.
 
 Set an autoscaler minimum of two for each required role/sub-role if the canary must both start and reach an exact hold without this boundary. This is optional for avoiding repeated restarts: an already-running pair is protected even when the request drops to one.
 
