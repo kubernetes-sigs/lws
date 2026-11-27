@@ -41,18 +41,18 @@ test('compact narration retains every view, transient state, event and failed ch
   assert.deepEqual(scenario, original, 'source observations and evidence must not be changed');
 });
 
-test('reversal restores A, while final promotion is not described as autoscaling', () => {
+test('decreases are rejected and resizing distinguishes policies from final promotion', () => {
   const steps = [
     'Request 50% new at 4 Prefill / 8 Decode: A=2/4, B=2/4.',
-    'Request 25% new at 4 Prefill / 8 Decode: A=3/6, B=1/2.',
+    'Reject 50% → 25%; keep the current groups.',
     'Give the held canary to External scalers without losing capacity.',
     'Request 25% new at 8 Prefill / 16 Decode: A=6/12, B=2/4.',
     'Request 100% new at 4 Prefill / 8 Decode: A=0/0, B=4/8.',
   ].map((title, i) => ({id: `step-${i}`, title, frame_indices: []}));
   const timeline = buildCanaryTimeline({id: 'canary-test', frames: [], steps, outcome: {passed: true}});
   const triggers = timeline.moments.filter(moment => moment.card.kind === 'trigger');
-  assert.match(triggers[1].card.lines.join('\n'), /Restore A before reducing B/);
-  assert.match(triggers[3].card.lines.join('\n'), /Resize through the External scalers/);
+  assert.match(triggers[1].card.lines.join('\n'), /rejected by admission/);
+  assert.match(triggers[3].card.lines.join('\n'), /Immediate admits resizing; Deferred keeps/);
   assert.match(triggers[4].card.lines.join('\n'), /Advance to 100%/);
   assert.doesNotMatch(triggers[4].card.lines.join('\n'), /Resize|same percentage/);
 });

@@ -10,20 +10,19 @@ export function observationState(frame) {
   return JSON.stringify([frame.roles, observedPercent(frame)]);
 }
 
-function requestPhase(step, external, previousPercent) {
+function requestPhase(step) {
   const request = step.title.match(/^Request (\d+)% new at (\d+) Prefill \/ (\d+) Decode: (.+)\.$/);
   if (request) {
     const [, percent, prefill, decode, split] = request;
     let instruction = 'Open readiness as groups arrive; preserve the availability minimum.';
     if (percent === '100') instruction = 'Advance to 100%; replace the remaining A groups with B.';
-    else if (percent === '0') instruction = previousPercent === null ? 'Hold A; B stays at zero.'
-      : 'Restore A before draining B; retain B’s empty LWS objects.';
-    else if (previousPercent !== null && Number(percent) < previousPercent) {
-      instruction = 'Restore A before reducing B; keep enough groups Ready.';
-    } else if (external) instruction = 'Resize through the External scalers; keep the same percentage.';
+    else if (percent === '0') instruction = 'Hold A; B stays at zero.';
+    else instruction = 'Immediate admits resizing; Deferred keeps its admitted counts. Promotion still proceeds.';
     return {title: `${percent}% new · ${prefill} Prefill / ${decode} Decode`,
       lines: [`Expected ${split}.`, instruction]};
   }
+  if (step.title.startsWith('Reject 50%')) return {
+    title: 'Reject a percentage decrease', lines: ['50% → 25% must be rejected by admission.', 'Keep every current group; rollback requires restoring templates.']};
   if (step.title.startsWith('Give the held canary to External')) return {
     title: 'Static → External scaling', lines: ['Keep the current targets and existing Pods.', 'Delay the first autoscaler write; capacity must stay unchanged.']};
   if (step.title.startsWith('Hold B at 50%')) return {
@@ -40,7 +39,7 @@ export function buildCanaryTimeline(scenario) {
   const chain = scenario.id.startsWith('canary-chain');
   const moments = [], seenEvents = new Set();
   let time = 0, currentIndex = null, currentFrame = null, previousState;
-  let phaseIndex = 0, external = false, previousPercent = null;
+  let phaseIndex = 0;
   let phase = {title: 'Set up 4 Prefill / 8 Decode groups',
     lines: ['Create A and wait for all groups to be Ready.', 'maxSurge=1 and maxUnavailable=0 for each logical role.']};
   const push = (card, duration, held = true, step = phase) => {
@@ -52,18 +51,16 @@ export function buildCanaryTimeline(scenario) {
     'Start with 4 Prefill and 8 Decode groups; one Pod per group.',
     'Each logical role uses maxSurge=1 and maxUnavailable=0.',
     chain ? 'Hold A+B at 50%, then replace B with C in the canary half.'
-      : 'Promote, reverse, hold at 0%, then resize through External scalers.',
+      : 'Promote 0 → 25 → 50 → 100%; reject reversal; resize through External scalers.',
     chain ? 'Expected: A keeps its Pods and half the capacity throughout.'
-      : 'Expected: preserve availability and reach every requested split.',
+      : 'Immediate admits demand; Deferred queues it. Keep Prefill Pods when a peer resumes.',
   ]}, chain ? 10 : 11, true, null);
 
   let visited = 0;
   for (const step of scenario.steps) {
-    const nextPhase = requestPhase(step, external, previousPercent);
+    const nextPhase = requestPhase(step);
     if (nextPhase) {
       phase = nextPhase; phaseIndex++;
-      if (step.title.startsWith('Give the held canary')) external = true;
-      if (step.title.startsWith('Request ')) previousPercent = Number(step.title.match(/^Request (\d+)/)[1]);
       push({key: `${step.id}/compact-trigger`, heading: 'Scenario trigger', kind: 'trigger', lines: phase.lines}, 4);
     }
     for (const index of step.frame_indices) {
@@ -92,7 +89,7 @@ export function buildCanaryTimeline(scenario) {
   const passed = scenario.outcome.passed;
   const lines = passed === true ? [chain
     ? 'PASS: A kept its specification and original Pods. C replaced B in the other half.'
-    : 'PASS: requested splits, 0% hold, scaler handoff and proportional resizing matched expectations.',
+    : 'PASS: forward promotion, decrease rejection, scaling policy and preserved Prefill Pods matched expectations.',
     'Ready capacity and requested-group limits passed the recorded checks.']
     : [scenario.outcome.detail, scenario.outcome.error].filter(Boolean);
   const lateReadErrors = (scenario.read_errors_at ?? []).filter(elapsed => elapsed > (currentFrame?.elapsed ?? -Infinity));

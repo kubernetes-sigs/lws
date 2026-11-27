@@ -89,8 +89,8 @@ outage covers integer and percentage budgets.
 | `native-restart` | Worker and leader crashes recreate only their affected group. | 2 |
 | `outage` | 1/2 in three slots, zero surge, explicit allowed downtime without losing another role's protection. | 4 |
 | `emergency` | Interrupted history, one bootstrap group, real ≥60-second Unschedulable timeout and bounded availability fallback. | 2 |
-| `canary` | 4 Prefill/8 Decode: 25→50→25→0→25, resize at 25%, then finalize at 100% and resize B. Both scaling policies; retain both LWS identities only during partial canaries. | 4 |
-| `canary-subroles` | The same forward/reverse/resizing sequence with Prefill and Decode sharing a physical LWS. Both identities and policies. | 4 |
+| `canary` | 4 Prefill/8 Decode: 0→25→50→100, reject 50→25, compare Deferred/Immediate demand, retain a Prefill pair at one, and resume Decode through zero. Finalize and resize B. | 4 |
+| `canary-subroles` | The same promotion, scaling and retention checks with Prefill and Decode sharing a physical LWS. Both identities and policies. | 4 |
 | `canary-chain` | Hold A at 50%, then replace B with C in the other half. A's spec and Pod UIDs must stay unchanged. Ordinal and Hash. | 2 |
 | `canary-chain-subroles` | The same A→B→C sequence with shared physical LWSs; also preserve A's child assignments. | 2 |
 | `large-rename` | Optional asymmetric 9/4→8/3 rename with integer rounding and shared capacity. | +2 |
@@ -100,33 +100,33 @@ paused. It does not forge Pod readiness or scheduler timeout ages. The autoscale
 case uses the real `/scale` endpoint, not a metrics-driven HPA or KEDA.
 
 The canary cases use `maxSurge=1` and `maxUnavailable=0` for each logical role.
-Both A and B have real application-readiness gates. On a percentage decrease,
-replacement A groups first remain scheduled but unready, proving that needed
-Ready B capacity is retained until the gates are opened. At 0%, B has no Pods but
-its original LWS objects remain, and returning to 25% reuses them. Percentage and
-replica-only changes must not create another revision.
+Both A and B have real application-readiness gates. Start B at 0%, promote to
+25% and then 50%, and verify that admission rejects a decrease back to 25%.
+Percentage and replica-only changes must not create another revision.
 
 At 100%, the canary finalizes without a second edit: A's empty LWS objects are
 cleaned up and B reports `AllRolesReady`. The scenario then resizes B at 100%
 and verifies that omitting the percentage also leaves it completed. Partial
 canaries use `spec.rolloutStrategy.canary.percent`; the old flat field is gone.
-The checked-in traces remain historical recordings of the earlier API and
-scenario sequence. They have not been rerun for this API/finalization update.
 
-Before resizing, the reversible canary cases switch both roles (or subroles) to External
+Before resizing, the canary cases switch both roles (or subroles) to External
 scaling. The handoff must preserve all Pod/LWS identities and seed scalers from
-the existing 4/8 target. The subsequent 8/16 and 4/8 requests use the real `/scale`
-subresources, and a completed hold requires current scaler observations.
+the existing 4/8 target. Subsequent requests use the real `/scale` subresources.
+Immediate applies them; Deferred keeps admitted demand at 4/8 while still allowing
+promotion. At 50%, request 2/8, 1/8, 1/0, 1/1 and 2/2. In Immediate, Prefill's
+existing A/B Pods must survive the whole sequence, including Decode resuming on A
+only. Deferred instead keeps its existing groups and reports the queued demand.
+A completed hold requires current scaler observations; queued demand or an extra
+retained group must not report a settled hold.
 
 The four `canary-chain` cases instead hold A and B at 50% each, introduce C, and
 replace B within the experimental half. A's LWS spec, Pod UIDs and subrole labels
 must remain unchanged while C starts, waits for readiness, and replaces B.
 The final hold requires A and C at 2 Prefill / 4 Decode each, with no B groups.
 
-During a canary, the exact requested split takes precedence over ordinary
-Deferred target-retention: both policies converge to the same requested counts.
 The tests check observed whole-group availability and physical requested surge,
-including a no-worsening Ready floor while demand grows. They do not treat
+including a no-worsening serving floor while admitted demand grows. A revision
+with a newly reactivated but missing role is no longer serving. They do not treat
 terminating Pods as new requested capacity or claim atomic API snapshots.
 
 ## Large matrix

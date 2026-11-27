@@ -80,6 +80,39 @@ func TestCanaryFullPercentageFinalizes(t *testing.T) {
 	require.True(t, canarySettled(s, pair(0, 0), pair(4, 8), -1, false))
 }
 
+func TestCanaryQueuedDemandAndRetainedPairAreNotSettled(t *testing.T) {
+	for _, requested := range []Targets{pair(8, 16), pair(1, 8)} {
+		s := fleet(map[string]map[string]Counts{
+			"A": {"prefill": {1, 1, 1}, "decode": {4, 4, 4}},
+			"B": {"prefill": {1, 1, 1}, "decode": {4, 4, 4}},
+		}, 1)
+		s.DS["spec"] = Object{"rolloutStrategy": Object{"canary": Object{"percent": 50}}}
+		status := obj(s.DS["status"])
+		status["canary"] = Object{"settled": false}
+		status["conditions"] = []any{Object{"type": "Progressing", "reason": "RolloutInProgress", "status": "True", "observedGeneration": 2}}
+		versions := map[string]Targets{"A": pair(1, 4), "B": pair(1, 4)}
+		require.True(t, canaryObserved(s, versions, requested, 50, false, false))
+		require.False(t, canaryObserved(s, versions, requested, 50, false, true))
+		status["canary"] = Object{"settled": true}
+		require.False(t, canaryObserved(s, versions, requested, 50, false, false))
+	}
+}
+
+func TestCanaryPeerResumeDoesNotCountIncompleteRevisions(t *testing.T) {
+	before := fleet(map[string]map[string]Counts{
+		"A": {"prefill": {1, 1, 1}, "decode": {}},
+		"B": {"prefill": {1, 1, 1}, "decode": {}},
+	}, 1)
+	resumed := fleet(map[string]map[string]Counts{
+		"A": {"prefill": {1, 1, 1}, "decode": {1, 1, 1}},
+		"B": {"prefill": {1, 1, 1}, "decode": {}},
+	}, 1)
+	l := testLab(t, &fakeExecutor{})
+	guard := canarySafety(l, before, pair(1, 1))
+	require.NoError(t, catch(func() { guard(resumed) }))
+	require.ErrorContains(t, catch(func() { guard(before) }), "floor", "the newly observed serving capacity is protected")
+}
+
 func TestCanaryUpdatePatchesControlsCountsAndTemplateTogether(t *testing.T) {
 	parent := RoleSpec("model", 1, "Hash", "A", 1, 0, 1, false)
 	delete(obj(parent["spec"]), "replicas")

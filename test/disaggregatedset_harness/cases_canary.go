@@ -34,7 +34,7 @@ func startCanary(l *Lab) Targets {
 		"scaleUpDuringRollout": l.Case.Policy, "scaleDownDuringRollout": l.Case.Policy,
 	}}})
 	l.Converge("A", desired, 0)
-	l.Note("Each logical role has maxSurge=1 and maxUnavailable=0. Canary percentages override both ordinary scaling policies; all templates keep a real readiness gate.")
+	l.Note("Each logical role has maxSurge=1 and maxUnavailable=0. Only Immediate admits demand changes during a partial canary; Deferred queues them. All templates keep a real readiness gate.")
 	return desired
 }
 
@@ -43,34 +43,46 @@ func startCanary(l *Lab) Targets {
 func percentageCanary(l *Lab) {
 	startCanary(l)
 	var workloads map[string]bool
-	previousPercent := 0
+	var prefillPods map[string]bool
 	external := false
 	for index, stage := range []struct {
 		percent, p, d, newP, newD int
 	}{
 		{0, 4, 8, 0, 0}, // Install B and its initial hold atomically.
 		{25, 4, 8, 1, 2},
-		{50, 4, 8, 2, 4},
-		{25, 4, 8, 1, 2},
-		{0, 4, 8, 0, 0},
-		{25, 4, 8, 1, 2},
 		{25, 8, 16, 2, 4},
-		{25, 4, 8, 1, 2},
+		{50, 2, 8, 1, 4}, // Promotion proceeds even when Deferred queues demand.
+		{50, 1, 8, 1, 4}, // Keep the issued Prefill pair.
+		{50, 1, 0, 1, 0},
+		{50, 1, 1, 1, 0}, // Decode resumes on A; do not restart Prefill.
+		{50, 2, 2, 1, 1},
 		{100, 4, 8, 4, 8},
 		{100, 8, 16, 8, 16},
 		{100, 4, 8, 4, 8},
 	} {
-		if index == 6 {
+		if index == 2 {
 			canaryExternalHandoff(l, canaryTargets(l, 4, 8))
 			external = true
 		}
 		before := l.Snapshot()
-		desired, updated := canaryTargets(l, stage.p, stage.d), canaryTargets(l, stage.newP, stage.newD)
-		old := Targets{}
-		for role, n := range desired {
-			old[role] = n - updated[role]
+		desired := canaryTargets(l, stage.p, stage.d)
+		admittedP, admittedD := stage.p, stage.d
+		if l.Case.Policy == "Deferred" && stage.percent < 100 {
+			admittedP, admittedD = 4, 8
+			stage.newP, stage.newD = 4*stage.percent/100, 8*stage.percent/100
 		}
-		title := fmt.Sprintf("Request %d%% new at %d Prefill / %d Decode: A=%d/%d, B=%d/%d.", stage.percent, stage.p, stage.d, stage.p-stage.newP, stage.d-stage.newD, stage.newP, stage.newD)
+		admitted := canaryTargets(l, admittedP, admittedD)
+		updated := canaryTargets(l, stage.newP, stage.newD)
+		old := Targets{}
+		settled := true
+		for role, n := range admitted {
+			old[role] = n - updated[role]
+			if stage.percent > 0 && stage.percent < 100 && n == 1 && updated[role] == 1 {
+				old[role] = 1 // One extra group retains the last baseline/canary pair.
+			}
+			settled = settled && old[role]+updated[role] == desired[role]
+		}
+		title := fmt.Sprintf("Request %d%% new at %d Prefill / %d Decode: A=%s, B=%s.", stage.percent, stage.p, stage.d, describe(old), describe(updated))
 		l.Checkpoint(title, "Set canary.percent and desired replicas; keep template identities unchanged.")
 		update := Update{CanaryPercent: &stage.percent, Counts: desired}
 		if external {
@@ -86,27 +98,26 @@ func percentageCanary(l *Lab) {
 				l.K("-n", Namespace, "scale", "dsrs/"+canaryScalerName(role), fmt.Sprintf("--replicas=%d", desired[role]))
 			}
 		}
-		guard := canarySafety(l, before, desired)
-		if stage.percent < previousPercent {
-			l.WaitFor("Old-revision replacement groups schedule with readiness still closed", func(s Snapshot) bool {
-				guard(s)
-				for role := range desired {
-					if c := l.Count(s, "A", role); c.Scheduled > c.Ready {
-						return true
-					}
-				}
-				return false
-			})
-			l.Hold("Do not remove Ready B capacity before replacement A becomes Ready", 4, guard)
+		guard := canarySafety(l, before, admitted)
+		check := func(s Snapshot) bool {
+			guard(s)
+			if index >= 4 && index <= 7 {
+				l.Assert(sameSet(prefillPods, canaryPrefillPods(s)), "Singleton or peer-resume scaling restarted an existing Prefill Pod")
+			}
+			return canaryObserved(s, map[string]Targets{"A": old, "B": updated}, desired, stage.percent, l.virtual, settled)
 		}
 		l.Checkpoint("Allow the requested split to settle safely.", "Open application readiness for current and newly created A/B groups.")
-		s := l.Wait(fmt.Sprintf("%d%% held at A=%s; B=%s", stage.percent, describe(old), describe(updated)), func(s Snapshot) bool {
-			return guard(s) && canarySettled(s, old, updated, stage.percent, l.virtual)
-		}, 0, 3, func(s Snapshot) {
+		s := l.Wait(fmt.Sprintf("%d%% observed at A=%s; B=%s; settled=%t", stage.percent, describe(old), describe(updated), settled), check, 0, 3, func(s Snapshot) {
 			guard(s)
 			l.Release("A", "", -1, &s)
 			l.Release("B", "", -1, &s)
 		})
+		if index == 3 {
+			prefillPods = canaryPrefillPods(s)
+			l.Checkpoint("Reject 50% → 25%; keep the current groups.", "Ask admission to decrease the percentage; expect rejection, without changing templates.")
+			_, stderr, err := l.Options.Executor.Run(l.ctx, l.Options.Kubectl, l.Options.kube("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "-p", `{"spec":{"rolloutStrategy":{"canary":{"percent":25}}}}`), nil)
+			l.Assert(err != nil && strings.Contains(string(stderr), "cannot decrease percent"), "Percentage decrease was not rejected by admission")
+		}
 		if index == 1 {
 			workloads = uidSet(s.LWS)
 			want := 4
@@ -119,9 +130,6 @@ func percentageCanary(l *Lab) {
 		}
 		if stage.percent == 0 {
 			l.Assert(len(Pods(s, "B", "")) == 0, "Zero-percent hold retained target Pods")
-			if index > 1 {
-				l.Note("B's physical LWS objects are retained at replicas=0; returning to 25% reuses their UIDs.")
-			}
 		}
 		if stage.percent == 100 {
 			l.Assert(len(Pods(s, "A", "")) == 0, "Completed rollout retained baseline Pods")
@@ -135,10 +143,10 @@ func percentageCanary(l *Lab) {
 			})
 			l.Note("B is accepted as the next baseline. Rollback after completion requires restoring templates in Git.")
 		}
-		l.Hold("Observed split remains Ready without another trigger", 3, func(s Snapshot) bool {
-			return guard(s) && canarySettled(s, old, updated, stage.percent, l.virtual)
-		})
-		previousPercent = stage.percent
+		if !settled {
+			l.Note("The request is visible, but the step is not settled: Deferred queued demand, or a retained pair uses one extra group.")
+		}
+		l.Hold("Observed split remains Ready without another trigger", 3, check)
 	}
 	l.Checkpoint("Omission is equivalent to completed 100%.", "Remove canary.percent after verifying that B is already available and A has been cleaned up.")
 	l.Patch(Object{"spec": Object{"rolloutStrategy": Object{"canary": Object{"percent": nil}}}})
@@ -150,6 +158,16 @@ func percentageCanary(l *Lab) {
 		}
 		return canarySettled(s, canaryTargets(l, 0, 0), canaryTargets(l, 4, 8), -1, l.virtual)
 	})
+}
+
+func canaryPrefillPods(s Snapshot) map[string]bool {
+	pods := []Object{}
+	for _, pod := range s.Pods {
+		if label(pod, RoleLabel) == "prefill" || label(pod, SubroleLabel) == "prefill" {
+			pods = append(pods, pod)
+		}
+	}
+	return uidSet(pods)
 }
 
 // At a held 50% canary, introducing C replaces B within the experimental half.
@@ -244,9 +262,22 @@ func canaryExternalHandoff(l *Lab, desired Targets) {
 // After a desired reduction, the new desired is the availability floor. Native
 // terminating Pods can outlive a spec reduction, so surge checks use LWS specs.
 func canarySafety(l *Lab, before Snapshot, desired Targets) Predicate {
+	servingReady := func(s Snapshot, role string) int {
+		serving := 0
+		for _, version := range []string{"A", "B", "C"} {
+			complete := true
+			for peer, n := range desired {
+				complete = complete && (n == 0 || l.Count(s, version, peer).Ready > 0)
+			}
+			if complete {
+				serving += l.Count(s, version, role).Ready
+			}
+		}
+		return serving
+	}
 	floors, ceilings := Targets{}, Targets{}
 	for role, count := range desired {
-		floors[role] = min(count, l.Total(before, role, "ready"))
+		floors[role] = min(count, servingReady(before, role))
 		parent, _, _ := strings.Cut(role, "/")
 		ceilings[parent] += max(count+1, l.Total(before, role, "spec"))
 	}
@@ -254,18 +285,9 @@ func canarySafety(l *Lab, before Snapshot, desired Targets) Predicate {
 		for role, count := range desired {
 			ready := l.Total(s, role, "ready")
 			l.Assert(ready >= floors[role], "Canary crossed observed Ready floor for "+role)
-			serving := 0
-			for _, version := range []string{"A", "B", "C"} {
-				complete := true
-				for peer, n := range desired {
-					complete = complete && (n == 0 || l.Count(s, version, peer).Ready > 0)
-				}
-				if complete {
-					serving += l.Count(s, version, role).Ready
-				}
-			}
+			serving := servingReady(s, role)
 			l.Assert(serving >= floors[role], "Canary crossed same-revision serving floor for "+role)
-			floors[role] = max(floors[role], min(count, ready))
+			floors[role] = max(floors[role], min(count, serving))
 		}
 		physical := Targets{}
 		for _, workload := range s.LWS {
@@ -283,6 +305,10 @@ func canarySettled(s Snapshot, old, updated Targets, percent int, virtual bool) 
 }
 
 func canaryVersionsSettled(s Snapshot, versions map[string]Targets, percent int, virtual bool) bool {
+	return canaryObserved(s, versions, nil, percent, virtual, true)
+}
+
+func canaryObserved(s Snapshot, versions map[string]Targets, requested Targets, percent int, virtual, settled bool) bool {
 	counts := GroupCounts
 	if virtual {
 		counts = func(s Snapshot, v string) map[string]Counts { return SubroleCounts(s, v, true) }
@@ -305,6 +331,9 @@ func canaryVersionsSettled(s Snapshot, versions map[string]Targets, percent int,
 			return false
 		}
 	}
+	if requested != nil {
+		desired = requested
+	}
 	for _, scaler := range s.Scalers {
 		role := label(scaler, RoleLabel)
 		if child := label(scaler, SubroleLabel); child != "" {
@@ -319,6 +348,12 @@ func canaryVersionsSettled(s Snapshot, versions map[string]Targets, percent int,
 		return false
 	}
 	want, kind := "CanaryHeld", "Progressing"
+	if !settled {
+		want = "RolloutInProgress"
+		if at(s.DS, "status", "canary", "settled") != false {
+			return false
+		}
+	}
 	if percent < 0 || percent == 100 { // Omission and 100 both finalize.
 		want, kind = "AllRolesReady", "Available"
 	}
