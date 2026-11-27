@@ -372,9 +372,13 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
-			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("wait for the current rollout to finish")))
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("wait for the current rollout and baseline cleanup to finish")))
 			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), fetched)).To(gomega.Succeed())
-			fetched.Status.Conditions = []metav1.Condition{{Type: string(disaggregatedset.DisaggregatedSetAvailable), Status: metav1.ConditionTrue, ObservedGeneration: fetched.Generation, Reason: "AllRolesReady", Message: "completed", LastTransitionTime: metav1.Now()}}
+			fetched.Status.ObservedGeneration = fetched.Generation
+			for _, role := range fetched.Spec.Roles {
+				fetched.Status.RoleStatuses = append(fetched.Status.RoleStatuses, disaggregatedset.RoleStatus{Name: role.Name, Replicas: 2, UpdatedReplicas: 2, DesiredReplicas: ptr.To[int32](4)})
+			}
+			fetched.Status.Conditions = []metav1.Condition{{Type: string(disaggregatedset.DisaggregatedSetAvailable), Status: metav1.ConditionFalse, ObservedGeneration: fetched.Generation, Reason: "ReplicasNotReady", Message: "single revision still starting", LastTransitionTime: metav1.Now()}}
 			gomega.Expect(k8sClient.Status().Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())

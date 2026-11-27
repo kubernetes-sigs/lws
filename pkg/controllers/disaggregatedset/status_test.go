@@ -171,7 +171,15 @@ func TestObservedCanaryStatus(t *testing.T) {
 	require.Equal(t, "A", ds.Status.Canary.BaselineRevisions[0], "deep copies must not share baseline slices")
 	for _, percent := range []int32{-1, 100} {
 		setCanaryPercent(ds, percent)
-		require.Nil(t, observedCanaryStatus(ds, "C", all))
+		finalizing := observedCanaryStatus(ds, "C", all)
+		require.NotNil(t, finalizing, "finalization keeps the canary status until cleanup is observed")
+		require.EqualValues(t, 100, finalizing.Percent)
+		require.False(t, finalizing.Settled)
+		deleting := a.DeepCopy()
+		deleting.DeletionTimestamp = ptr.To(metav1.Now())
+		delete(deleting.Annotations, canaryStableAnnotation)
+		require.Equal(t, []string{"A"}, observedCanaryStatus(ds, "C", []*leaderworkersetv1.LeaderWorkerSet{deleting}).BaselineRevisions)
+		require.Nil(t, observedCanaryStatus(ds, "C", nil), "cleanup completed")
 	}
 	setCanaryPercent(ds, 25)
 	for _, target := range []string{"A", "C"} {

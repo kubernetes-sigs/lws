@@ -67,7 +67,7 @@ Changing only the percentage does not create another application revision. Set t
 
 After B finishes at `100` (or with the percentage omitted), a new C rollout uses B as its baseline, without a separate finalization edit. Set the next starting percentage together with C's templates. Leaving `100` configured does not automatically pause the next template update below 100%.
 
-**Wait for completion before starting another canary.** Admission allows a change from `100` or omission to a partial percentage only when `Available=True` has been observed for the current generation. Merely writing `100` does not complete the rollout: a quick `50 → 100 → 25` is rejected until finalization finishes. The same check applies when starting the first canary on an existing set. Initial creation is still allowed with a partial percentage; without an older revision, it creates the requested workload normally.
+**Wait for rollout and cleanup to finish before starting another canary.** Admission allows a change from `100` or omission to a partial percentage when the controller has observed the current generation, `status.canary` is absent, and every role reports `updatedReplicas == replicas`. Merely writing `100` does not complete finalization: a quick `50 → 100 → 25` is rejected until those checks pass. This does not require every Pod to be Ready: a degraded single-revision workload or a scale-up can still receive a canary fix. The same check applies to the first canary on an existing set. Initial creation with a partial percentage is still allowed; without an older revision, it creates the requested workload normally.
 
 ### Choose groups or whole slices
 
@@ -257,7 +257,7 @@ status:
     settled: true
 ```
 
-`percent` is the observed request, not a measured traffic weight. `baselineRevisions` contains the distinct recorded baselines across slices and stays empty until their markers have been observed; status never guesses a baseline. `settled` means the same as `CanaryHeld`, not application approval. Replica counts remain in `status.roleStatuses` and its sub-role entries. This section is absent without an active partial canary, including initial creation without history, a Git revert to the baseline templates, and finalization at `100` or omission. It is informational: planning does not depend on status writes.
+`percent` is the observed request, not a measured traffic weight. `baselineRevisions` contains the distinct recorded baselines across slices and stays empty until their markers have been observed; status never guesses a baseline. `settled` means the same as `CanaryHeld`, not application approval. Replica counts remain in `status.roleStatuses` and its sub-role entries. This section is absent during initial creation without history and a partial-canary Git restore to the baseline. At `100` or omission, it remains with `settled: false` until the old LWS objects disappear, including foreground deletion; only then can another partial canary start. Planning does not depend on status writes, but admission uses this cleanup signal.
 
 | Status | Meaning |
 | --- | --- |
@@ -292,7 +292,7 @@ A settled hold waits for DisaggregatedSet or observed workload events, without a
 - Keep A's workloads, Pod identities, and sub-role assignments while B rolls to C. Check multiple historical revisions and incomplete serving revisions.
 - Check baseline markers, ambiguous history, singleton roles, incompatible layouts, whole-set scale-to-zero, and every-slice hold reporting. Exercise all four scaling-policy combinations, restarts, coalesced requests, policy switches, and promotion/B → C with queued demand.
 - Validate API persistence and webhook behavior, plus Argo CD health and field ownership.
-- Exercise eight-slice promotion, A → B → C, and zero-demand/resume. Reject unsupported dimensions and dimension/slice-count changes during partial slice canaries; allow changes when finalizing.
+- Exercise multi-slice promotion, A → B → C, and zero-demand/resume. Reject unsupported dimensions and dimension/slice-count changes when entering or continuing a partial slice canary; allow changes when finalizing.
 - Use real Pod/native-workload observations for ordinary and virtual-role canaries, with both Ordinal and Hash identity.
 - Repeat 2 ↔ 1 scaling without replacing retained Pods. Check loading groups, growing peers, restart recovery, zero demand, finalization, and B → C with zero surge or zero unavailability; protect only the last canary-side group, not every intermediate revision.
 - Use the [harness and recorded traces](https://github.com/kubernetes-sigs/lws/pull/1309) to check real groups, readiness gates, autoscaler handoff, and successive rollout steps.

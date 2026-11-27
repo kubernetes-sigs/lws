@@ -27,7 +27,6 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -224,9 +223,21 @@ func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	if old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil || ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 {
 		// Finalization is asynchronous: 50 -> 100 -> 25 must not restore A
 		// merely because the informer never observed the intermediate 100.
-		available := meta.FindStatusCondition(old.Status.Conditions, string(disaggv1.DisaggregatedSetAvailable))
-		if available == nil || available.Status != metav1.ConditionTrue || available.ObservedGeneration != old.Generation {
-			return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "wait for the current rollout to finish (Available=True for the current generation) before starting a partial canary")}
+		// Readiness is separate: a single-revision scale-up or Pod failure must
+		// not prevent an operator from deploying a canary fix.
+		finished := old.Status.ObservedGeneration == old.Generation && old.Status.Canary == nil
+		for _, role := range old.Spec.Roles {
+			observed := false
+			for _, status := range old.Status.RoleStatuses {
+				if status.Name == role.Name {
+					observed = status.UpdatedReplicas == status.Replicas
+					break
+				}
+			}
+			finished = finished && observed
+		}
+		if !finished {
+			return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "wait for the current rollout and baseline cleanup to finish before starting a partial canary")}
 		}
 		return nil
 	}

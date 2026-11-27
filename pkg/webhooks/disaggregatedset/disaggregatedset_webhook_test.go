@@ -142,29 +142,38 @@ func TestCanaryPercentOnlyAdvances(t *testing.T) {
 }
 
 func canaryTestCompleted(ds *disaggv1.DisaggregatedSet) {
-	ds.Status.Conditions = []metav1.Condition{{Type: string(disaggv1.DisaggregatedSetAvailable), Status: metav1.ConditionTrue, ObservedGeneration: ds.Generation}}
+	ds.Status.ObservedGeneration = ds.Generation
+	ds.Status.Canary = nil
+	ds.Status.RoleStatuses = nil
+	for _, role := range ds.Spec.Roles {
+		ds.Status.RoleStatuses = append(ds.Status.RoleStatuses, disaggv1.RoleStatus{Name: role.Name, Replicas: 2, UpdatedReplicas: 2})
+	}
 }
 
 func TestCanaryWaitsForFinalization(t *testing.T) {
 	for _, percent := range []*int32{ptr.To[int32](100), nil} {
 		old := &disaggv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
 			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: percent}},
 		}}
 		next := old.DeepCopy()
 		next.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
-		for _, condition := range []*metav1.Condition{nil,
-			{Status: metav1.ConditionFalse, ObservedGeneration: 2},
-			{Status: metav1.ConditionTrue, ObservedGeneration: 1},
+		for _, change := range []func(*disaggv1.DisaggregatedSet){
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.ObservedGeneration-- },
+			func(ds *disaggv1.DisaggregatedSet) {
+				ds.Status.Canary = &disaggv1.DisaggregatedSetCanaryStatus{Percent: 100}
+			},
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.RoleStatuses = nil },
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.RoleStatuses[0].UpdatedReplicas-- },
 		} {
-			old.Status.Conditions = nil
-			if condition != nil {
-				condition.Type = string(disaggv1.DisaggregatedSetAvailable)
-				old.Status.Conditions = []metav1.Condition{*condition}
-			}
-			require.NotEmpty(t, validateCanaryUpdate(next, old), "missing, unfinished, or stale completion must not authorize a new canary")
+			canaryTestCompleted(old)
+			change(old)
+			require.NotEmpty(t, validateCanaryUpdate(next, old), "unobserved changes, old replicas, and pending baseline cleanup must block a new canary")
 		}
 		canaryTestCompleted(old)
-		require.Empty(t, validateCanaryUpdate(next, old))
+		old.Status.Conditions = []metav1.Condition{{Type: string(disaggv1.DisaggregatedSetAvailable), Status: metav1.ConditionFalse, ObservedGeneration: 2}}
+		old.Status.RoleStatuses[0].DesiredReplicas = ptr.To[int32](4)
+		require.Empty(t, validateCanaryUpdate(next, old), "unready groups and single-revision scale-up do not block a canary fix")
 	}
 }
 

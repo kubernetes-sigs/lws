@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -210,13 +211,18 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 // identify baselines here: status must not guess or become a second planner.
 func observedCanaryStatus(ds *disaggregatedsetv1.DisaggregatedSet, target string, all []*leaderworkersetv1.LeaderWorkerSet) *disaggregatedsetv1.DisaggregatedSetCanaryStatus {
 	percent, partial := canaryPercent(ds)
-	if !partial {
+	// Keep finalization visible until the last old LWS disappears, including
+	// foreground deletion after its baseline annotation has been removed.
+	finalizing := !partial && (ds.Status.Canary != nil || slices.ContainsFunc(all, func(lws *leaderworkersetv1.LeaderWorkerSet) bool {
+		return lws.Annotations[canaryStableAnnotation] == "true"
+	}))
+	if !partial && !finalizing {
 		return nil
 	}
 	baselines := sets.New[string]()
 	markedBySlice := map[string]sets.Set[string]{}
 	for _, lws := range all {
-		if lws.Annotations[canaryStableAnnotation] != "true" || lws.DeletionTimestamp != nil {
+		if lws.Annotations[canaryStableAnnotation] != "true" || !finalizing && lws.DeletionTimestamp != nil {
 			continue
 		}
 		slice := lws.Labels[disaggregatedsetv1.SliceLabelKey]
@@ -228,17 +234,20 @@ func observedCanaryStatus(ds *disaggregatedsetv1.DisaggregatedSet, target string
 	active := false
 	for _, lws := range all {
 		revision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
-		if revision == "" || revision == target || lws.DeletionTimestamp != nil {
+		if revision == "" || revision == target || !finalizing && lws.DeletionTimestamp != nil {
 			continue
 		}
 		markedRevisions := markedBySlice[lws.Labels[disaggregatedsetv1.SliceLabelKey]]
-		if markedRevisions.Len() == 1 && markedRevisions.Has(target) {
+		if !finalizing && markedRevisions.Len() == 1 && markedRevisions.Has(target) {
 			continue // Git restored the baseline; this slice rolls normally to it.
 		}
 		marked := lws.Annotations[canaryStableAnnotation] == "true"
-		active = active || marked || ptr.Deref(lws.Spec.Replicas, 0) > 0
+		active = active || finalizing || marked || ptr.Deref(lws.Spec.Replicas, 0) > 0
 		if marked {
 			baselines.Insert(markedRevisions.UnsortedList()...)
+		}
+		if finalizing && ds.Status.Canary != nil && slices.Contains(ds.Status.Canary.BaselineRevisions, revision) {
+			baselines.Insert(revision)
 		}
 	}
 	if !active {

@@ -331,8 +331,10 @@ type DisaggregatedSetCanary struct {
 	// that choice survives controller restarts. A later template update replaces
 	// the canary within its share while retaining the recorded baseline's share.
 	// During a partial canary Percent may increase, but decreases are rejected.
-	// Starting a partial canary from omitted/100 requires Available=True for the
-	// current generation. Requesting finalization is not the same as completing it.
+	// Starting a partial canary from omitted/100 requires the current generation
+	// to be observed, no pending canary cleanup, and every role's existing replicas
+	// to be on the current revision. Unready groups or single-revision scaling
+	// do not prevent starting a canary. Requesting finalization does not complete it.
 	// Start at 0 to hold the baseline before creating any canary groups.
 	// For a durable rollback, restore the stable templates in Git. If they match
 	// the surviving baseline, the rollout converges fully to it without a hold.
@@ -498,8 +500,9 @@ type RoleStatus struct {
 	SubRoleStatuses []SubRoleStatus `json:"subRoleStatuses,omitempty"`
 }
 
-// DisaggregatedSetCanaryStatus describes an observed partial canary. Replica
-// counts remain in RoleStatuses; this section does not drive rollout planning.
+// DisaggregatedSetCanaryStatus describes an observed canary or its pending
+// cleanup. Replica counts remain in RoleStatuses; this section does not drive
+// rollout planning.
 type DisaggregatedSetCanaryStatus struct {
 	// Percent is the requested canary percentage observed by the controller,
 	// not a measured traffic weight or a guarantee of the current replica split.
@@ -547,9 +550,9 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 
-	// Canary describes a partial canary with surviving history. It is absent
-	// during initial creation without a baseline, when restoring the baseline's
-	// templates, and when the percentage is omitted or 100.
+	// Canary describes a partial canary with surviving history, or its pending
+	// cleanup at omitted/100. Finalization clears it only after old LWS objects
+	// disappear. It is absent during initial creation without a baseline.
 	// +optional
 	Canary *DisaggregatedSetCanaryStatus `json:"canary,omitempty"`
 
