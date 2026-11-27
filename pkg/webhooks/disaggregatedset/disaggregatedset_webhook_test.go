@@ -59,6 +59,7 @@ func TestValidateCanaryPercent(t *testing.T) {
 		_, createErr := webhook.ValidateCreate(t.Context(), ds)
 		old := ds.DeepCopy()
 		old.Spec.RolloutStrategy = nil
+		canaryTestCompleted(old)
 		_, updateErr := webhook.ValidateUpdate(t.Context(), old, ds)
 		for _, err := range []error{createErr, updateErr} {
 			if percent < 0 || percent > 100 {
@@ -109,6 +110,7 @@ func TestCanaryDimension(t *testing.T) {
 			require.NoError(t, err)
 		}
 		ds.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+		canaryTestCompleted(ds)
 		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
 		_, err = w.ValidateUpdate(t.Context(), ds, changed)
 		require.NoError(t, err, "a new canary can choose a different dimension")
@@ -119,6 +121,7 @@ func TestCanaryPercentOnlyAdvances(t *testing.T) {
 	for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
 		for _, step := range [][2]int32{{0, 25}, {25, 50}, {50, 50}, {50, 25}, {25, 0}, {50, 100}, {50, -1}, {100, 25}, {-1, 25}} {
 			old := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{Name: "model"}}, RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To(step[0]), Dimension: dimension}}}}
+			canaryTestCompleted(old)
 			if step[0] < 0 {
 				old.Spec.RolloutStrategy.Canary.Percent = nil
 			}
@@ -134,6 +137,33 @@ func TestCanaryPercentOnlyAdvances(t *testing.T) {
 				require.NoError(t, err, "%s %v", dimension, step)
 			}
 		}
+	}
+}
+
+func canaryTestCompleted(ds *disaggv1.DisaggregatedSet) {
+	ds.Status.Conditions = []metav1.Condition{{Type: string(disaggv1.DisaggregatedSetAvailable), Status: metav1.ConditionTrue, ObservedGeneration: ds.Generation}}
+}
+
+func TestCanaryWaitsForFinalization(t *testing.T) {
+	for _, percent := range []*int32{ptr.To[int32](100), nil} {
+		old := &disaggv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Spec: disaggv1.DisaggregatedSetSpec{
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: percent}},
+		}}
+		next := old.DeepCopy()
+		next.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+		for _, condition := range []*metav1.Condition{nil,
+			{Status: metav1.ConditionFalse, ObservedGeneration: 2},
+			{Status: metav1.ConditionTrue, ObservedGeneration: 1},
+		} {
+			old.Status.Conditions = nil
+			if condition != nil {
+				condition.Type = string(disaggv1.DisaggregatedSetAvailable)
+				old.Status.Conditions = []metav1.Condition{*condition}
+			}
+			require.NotEmpty(t, validateCanaryUpdate(next, old), "missing, unfinished, or stale completion must not authorize a new canary")
+		}
+		canaryTestCompleted(old)
+		require.Empty(t, validateCanaryUpdate(next, old))
 	}
 }
 

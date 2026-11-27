@@ -27,6 +27,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -217,8 +218,16 @@ func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices {
 		return field.ErrorList{field.NotSupported(path, mode, []string{"Groups", "Slices"})}
 	}
-	if old == nil || old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil ||
-		ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
+	if old == nil || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
+		return nil
+	}
+	if old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil || ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 {
+		// Finalization is asynchronous: 50 -> 100 -> 25 must not restore A
+		// merely because the informer never observed the intermediate 100.
+		available := meta.FindStatusCondition(old.Status.Conditions, string(disaggv1.DisaggregatedSetAvailable))
+		if available == nil || available.Status != metav1.ConditionTrue || available.ObservedGeneration != old.Generation {
+			return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "wait for the current rollout to finish (Available=True for the current generation) before starting a partial canary")}
+		}
 		return nil
 	}
 	if *strategy.Canary.Percent < *old.Spec.RolloutStrategy.Canary.Percent {

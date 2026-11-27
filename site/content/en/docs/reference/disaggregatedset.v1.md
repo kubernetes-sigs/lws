@@ -152,6 +152,8 @@ The oldest revision with surviving groups is recorded as the baseline;
 that choice survives controller restarts. A later template update replaces
 the canary within its share while retaining the recorded baseline's share.
 During a partial canary Percent may increase, but decreases are rejected.
+Starting a partial canary from omitted/100 requires Available=True for the
+current generation. Requesting finalization is not the same as completing it.
 Start at 0 to hold the baseline before creating any canary groups.
 For a durable rollback, restore the stable templates in Git. If they match
 the surviving baseline, the rollout converges fully to it without a hold.
@@ -164,6 +166,8 @@ demand to one retains one group on each side instead of restarting the
 canary. This one extra group consumes surge allowance; with zero surge,
 retention is a one-group exception. Admitted zero demand or finalization
 ends retention.
+A peer resuming at one waits on the baseline without discarding existing
+canary groups in other roles; further canary growth waits until it can split.
 In slices mode the units are whole slices instead of groups.
 This is not a traffic percentage.
 While held, Immediate admits demand changes in its configured direction;

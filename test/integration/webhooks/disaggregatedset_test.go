@@ -371,6 +371,15 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			fetched.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](0)
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("wait for the current rollout to finish")))
+			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), fetched)).To(gomega.Succeed())
+			fetched.Status.Conditions = []metav1.Condition{{Type: string(disaggregatedset.DisaggregatedSetAvailable), Status: metav1.ConditionTrue, ObservedGeneration: fetched.Generation, Reason: "AllRolesReady", Message: "completed", LastTransitionTime: metav1.Now()}}
+			gomega.Expect(k8sClient.Status().Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionGroups
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = nil
