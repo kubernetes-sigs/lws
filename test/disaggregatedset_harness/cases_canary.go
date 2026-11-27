@@ -44,6 +44,7 @@ func percentageCanary(l *Lab) {
 	startCanary(l)
 	var workloads map[string]bool
 	var prefillPods map[string]bool
+	var warmPods map[string]bool
 	external := false
 	for index, stage := range []struct {
 		percent, p, d, newP, newD int
@@ -104,7 +105,16 @@ func percentageCanary(l *Lab) {
 		check := func(s Snapshot) bool {
 			guard(s)
 			if index >= 5 && index <= 8 {
-				l.Assert(sameSet(prefillPods, canaryPrefillPods(s)), "Singleton or peer-resume scaling restarted an existing Prefill Pod")
+				current := canaryPrefillPods(s)
+				if l.virtual && l.Case.Identity == "Ordinal" && index >= 6 {
+					// Shrinking a shared Ordinal LWS can relabel warm low-index
+					// survivors. It must not need newly started Prefill Pods.
+					for uid := range current {
+						l.Assert(warmPods[uid], "Ordinal peer resizing created a new Prefill Pod instead of reusing warm groups")
+					}
+				} else {
+					l.Assert(sameSet(prefillPods, current), "Singleton or peer-resume scaling restarted an existing Prefill Pod")
+				}
 			}
 			return canaryObserved(s, map[string]Targets{"A": old, "B": updated}, desired, stage.percent, l.virtual, settled)
 		}
@@ -116,6 +126,7 @@ func percentageCanary(l *Lab) {
 		})
 		if index == 4 {
 			prefillPods = canaryPrefillPods(s)
+			warmPods = uidSet(s.Pods)
 			l.Checkpoint("Reject 50% → 25%; keep the current groups.", "Ask admission to decrease the percentage; expect rejection, without changing templates.")
 			_, stderr, err := l.Options.Executor.Run(l.ctx, l.Options.Kubectl, l.Options.kube("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "-p", `{"spec":{"rolloutStrategy":{"canary":{"percent":25}}}}`), nil)
 			l.Assert(err != nil && strings.Contains(string(stderr), "cannot decrease percent"), "Percentage decrease was not rejected by admission")

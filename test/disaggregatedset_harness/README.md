@@ -114,8 +114,10 @@ scaling. The handoff must preserve all Pod/LWS identities and seed scalers from
 the existing 4/8 target. Subsequent requests use the real `/scale` subresources.
 Immediate applies them; Deferred keeps admitted demand at 4/8 while still allowing
 promotion. At 50%, request 2/8, 1/8, 1/0, 1/1 and 2/2. In Immediate, Prefill's
-existing A/B Pods must survive the whole sequence, including Decode resuming on A
-only. Deferred instead keeps its existing groups and reports the queued demand.
+existing A/B Pods must survive the 2→1 request. Ordinary roles and Hash retain
+those same Pods when Decode resizes. Ordinal sub-roles may relabel already-running
+low-index groups as the shared LWS shrinks; Prefill must not need new Pods.
+Deferred instead keeps its existing groups and reports the queued demand.
 A completed hold requires current scaler observations; queued demand or an extra
 retained group must not report a settled hold.
 

@@ -53,7 +53,7 @@ export function buildCanaryTimeline(scenario) {
     chain ? 'Hold A+B at 50%, then replace B with C in the canary half.'
       : 'Promote 0 → 25 → 50 → 100%; reject reversal; resize through External scalers.',
     chain ? 'Expected: A keeps its Pods and half the capacity throughout.'
-      : 'Immediate admits demand; Deferred queues it. Keep Prefill Pods when a peer resumes.',
+      : 'Immediate admits demand; Deferred queues it. Keep running capacity when a peer resumes.',
   ]}, chain ? 10 : 11, true, null);
 
   let visited = 0;
@@ -91,7 +91,7 @@ export function buildCanaryTimeline(scenario) {
   const passed = scenario.outcome.passed;
   const lines = passed === true ? [chain
     ? 'PASS: A kept its specification and original Pods. C replaced B in the other half.'
-    : 'PASS: forward promotion, decrease rejection, scaling policy and preserved Prefill Pods matched expectations.',
+    : 'PASS: forward promotion, decrease rejection, scaling policy and reuse of running Prefill capacity matched expectations.',
     'Ready capacity and requested-group limits passed the recorded checks.']
     : [scenario.outcome.detail, scenario.outcome.error].filter(Boolean);
   const lateReadErrors = (scenario.read_errors_at ?? []).filter(elapsed => elapsed > (currentFrame?.elapsed ?? -Infinity));
