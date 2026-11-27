@@ -923,11 +923,17 @@ func TestReconcileUpdateStatusPendingReplicaGroupsRequeues(t *testing.T) {
 		disaggregatedSet,
 		lws,
 	).WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
-	require.NoError(t, base.Delete(ctx, lws))
 
 	// Intercept Get on LeaderWorkerSet to simulate informer delay where the replica group observer
 	// cannot read the LWS, causing errReplicaGroupsPending during updateStatus.
 	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
+				// Keep the deletion out of the informer until status observes the workload.
+				return nil
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*leaderworkersetv1.LeaderWorkerSet); ok {
 				return apierrors.NewNotFound(leaderworkersetv1.GroupVersion.WithResource("leaderworkersets").GroupResource(), key.Name)
