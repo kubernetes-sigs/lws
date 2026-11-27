@@ -14,6 +14,12 @@ evidence, not results from a new run of this driver.
 First-group `BootstrapSurge` checks require the corresponding Kubernetes Event.
 The checks cover the selected scenarios, not every possible interleaving.
 
+## Canary support is work in progress
+
+The canary scenarios require the controller implementation in [#1307](https://github.com/kubernetes-sigs/lws/pull/1307). This harness change targets `main` separately; it does not include that implementation. Until #1307 is merged, the canary observer extension cannot compile against `main`, so `TestObserverOverlayAgainstRepository` is expected to fail. The scenario-driver tests and recorded trace assets can be checked independently.
+
+To run the canary scenarios now, use a local integration commit containing both #1307 and this harness change. The launcher builds the checked-out **Git HEAD**, including the controller, CRDs and observer; it has no separate `--ref` or controller-source option. Commit the combined changes before running. Once #1307 is merged, the ordinary commands below work from an updated checkout containing this harness.
+
 ## Requirements and commands
 
 Install Docker (Colima is fine), kind, kubectl, Go compatible with the checkout,
@@ -24,12 +30,14 @@ Pods, plus terminating and system Pods. Slots are synthetic resources, not GPUs.
 From the repository root:
 
 ```sh
-make disaggset-test-harness-small  # 26 small scenarios, real kind cluster
+make disaggset-test-harness-small  # 38 small scenarios, real kind cluster
 make disaggset-test-harness-large  # 20 large scenarios, real kind cluster
 
 ./test/disaggregatedset_harness/run.sh --list
 ./test/disaggregatedset_harness/run.sh large-all --dry-run  # no cluster access
-./test/disaggregatedset_harness/run.sh all --include-large --auto  # 28 runs
+./test/disaggregatedset_harness/run.sh all --include-large --auto  # 40 runs
+./test/disaggregatedset_harness/run.sh canary canary-subroles --auto  # 8 canary runs
+./test/disaggregatedset_harness/run.sh canary-chain canary-chain-subroles --auto  # 4 fixed-baseline A→B→C runs
 ./test/disaggregatedset_harness/run.sh autoscaler-handoff --auto
 ./test/disaggregatedset_harness/run.sh large-scale-down --identity hash --rollout-chain abc --auto
 ```
@@ -81,11 +89,53 @@ outage covers integer and percentage budgets.
 | `native-restart` | Worker and leader crashes recreate only their affected group. | 2 |
 | `outage` | 1/2 in three slots, zero surge, explicit allowed downtime without losing another role's protection. | 4 |
 | `emergency` | Interrupted history, one bootstrap group, real ≥60-second Unschedulable timeout and bounded availability fallback. | 2 |
+| `canary` | 4 Prefill/8 Decode: 0→25→50→100, reject 50→25, compare Deferred/Immediate demand, retain a Prefill pair at one, and resume Decode through zero. Finalize and resize B. | 4 |
+| `canary-subroles` | The same promotion, scaling and retention checks with Prefill and Decode sharing a physical LWS. Both identities and policies. | 4 |
+| `canary-chain` | Hold A at 50%, then replace B with C in the other half. A's spec and Pod UIDs must stay unchanged. Ordinal and Hash. | 2 |
+| `canary-chain-subroles` | The same A→B→C sequence with shared physical LWSs; also preserve A's child assignments. | 2 |
 | `large-rename` | Optional asymmetric 9/4→8/3 rename with integer rounding and shared capacity. | +2 |
 
 The emergency case seeds interrupted revision metadata while the controller is
 paused. It does not forge Pod readiness or scheduler timeout ages. The autoscaler
 case uses the real `/scale` endpoint, not a metrics-driven HPA or KEDA.
+
+The canary cases use `maxSurge=1` and `maxUnavailable=0` for each logical role.
+Both A and B have real application-readiness gates. Start B at 0%, promote to
+25% and then 50%, and verify that admission rejects a decrease back to 25%.
+Percentage and replica-only changes must not create another revision.
+
+At 100%, the canary finalizes without a second edit: A's empty LWS objects are
+cleaned up and B reports `AllRolesReady`. The scenario then resizes B at 100%
+and verifies that omitting the percentage also leaves it completed. Partial
+canaries use `spec.rolloutStrategy.canary.percent`; the old flat field is gone.
+
+Before resizing, the canary cases switch both roles (or subroles) to External
+scaling. The handoff must preserve all Pod/LWS identities and seed scalers from
+the existing 4/8 target. Subsequent requests use the real `/scale` subresources.
+Immediate applies them; Deferred keeps admitted demand at 4/8 while still allowing
+promotion. At 50%, request 2/8, 1/8, 1/0, 1/1 and 2/2. In Immediate, Prefill's
+existing A/B Pods must survive the 2→1 request. Ordinary roles and Hash retain
+those same Pods when Decode resizes. Ordinal sub-roles may relabel already-running
+low-index groups as the shared LWS shrinks; Prefill must not need new Pods.
+Deferred instead keeps its existing groups and reports the queued demand.
+A completed hold requires current scaler observations; queued demand or an extra
+retained group must not report a settled hold.
+
+The four `canary-chain` cases instead hold A and B at 50% each, introduce C, and
+replace B within the experimental half. A's LWS spec, Pod UIDs and subrole labels
+must remain unchanged while C starts, waits for readiness, and replaces B.
+The final hold requires A and C at 2 Prefill / 4 Decode each, with no B groups.
+
+The bundled canary diagrams were re-recorded on November 27, 2026. All twelve
+selected cases passed across a full run and focused reruns; each diagram uses
+one complete recording, with its actual controller/component commits and raw
+input hashes. See `site/static/trace-player/README.md` for the selection and
+verification details. The small/large non-canary recordings were not rerun.
+
+The tests check observed whole-group availability and physical requested surge,
+including a no-worsening serving floor while admitted demand grows. A revision
+with a newly reactivated but missing role is no longer serving. They do not treat
+terminating Pods as new requested capacity or claim atomic API snapshots.
 
 ## Large matrix
 

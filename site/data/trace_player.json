@@ -252,6 +252,72 @@
     ]
   },
   {
+    "id": "canary",
+    "title": "Canary Harness",
+    "scenarios": [
+      {
+        "id": "canary--Ordinal--Deferred",
+        "title": "Canary promotion, scaling and retained pairs · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/canary/canary--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "canary--Ordinal--Immediate",
+        "title": "Canary promotion, scaling and retained pairs · Ordinal · Immediate",
+        "source": "/trace-player/scenarios/canary/canary--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "canary--Hash--Deferred",
+        "title": "Canary promotion, scaling and retained pairs · Hash · Deferred",
+        "source": "/trace-player/scenarios/canary/canary--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "canary--Hash--Immediate",
+        "title": "Canary promotion, scaling and retained pairs · Hash · Immediate",
+        "source": "/trace-player/scenarios/canary/canary--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "canary-subroles--Ordinal--Deferred",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-subroles--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "canary-subroles--Ordinal--Immediate",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Ordinal · Immediate",
+        "source": "/trace-player/scenarios/canary/canary-subroles--Ordinal--Immediate.json.gz"
+      },
+      {
+        "id": "canary-subroles--Hash--Deferred",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Hash · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-subroles--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "canary-subroles--Hash--Immediate",
+        "title": "Virtual roles: Canary promotion, scaling and retained pairs · Hash · Immediate",
+        "source": "/trace-player/scenarios/canary/canary-subroles--Hash--Immediate.json.gz"
+      },
+      {
+        "id": "canary-chain--Ordinal--Deferred",
+        "title": "A stays fixed while B rolls to C · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-chain--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "canary-chain--Hash--Deferred",
+        "title": "A stays fixed while B rolls to C · Hash · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-chain--Hash--Deferred.json.gz"
+      },
+      {
+        "id": "canary-chain-subroles--Ordinal--Deferred",
+        "title": "Virtual roles: A stays fixed while B rolls to C · Ordinal · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-chain-subroles--Ordinal--Deferred.json.gz"
+      },
+      {
+        "id": "canary-chain-subroles--Hash--Deferred",
+        "title": "Virtual roles: A stays fixed while B rolls to C · Hash · Deferred",
+        "source": "/trace-player/scenarios/canary/canary-chain-subroles--Hash--Deferred.json.gz"
+      }
+    ]
+  },
+  {
     "id": "docs",
     "title": "Documentation",
     "scenarios": [
