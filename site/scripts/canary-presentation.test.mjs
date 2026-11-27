@@ -7,12 +7,12 @@ test('compact narration retains every view, transient state, event and failed ch
     pods: [{id: 'one', group: 'group', status: 'pending'}]}]};
   const frames = Array.from({length: 9}, (_, i) => ({elapsed: i, roles: [structuredClone(role)],
     source: {sample_id: 100 + i, capture_seconds: .08}, observer_age_seconds: .25,
-    deltas: ['Observed canaryPercent: 25%.'], events: []}));
+    deltas: ['Observed canary.percent: 25%.'], events: []}));
   frames[2].roles[0].floor = 1; // A metric becomes known even though no Pod changes.
   frames[3].roles[0].revisions[0].pods[0].status = 'ready';
   frames[4].roles[0].revisions[0].pods[0].status = 'deleting';
   frames[5].roles[0].revisions[0].pods[0].id = 'replacement';
-  frames[6].deltas = ['Observed canaryPercent: 50%.'];
+  frames[6].deltas = ['Observed canary.percent: 50%.'];
   frames[7].events = ['RevisionDrainBlocked'];
   frames[8].events = ['RevisionDrainBlocked'];
   const scenario = {id: 'canary-test', frames, read_errors_at: [2.5, 9],

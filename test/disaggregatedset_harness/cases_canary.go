@@ -51,11 +51,13 @@ func percentageCanary(l *Lab) {
 		{0, 4, 8, 0, 0}, // Install B and its initial hold atomically.
 		{25, 4, 8, 1, 2},
 		{25, 8, 16, 2, 4},
-		{50, 2, 8, 1, 4}, // Promotion proceeds even when Deferred queues demand.
-		{50, 1, 8, 1, 4}, // Keep the issued Prefill pair.
+		{50, 8, 16, 4, 8}, // Promotion proceeds even when Deferred queues demand.
+		{50, 2, 8, 1, 4},  // Resize after promotion settles; these are separate API writes.
+		{50, 1, 8, 1, 4},  // Keep the issued Prefill pair.
 		{50, 1, 0, 1, 0},
 		{50, 1, 1, 1, 0}, // Decode resumes on A; do not restart Prefill.
 		{50, 2, 2, 1, 1},
+		{50, 4, 8, 2, 4}, // Settle demand before finalization; separate /scale writes are not atomic.
 		{100, 4, 8, 4, 8},
 		{100, 8, 16, 8, 16},
 		{100, 4, 8, 4, 8},
@@ -101,7 +103,7 @@ func percentageCanary(l *Lab) {
 		guard := canarySafety(l, before, admitted)
 		check := func(s Snapshot) bool {
 			guard(s)
-			if index >= 4 && index <= 7 {
+			if index >= 5 && index <= 8 {
 				l.Assert(sameSet(prefillPods, canaryPrefillPods(s)), "Singleton or peer-resume scaling restarted an existing Prefill Pod")
 			}
 			return canaryObserved(s, map[string]Targets{"A": old, "B": updated}, desired, stage.percent, l.virtual, settled)
@@ -112,7 +114,7 @@ func percentageCanary(l *Lab) {
 			l.Release("A", "", -1, &s)
 			l.Release("B", "", -1, &s)
 		})
-		if index == 3 {
+		if index == 4 {
 			prefillPods = canaryPrefillPods(s)
 			l.Checkpoint("Reject 50% → 25%; keep the current groups.", "Ask admission to decrease the percentage; expect rejection, without changing templates.")
 			_, stderr, err := l.Options.Executor.Run(l.ctx, l.Options.Kubectl, l.Options.kube("-n", Namespace, "patch", DSResource, SetName, "--type=merge", "-p", `{"spec":{"rolloutStrategy":{"canary":{"percent":25}}}}`), nil)

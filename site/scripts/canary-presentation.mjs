@@ -2,12 +2,12 @@
  * The standalone exporter renders these moments with its existing Canvas code.
  */
 export function observedPercent(frame) {
-  return frame.deltas?.find(line => line.startsWith('Observed canaryPercent:')) ?? 'Canary percentage not recorded.';
+  return frame.deltas?.find(line => line.startsWith('Observed canary.percent:')) ?? 'Canary percentage not recorded.';
 }
 
 export function observationState(frame) {
   // Include Pod identities and all planner fields, including unknown values.
-  return JSON.stringify([frame.roles, observedPercent(frame)]);
+  return JSON.stringify([frame.roles, observedPercent(frame), frame.deltas?.find(line => line.startsWith('Canary status:'))]);
 }
 
 function requestPhase(step) {
@@ -72,6 +72,8 @@ export function buildCanaryTimeline(scenario) {
       const newReadError = (scenario.read_errors_at ?? []).some(elapsed => elapsed <= currentFrame.elapsed &&
         elapsed > (scenario.frames[index - 1]?.elapsed ?? -Infinity));
       const lines = [observedPercent(currentFrame), phase.lines[0]];
+      const status = currentFrame.deltas?.find(line => line.startsWith('Canary status:'));
+      if (status) lines.push(status);
       if (freshEvents.length) lines.push(`New recorded Event: ${freshEvents.join(', ')}.`);
       if (newReadError) lines.push('An API read failed; this is the next successful observation.');
       push({key: `${step.id}/frame-${index}/compact-observed`, heading: 'Observed state', kind: 'observed', lines},
