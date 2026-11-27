@@ -99,6 +99,7 @@ func TestCanaryDimension(t *testing.T) {
 		} else {
 			require.NoError(t, err)
 		}
+		changed.Spec.Slices = ds.Spec.Slices
 		changed.Spec.RolloutStrategy.Canary.Dimension = "Groups"
 		if mode == "" || mode == "Groups" {
 			changed.Spec.RolloutStrategy.Canary.Dimension = "Slices"
@@ -115,6 +116,14 @@ func TestCanaryDimension(t *testing.T) {
 		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
 		_, err = w.ValidateUpdate(t.Context(), ds, changed)
 		require.NoError(t, err, "a new canary can choose a different dimension")
+		changed.Spec.RolloutStrategy.Canary.Dimension = "Slices"
+		changed.Spec.Slices = ptr.To[int32](16)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.ErrorContains(t, err, "slice-count changes", "starting a canary must not deploy new slices outside its quota")
+		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](-1)
+		errs := validateCanaryUpdate(changed, ds)
+		require.Len(t, errs, 1)
+		require.Contains(t, errs[0].Detail, "between 0 and 100", "range errors take precedence over transition errors")
 	}
 }
 

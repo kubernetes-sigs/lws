@@ -381,6 +381,10 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 			fetched.Status.Conditions = []metav1.Condition{{Type: string(disaggregatedset.DisaggregatedSetAvailable), Status: metav1.ConditionFalse, ObservedGeneration: fetched.Generation, Reason: "ReplicasNotReady", Message: "single revision still starting", LastTransitionTime: metav1.Now()}}
 			gomega.Expect(k8sClient.Status().Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			previousSlices := fetched.Spec.Slices
+			fetched.Spec.Slices = ptr.To[int32](8)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("slice-count changes")))
+			fetched.Spec.Slices = previousSlices
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
 			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
 			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())

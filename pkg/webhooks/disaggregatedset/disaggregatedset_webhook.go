@@ -89,11 +89,6 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
 	allErrs = append(allErrs, validateCanaryUpdate(obj, oldObj)...)
-	if strategy := obj.Spec.RolloutStrategy; strategy != nil && strategy.Canary != nil && strategy.Canary.Percent != nil {
-		if percent := *strategy.Canary.Percent; percent < 0 || percent > 100 {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), percent, "must be between 0 and 100"))
-		}
-	}
 
 	// Roles are a map-style list; reordering must preserve legacy templates.
 	oldRoles := make(map[string]*disaggv1.DisaggregatedRoleSpec)
@@ -206,6 +201,9 @@ func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	if strategy == nil || strategy.Canary == nil {
 		return nil
 	}
+	if percent := ptr.Deref(strategy.Canary.Percent, 100); percent < 0 || percent > 100 {
+		return field.ErrorList{field.Invalid(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), percent, "must be between 0 and 100")}
+	}
 	path := field.NewPath("spec", "rolloutStrategy", "canary", "dimension")
 	dimension := func(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
 		if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.Canary == nil || ds.Spec.RolloutStrategy.Canary.Dimension == "" {
@@ -219,6 +217,9 @@ func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	}
 	if old == nil || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
 		return nil
+	}
+	if mode == disaggv1.CanaryDimensionSlices && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported when starting or continuing a partial Slices canary; finish at 100 or remove canary.percent first")}
 	}
 	if old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil || ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 {
 		// Finalization is asynchronous: 50 -> 100 -> 25 must not restore A
@@ -246,9 +247,6 @@ func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
 	}
 	if dimension(old) != mode {
 		return field.ErrorList{field.Forbidden(path, "cannot change dimension during a partial canary; finish at 100 or remove canary.percent first")}
-	}
-	if mode != disaggv1.CanaryDimensionGroups && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
-		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported during a partial Slices canary; finish at 100 or remove canary.percent first")}
 	}
 	return nil
 }
