@@ -155,7 +155,7 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	// updated revisions, so steady-state reconciles add no API calls.
 	if needsWorkerTemplateProbe(lws) && (deploy == nil || updatedRevision != nil) {
 		if err := r.dryRunWorkerTemplate(ctx, lws, targetRevisionKey); err != nil {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to validate worker statefulset template for %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to validate worker statefulset template for %s: %v", lws.Name, err)
 			if apierrors.IsInvalid(err) {
 				r.recordInvalidTemplate(ctx, lws, err)
 			}
@@ -165,9 +165,9 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 
 	if err := r.applyLeaderDeployment(ctx, lws, rolloutBaseline, targetRevisionKey); err != nil {
 		if deploy == nil {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader deployment %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to create leader deployment %s: %v", lws.Name, err)
 		} else {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, fmt.Sprintf("Failed to update leader deployment %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, "Failed to update leader deployment %s: %v", lws.Name, err)
 		}
 		if apierrors.IsInvalid(err) {
 			r.recordInvalidTemplate(ctx, lws, err)
@@ -176,12 +176,12 @@ func (r *LeaderWorkerSetReconciler) reconcileHash(ctx context.Context, lws *lead
 	}
 
 	if deploy == nil {
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader deployment %s", lws.Name))
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, "Created leader deployment %s", lws.Name)
 	}
 
 	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to create headless service for error: %v", err)
 		return ctrl.Result{}, err
 	}
 

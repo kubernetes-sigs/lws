@@ -303,7 +303,7 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 			pod.Name,
 			leaderworkerset.LeaderPodNameAnnotationKey)
 		log.Error(errors.New(errMsg), "validate leader's annotations")
-		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, errMsg)
+		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, "%s", errMsg)
 		return ctrl.Result{}, nil
 	}
 
@@ -493,12 +493,12 @@ func (r *PodReconciler) reconcilePod(ctx context.Context, req podReconcileReques
 		}
 		if err = r.Create(ctx, workerStatefulSet); err != nil {
 			if client.IgnoreAlreadyExists(err) != nil {
-				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create worker statefulset for leader pod %s: %v", pod.Name, err))
+				r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeWarning, FailedCreate, Create, "Failed to create worker statefulset for leader pod %s: %v", pod.Name, err)
 				return ctrl.Result{}, err
 			}
 			return backoffResult, nil
 		}
-		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created worker statefulset for leader pod %s", pod.Name))
+		r.Record.Eventf(&leaderWorkerSet, &pod, corev1.EventTypeNormal, GroupsProgressing, Create, "Created worker statefulset for leader pod %s", pod.Name)
 	} else {
 		recreated, err := r.recreateGroupSplitByUpgrade(ctx, &leaderWorkerSet, &pod, &workerSts)
 		if err != nil || recreated {
@@ -1378,7 +1378,7 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 			}
 			if rank == -1 || rank >= len(gated)-blockingGroups {
 				log.V(2).Info("Deferring group replacement until terminating groups are removed", "terminatingLeaders", blockingGroups, "gatedLeaders", len(gated))
-				r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, blockingGroups))
+				r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, "Leader pod %s waits for %d terminating group(s) to be removed before scheduling", pod.Name, blockingGroups)
 				return false, nil
 			}
 		}
@@ -1398,7 +1398,7 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 				for _, p := range pods.Items {
 					if p.UID != pod.UID && p.Labels[leaderworkerset.GroupIndexLabelKey] == groupIndex {
 						log.V(2).Info("Deferring group replacement until previous ordinal pods are removed", "groupIndex", groupIndex, "blockingPod", p.Name)
-						r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, fmt.Sprintf("Leader pod %s waits for previous group %s pods to be removed before scheduling", pod.Name, groupIndex))
+						r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementDeferred, Update, "Leader pod %s waits for previous group %s pods to be removed before scheduling", pod.Name, groupIndex)
 						return false, nil
 					}
 				}
@@ -1419,7 +1419,7 @@ func (r *PodReconciler) reconcileGroupReplacementGate(ctx context.Context, pod *
 		return false, err
 	}
 	*pod = *newPod
-	r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementAdmitted, Update, fmt.Sprintf("Leader pod %s admitted for scheduling", pod.Name))
+	r.Record.Eventf(lws, pod, corev1.EventTypeNormal, GroupReplacementAdmitted, Update, "Leader pod %s admitted for scheduling", pod.Name)
 	return true, nil
 }
 

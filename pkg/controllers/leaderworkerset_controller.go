@@ -290,7 +290,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// reconciles add no API calls.
 	if needsWorkerTemplateProbe(lws) && (leaderSts == nil || lwsUpdated) {
 		if err := r.dryRunWorkerTemplate(ctx, lws, targetRevisionKey); err != nil {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to validate worker statefulset template for %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to validate worker statefulset template for %s: %v", lws.Name, err)
 			if apierrors.IsInvalid(err) {
 				r.recordInvalidTemplate(ctx, lws, err)
 			}
@@ -300,9 +300,9 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := r.applyLeaderStatefulSet(ctx, lws, partition, replicas, plan.baseline, targetRevisionKey); err != nil {
 		if leaderSts == nil {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create leader statefulset %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to create leader statefulset %s: %v", lws.Name, err)
 		} else {
-			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, fmt.Sprintf("Failed to update leader statefulset %s: %v", lws.Name, err))
+			r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedUpdate, Update, "Failed to update leader statefulset %s: %v", lws.Name, err)
 		}
 		if apierrors.IsInvalid(err) {
 			r.recordInvalidTemplate(ctx, lws, err)
@@ -313,7 +313,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var requeueDelete bool
 	if leaderSts == nil {
 		// An event is logged to track sts creation.
-		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, fmt.Sprintf("Created leader statefulset %s", lws.Name))
+		r.Record.Eventf(lws, revision, corev1.EventTypeNormal, GroupsProgressing, Create, "Created leader statefulset %s", lws.Name)
 	} else if !lwsUpdated && partition < *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition {
 		// An event is logged to track update progress.
 		oldPartition := *leaderSts.Spec.UpdateStrategy.RollingUpdate.Partition
@@ -334,7 +334,7 @@ func (r *LeaderWorkerSetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if err := r.reconcileHeadlessServices(ctx, lws); err != nil {
 		log.Error(err, "Creating headless service.")
-		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, fmt.Sprintf("Failed to create headless service for error: %v", err))
+		r.Record.Eventf(lws, nil, corev1.EventTypeWarning, FailedCreate, Create, "Failed to create headless service for error: %v", err)
 		return ctrl.Result{}, err
 	}
 
@@ -904,9 +904,9 @@ func (r *LeaderWorkerSetReconciler) planRollingUpdate(ctx context.Context, lws *
 
 	recordSurgeDeletionEvent := func(finalReplicas int32) {
 		if finalReplicas == stsReplicas-1 {
-			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replica %s-%d", lws.Name, finalReplicas))
+			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, "deleting surge replica %s-%d", lws.Name, finalReplicas)
 		} else if finalReplicas < stsReplicas {
-			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, fmt.Sprintf("deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1))
+			r.Record.Eventf(lws, nil, corev1.EventTypeNormal, GroupsProgressing, Delete, "deleting surge replicas from %s-%d to %s-%d", lws.Name, finalReplicas, lws.Name, stsReplicas-1)
 		}
 	}
 
@@ -2383,7 +2383,7 @@ func (r *LeaderWorkerSetReconciler) getOrCreateRevision(ctx context.Context, rev
 	newRevision, err := revisionutils.CreateRevision(ctx, r.Client, revision)
 	if err == nil {
 		message := fmt.Sprintf("Creating missing revision with key %s for existing LeaderWorkerSet", revisionutils.GetRevisionKey(revision))
-		r.Record.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, message)
+		r.Record.Eventf(lws, newRevision, corev1.EventTypeNormal, CreatingRevision, Create, "%s", message)
 	}
 	return newRevision, err
 }
@@ -2421,7 +2421,7 @@ func (r *LeaderWorkerSetReconciler) reuseOrCreateRevision(ctx context.Context, l
 	if err != nil {
 		return nil, err
 	}
-	r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, eventMessage)
+	r.Record.Eventf(lws, revision, corev1.EventTypeNormal, CreatingRevision, Create, "%s", eventMessage)
 	if unmarkedRevision != nil {
 		// GetRevision returns the highest revision for a key, which is the new one.
 		// Removing the old one only avoids keeping two revisions for one key.
