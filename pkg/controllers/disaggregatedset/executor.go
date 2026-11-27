@@ -67,6 +67,15 @@ type RollingUpdateExecutor struct {
 	// only when every rolling slice is held.
 	rollingSlices, heldSlices int
 	canaryMessage             string
+	canaryMessageBlocking     bool
+}
+
+// A later slice may defer demand or retain a singleton pair, but that must not
+// hide an earlier slice's baseline problem that needs operator attention.
+func (executor *RollingUpdateExecutor) setCanaryMessage(message string, blocking bool) {
+	if !executor.canaryMessageBlocking {
+		executor.canaryMessage, executor.canaryMessageBlocking = message, blocking
+	}
 }
 
 // CanaryHeld reports that every slice still rolling in this reconcile is
@@ -304,7 +313,7 @@ func (e *RollingUpdateExecutor) prepareRolloutInputs(ctx context.Context, ds *di
 				return rolloutInputs{}, err
 			}
 			if !maps.Equal(desired, admitted) {
-				e.canaryMessage = "Demand changes are deferred during this partial canary; promotion continues at the admitted replica counts. Use Immediate for the required scaling direction or finish the canary"
+				e.setCanaryMessage("Demand changes are deferred during this partial canary; promotion continues at the admitted replica counts. Use Immediate for the required scaling direction or finish the canary", false)
 			}
 			inputs = buildRolloutInputs(ds, old, target, admitted, observed)
 			inputs.canaryDemand = admitted

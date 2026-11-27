@@ -329,21 +329,21 @@ func (executor *RollingUpdateExecutor) reconcileCanaryRestoration(
 			}
 		}
 		if len(retained) > 0 {
-			executor.canaryMessage = fmt.Sprintf("Deferring the final scale-down of roles %s: keeping one baseline and one canary group while their admitted count is one. An admitted zero request or finalization releases them. This is a one-group exception when maxSurge is zero; other roles follow their scaling policies", listRoles(retained))
+			executor.setCanaryMessage(fmt.Sprintf("Deferring the final scale-down of roles %s: keeping one baseline and one canary group while their admitted count is one. An admitted zero request or finalization releases them. This is a one-group exception when maxSurge is zero; other roles follow their scaling policies", listRoles(retained)), false)
 		} else {
-			executor.canaryMessage = fmt.Sprintf("Role %s has only one replica group: keeping it on the stable revision and preserving already-issued canary groups; further canary growth waits until every active role can run on both revisions", name)
+			executor.setCanaryMessage(fmt.Sprintf("Role %s has only one replica group: keeping it on the stable revision and preserving already-issued canary groups; further canary growth waits until every active role can run on both revisions", name), false)
 		}
 	}
 	if percent > 0 && percent < 100 && canaryDimension(ds) == disaggv1.CanaryDimensionSlices && disaggutils.GetSlices(ds) == 1 {
-		executor.canaryMessage = "Keeping the only slice on the stable revision; a slice canary needs at least two slices, but role scaling continues"
+		executor.setCanaryMessage("Keeping the only slice on the stable revision; a slice canary needs at least two slices, but role scaling continues", false)
 	}
 	stable := canaryStableRevision(append(slices.Clone(old), target), inputs.allRoleNames, inputs.readiness)
 	if stable.Revision == "" {
-		executor.canaryMessage = "Cannot identify the stable canary revision unambiguously; remove canary.percent to finish this rollout before starting another canary"
+		executor.setCanaryMessage("Cannot identify the stable canary revision unambiguously; remove canary.percent to finish this rollout before starting another canary", true)
 		return ctrl.Result{}, true, nil
 	}
 	if !compatibleCanaryRevision(stable, inputs.allRoleNames, desired) {
-		executor.canaryMessage = "Canary requires a surviving stable revision with the same active roles and sub-roles; remove canary.percent to finish the layout change before starting a canary"
+		executor.setCanaryMessage("Canary requires a surviving stable revision with the same active roles and sub-roles; remove canary.percent to finish the layout change before starting a canary", true)
 		return ctrl.Result{}, true, nil
 	}
 	if err := executor.recordCanaryStable(ctx, ds, stable, true, nil); err != nil {

@@ -431,6 +431,9 @@ func TestCanaryRestrictionsAndRetiredHistory(t *testing.T) {
 				require.Equal(t, tc.message != "", handled)
 				if tc.message != "" {
 					require.Contains(t, executor.canaryMessage, tc.message)
+					executor.setCanaryMessage("a later slice has deferred demand", false)
+					executor.setCanaryMessage("another slice retains its singleton pair", false)
+					require.Contains(t, executor.canaryMessage, tc.message, "later informational messages cannot hide a baseline problem")
 					r := newTestReconciler(c)
 					require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill"}, "new", desired, nil, ptr.To(false), executor.canaryMessage))
 					require.Equal(t, "RolloutInProgress", meta.FindStatusCondition(ds.Status.Conditions, "Progressing").Reason)
