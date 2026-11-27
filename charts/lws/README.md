@@ -182,9 +182,9 @@ The following table lists the configurable parameters of the LWS chart and their
 | `replicaCount`                             | Number of manager replicas (leader election keeps one active) | `1`                                  |
 | `serviceAccount.name`                      | Name of the manager ServiceAccount; `<fullname>-controller-manager` when empty | `""`               |
 | `metadataProtection.enabled`              | Enforce controller-owned metadata protection (Kubernetes 1.30+) | `true` |
-| `metadataProtection.podControllerUsernames` | Authenticated identities allowed to create Pods with protected metadata | StatefulSet/ReplicaSet controller ServiceAccounts and `system:kube-controller-manager` |
-| `metadataProtection.deploymentControllerUsernames` | Identities allowed to create ReplicaSets and propagate their object annotations | Deployment controller ServiceAccount and `system:kube-controller-manager` |
-| `metadataProtection.statefulSetControllerUsernames` | Identities allowed to create ControllerRevisions | StatefulSet controller ServiceAccount and `system:kube-controller-manager` |
+| `metadataProtection.podControllerUsernames` | Authenticated identities allowed to create Pods with protected metadata | StatefulSet/ReplicaSet controller ServiceAccounts |
+| `metadataProtection.deploymentControllerUsernames` | Identities allowed to create ReplicaSets and propagate their object annotations | Deployment controller ServiceAccount |
+| `metadataProtection.statefulSetControllerUsernames` | Identities allowed to create ControllerRevisions | StatefulSet controller ServiceAccount |
 | `pdb.enabled`                              | Create a PodDisruptionBudget for the manager (only when `replicaCount` > 1) | `true`                 |
 | `pdb.minAvailable`                         | Minimum manager pods available after eviction  | `1`                                                 |
 | `pdb.maxUnavailable`                       | Maximum manager pods unavailable; takes precedence over `minAvailable` | `null`                      |
