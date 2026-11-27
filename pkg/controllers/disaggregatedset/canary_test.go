@@ -69,6 +69,30 @@ func canaryConfigs(surge, unavailable int, old RoleReplicaState) []RollingUpdate
 	return config
 }
 
+func canaryWorkloads(t *testing.T, c client.Client) []leaderv1.LeaderWorkerSet {
+	t.Helper()
+	list := &leaderv1.LeaderWorkerSetList{}
+	require.NoError(t, c.List(t.Context(), list))
+	return list.Items
+}
+
+// Check the issued replicas and previous readiness before simulating the LWS
+// controllers becoming Ready. Each test keeps its expected counts and safety
+// assertions in want; readiness from this step only funds the next reconcile.
+func advanceCanaryReadiness(t *testing.T, c client.Client, want func(*leaderv1.LeaderWorkerSet) int32) bool {
+	t.Helper()
+	settled := true
+	workloads := canaryWorkloads(t, c)
+	for i := range workloads {
+		lws := &workloads[i]
+		expected := want(lws)
+		settled = settled && *lws.Spec.Replicas == expected && lws.Status.ReadyReplicas == expected
+		lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
+		require.NoError(t, c.Status().Update(t.Context(), lws))
+	}
+	return settled
+}
+
 func settleCanary(t *testing.T, state *RolloutState) {
 	t.Helper()
 	for range 100 {
@@ -184,13 +208,9 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 					for len(recorder.Events) > 0 {
 						emitted += <-recorder.Events
 					}
-					list := &leaderv1.LeaderWorkerSetList{}
-					require.NoError(t, c.List(t.Context(), list))
-					changed := false
 					oldCounts, newCounts = make([]int, 2), make([]int, 2)
 					readyBefore, readyAfter := make([]int, 2), make([]int, 2)
-					for i := range list.Items {
-						lws := &list.Items[i]
+					settled := advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 						n := *lws.Spec.Replicas
 						role := 0
 						if lws.Labels[disaggv1.RoleLabelKey] == "decode" {
@@ -203,12 +223,10 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 						} else {
 							newCounts[role] = int(n)
 						}
-						changed = changed || n != lws.Status.ReadyReplicas
 						readyBefore[role] += int(lws.Status.ReadyReplicas)
 						readyAfter[role] += int(min(n, lws.Status.ReadyReplicas))
-						lws.Status.Replicas, lws.Status.ReadyReplicas = n, n
-						require.NoError(t, c.Status().Update(t.Context(), lws))
-					}
+						return n
+					})
 					for i, name := range testRoleNames() {
 						require.GreaterOrEqual(t, readyAfter[i], min(readyBefore[i], desired[name]), "scale requests preserve the availability floor before new groups are Ready")
 						if oldCounts[i]+newCounts[i] > max(previous[i], desired[name]+1) {
@@ -217,7 +235,7 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 							require.LessOrEqual(t, oldCounts[i]+newCounts[i], desired[name]+2, "at most one extra bootstrap group")
 						}
 					}
-					if !changed {
+					if settled {
 						return
 					}
 				}
@@ -251,9 +269,7 @@ func TestCanaryResizesBothRevisions(t *testing.T) {
 				require.Equal(t, phase.old[:], a, "old groups: percent=%d desired=%v", phase.percent, phase.desired)
 				require.Equal(t, phase.new[:], b, "new groups: percent=%d desired=%v", phase.percent, phase.desired)
 				if phase.checkRetained {
-					list := &leaderv1.LeaderWorkerSetList{}
-					require.NoError(t, c.List(t.Context(), list))
-					require.Len(t, list.Items, 4, "zero holds retain both target LWS objects")
+					require.Len(t, canaryWorkloads(t, c), 4, "zero holds retain both target LWS objects")
 				}
 			}
 		})
@@ -366,11 +382,7 @@ func TestCanaryDeferredDemandStillPromotes(t *testing.T) {
 							_, complete := reconcileExistingForTest(t, executor, ds, phase.target)
 							require.NoError(t, r.cleanupDrainedLWS(t.Context(), ds, 0, phase.target, complete))
 						}
-						list := &leaderv1.LeaderWorkerSetList{}
-						require.NoError(t, c.List(t.Context(), list))
-						settled = true
-						for i := range list.Items {
-							lws := &list.Items[i]
+						settled = advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 							want := 0
 							switch lws.Labels[disaggv1.RevisionLabelKey] {
 							case "A":
@@ -381,10 +393,8 @@ func TestCanaryDeferredDemandStillPromotes(t *testing.T) {
 									want = resolveDesiredReplicasByRole(ds, nil)[lws.Labels[disaggv1.RoleLabelKey]]
 								}
 							}
-							settled = settled && int(*lws.Spec.Replicas) == want && lws.Status.ReadyReplicas == int32(want)
-							lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-							require.NoError(t, c.Status().Update(t.Context(), lws))
-						}
+							return int32(want)
+						})
 						if settled {
 							break
 						}
@@ -475,20 +485,14 @@ func TestCanaryExistingRolesCanResize(t *testing.T) {
 				} else {
 					require.Empty(t, executor.canaryMessage)
 				}
-				list := &leaderv1.LeaderWorkerSetList{}
-				require.NoError(t, c.List(t.Context(), list))
-				settled := true
-				for i := range list.Items {
-					lws := &list.Items[i]
+				settled := advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 					want := tc.wantOld
 					if lws.Labels[disaggv1.RevisionLabelKey] == "new" {
 						want = tc.wantNew
 					}
 					role := slices.Index(testRoleNames(), lws.Labels[disaggv1.RoleLabelKey])
-					settled = settled && getLWSReplicas(lws) == want[role] && lws.Status.ReadyReplicas == want[role]
-					lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-					require.NoError(t, c.Status().Update(t.Context(), lws))
-				}
+					return want[role]
+				})
 				if settled {
 					break
 				}
@@ -559,16 +563,12 @@ func TestCanarySingletonPeerPreservesIssuedGroups(t *testing.T) {
 				ds.Spec.Roles[1].Spec.Replicas = ptr.To(d)
 				for range 20 {
 					reconcileExistingForTest(t, newTestExecutor(c), ds, "B")
-					list := &leaderv1.LeaderWorkerSetList{}
-					require.NoError(t, c.List(t.Context(), list))
-					for i := range list.Items {
-						lws := &list.Items[i]
+					advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 						if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
 							require.Equal(t, share, *lws.Spec.Replicas, "a peer resuming must not restart Prefill")
 						}
-						lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-						require.NoError(t, c.Status().Update(t.Context(), lws))
-					}
+						return *lws.Spec.Replicas
+					})
 				}
 				assertRevisionReplicas(t, c, "A", [2]int32{share, 1})
 				assertRevisionReplicas(t, c, "B", [2]int32{share, d - 1})
@@ -736,10 +736,9 @@ func TestCanaryInitialCreationIgnoresHold(t *testing.T) {
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
 		require.NoError(t, err)
 	}
-	list := &leaderv1.LeaderWorkerSetList{}
-	require.NoError(t, c.List(t.Context(), list))
-	require.Len(t, list.Items, 1)
-	require.EqualValues(t, 4, *list.Items[0].Spec.Replicas)
+	workloads := canaryWorkloads(t, c)
+	require.Len(t, workloads, 1)
+	require.EqualValues(t, 4, *workloads[0].Spec.Replicas)
 }
 
 func TestCanaryStableGrowthCountsEveryOldRevision(t *testing.T) {
@@ -1001,12 +1000,8 @@ func TestCanarySingletonReplacement(t *testing.T) {
 				// Recreate the executor to check that replacement survives a restart.
 				reconcileExistingForTest(t, newTestExecutor(c), ds, "c")
 				assertRevisionReplicas(t, c, "a", [2]int32{1, 4})
-				list := &leaderv1.LeaderWorkerSetList{}
-				require.NoError(t, c.List(t.Context(), list))
 				prefill := 0
-				settled := true
-				for i := range list.Items {
-					lws := &list.Items[i]
+				settled := advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 					want := int32(0)
 					if lws.Labels[disaggv1.RevisionLabelKey] != "b" {
 						want = 4
@@ -1014,13 +1009,11 @@ func TestCanarySingletonReplacement(t *testing.T) {
 							want = 1
 						}
 					}
-					settled = settled && getLWSReplicas(lws) == want && lws.Status.ReadyReplicas == want
 					if lws.Labels[disaggv1.RoleLabelKey] == "prefill" {
 						prefill += int(*lws.Spec.Replicas)
 					}
-					lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-					require.NoError(t, c.Status().Update(t.Context(), lws))
-				}
+					return want
+				})
 				require.GreaterOrEqual(t, prefill, 2, "never lose the last canary-side group")
 				require.LessOrEqual(t, prefill, max(2, 1+budget[0])+1, "retention plus at most one temporary bootstrap group")
 				if settled {
@@ -1087,20 +1080,14 @@ func TestCanaryMixedScalingAndRestart(t *testing.T) {
 			_, _, err = executor.reconcileExistingRollout(t.Context(), ds, old, *target, desired)
 			require.NoError(t, err)
 			require.Empty(t, executor.canaryMessage)
-			list := &leaderv1.LeaderWorkerSetList{}
-			require.NoError(t, c.List(t.Context(), list))
-			settled = true
-			for i := range list.Items {
-				lws := &list.Items[i]
+			settled = advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 				role := lws.Labels[disaggv1.RoleLabelKey]
 				want := canaryOldReplicas(desired[role], int(percent))
 				if lws.Labels[disaggv1.RevisionLabelKey] == "new" {
 					want = desired[role] - want
 				}
-				settled = settled && int(*lws.Spec.Replicas) == want && lws.Status.ReadyReplicas == *lws.Spec.Replicas
-				lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-				require.NoError(t, c.Status().Update(t.Context(), lws))
-			}
+				return int32(want)
+			})
 			if settled {
 				break
 			}
@@ -1200,17 +1187,11 @@ func TestCanaryRestoresAnchorAcrossInterruptedRollouts(t *testing.T) {
 						require.NoError(t, err)
 						_, _, err = executor.reconcileExistingRollout(t.Context(), ds, old, *latest, map[string]int{"prefill": desired[0], "decode": desired[1]})
 						require.NoError(t, err)
-						list := &leaderv1.LeaderWorkerSetList{}
-						require.NoError(t, c.List(t.Context(), list))
 						ready := map[string]int{}
-						settled = true
-						for i := range list.Items {
-							lws := &list.Items[i]
+						settled = advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
 							ready[lws.Labels[disaggv1.RoleLabelKey]] += int(min(*lws.Spec.Replicas, lws.Status.ReadyReplicas))
-							settled = settled && lws.Status.ReadyReplicas == *lws.Spec.Replicas
-							lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-							require.NoError(t, c.Status().Update(t.Context(), lws))
-						}
+							return *lws.Spec.Replicas
+						})
 						old, latest, err = executor.LWSManager.GetRevisionRolesList(t.Context(), ds, 0, "2")
 						require.NoError(t, err)
 						for i, name := range testRoleNames() {
@@ -1325,12 +1306,9 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 				for range 30 {
 					_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
 					require.NoError(t, err)
-					list := &leaderv1.LeaderWorkerSetList{}
-					require.NoError(t, c.List(t.Context(), list))
-					settled = true
 					currentRoles, stableRoles := 0, 0
-					for i := range list.Items {
-						lws, want := &list.Items[i], int32(0)
+					settled = advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
+						want := int32(0)
 						if lws.Labels[disaggv1.RevisionLabelKey] == revision {
 							want, currentRoles = desired-int32(canaryOldReplicas(int(desired), int(percent))), currentRoles+1
 							require.EqualValues(t, lws.Name, lws.UID, "zero keeps the current LWS for reuse")
@@ -1339,10 +1317,8 @@ func TestCanaryWholeSetZeroAndResume(t *testing.T) {
 							require.Equal(t, "true", lws.Annotations[canaryStableAnnotation])
 							require.EqualValues(t, lws.Name, lws.UID, "zero keeps the baseline templates and identity")
 						}
-						settled = settled && *lws.Spec.Replicas == want && lws.Status.ReadyReplicas == want
-						lws.Status.Replicas, lws.Status.ReadyReplicas = *lws.Spec.Replicas, *lws.Spec.Replicas
-						require.NoError(t, c.Status().Update(t.Context(), lws))
-					}
+						return want
+					})
 					wantStable := 2
 					if percent == 100 {
 						wantStable = 0
@@ -1389,10 +1365,9 @@ func TestCanaryCleanupKeepsOnlyBaseline(t *testing.T) {
 		objects = append(objects, revisionLWSObjects("C", [2]int32{}, [2]int32{}, [2]int32{4, 8}, time.Unix(3, 0))...)
 		c := newTestClient(objects...)
 		require.NoError(t, newTestReconciler(c).cleanupDrainedLWS(t.Context(), ds, 0, "C", false))
-		list := &leaderv1.LeaderWorkerSetList{}
-		require.NoError(t, c.List(t.Context(), list))
-		require.Len(t, list.Items, 4, "%s must retain only A and C", mode)
-		for _, lws := range list.Items {
+		workloads := canaryWorkloads(t, c)
+		require.Len(t, workloads, 4, "%s must retain only A and C", mode)
+		for _, lws := range workloads {
 			require.NotEqual(t, "B", lws.Labels[disaggv1.RevisionLabelKey])
 		}
 	}
@@ -1456,12 +1431,10 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 					for range 100 {
 						_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
 						require.NoError(t, err)
-						list := &leaderv1.LeaderWorkerSetList{}
-						require.NoError(t, c.List(t.Context(), list))
-						settled = true
-						stableCount, targetCount := 0, 0
-						for i := range list.Items {
-							lws, want := &list.Items[i], int32(0)
+						stableCount, targetCount, totalCount := 0, 0, 0
+						settled = advanceCanaryReadiness(t, c, func(lws *leaderv1.LeaderWorkerSet) int32 {
+							totalCount++
+							want := int32(0)
 							slice, err := strconv.Atoi(lws.Labels[disaggv1.SliceLabelKey])
 							require.NoError(t, err)
 							oldDesired := int32(0)
@@ -1483,17 +1456,16 @@ func TestCanaryPromotionAndFinalization(t *testing.T) {
 								targetCount++
 								want = phase.replicas - oldDesired
 							}
-							settled = settled && getLWSReplicas(lws) == want && lws.Status.ReadyReplicas == want
-							lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = getLWSReplicas(lws), getLWSReplicas(lws), getLWSReplicas(lws)
-							require.NoError(t, c.Status().Update(t.Context(), lws))
-						}
+							lws.Status.UpdatedReplicas = getLWSReplicas(lws)
+							return want
+						})
 						wantStable := 2 * sliceCount
 						if phase.percent < 0 || phase.percent == 100 {
 							wantStable = 0
 						}
-						settled = settled && stableCount == wantStable && targetCount == 2*sliceCount && len(list.Items) == stableCount+targetCount
+						settled = settled && stableCount == wantStable && targetCount == 2*sliceCount && totalCount == stableCount+targetCount
 						if settled {
-							require.Len(t, list.Items, stableCount+targetCount, "only the baseline and current canary survive")
+							require.Equal(t, stableCount+targetCount, totalCount, "only the baseline and current canary survive")
 							break
 						}
 					}
