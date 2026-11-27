@@ -9,14 +9,14 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 ---
 
 
-## Resource Types
+## Resource Types 
 
 
 - [DisaggregatedSet](#disaggregatedset-x-k8s-io-v1-DisaggregatedSet)
-
+  
 
 ## `DisaggregatedSet`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSet}
-
+    
 
 **Appears in:**
 
@@ -28,11 +28,11 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
+    
 <tr><td><code>apiVersion</code><br/>string</td><td><code>disaggregatedset.x-k8s.io/v1</code></td></tr>
 <tr><td><code>kind</code><br/>string</td><td><code>DisaggregatedSet</code></td></tr>
-
-
+    
+  
 <tr><td><code>spec</code> <B>[Required]</B><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec"><code>DisaggregatedSetSpec</code></a>
 </td>
@@ -51,7 +51,7 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 </table>
 
 ## `CanaryDimension`     {#disaggregatedset-x-k8s-io-v1-CanaryDimension}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -67,7 +67,7 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 
 
 ## `DisaggregatedRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec}
-
+    
 
 **Appears in:**
 
@@ -83,8 +83,8 @@ RolloutStrategy.RollingUpdateConfiguration.Partition must not be set).</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -123,7 +123,7 @@ DisaggregatedSet handles rollouts across roles.</p>
 </table>
 
 ## `DisaggregatedSetCanary`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary}
-
+    
 
 **Appears in:**
 
@@ -136,8 +136,8 @@ DisaggregatedSet handles rollouts across roles.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>percent</code><br/>
 <code>int32</code>
 </td>
@@ -152,8 +152,10 @@ The oldest revision with surviving groups is recorded as the baseline;
 that choice survives controller restarts. A later template update replaces
 the canary within its share while retaining the recorded baseline's share.
 During a partial canary Percent may increase, but decreases are rejected.
-Starting a partial canary from omitted/100 requires Available=True for the
-current generation. Requesting finalization is not the same as completing it.
+Starting a partial canary from omitted/100 requires the current generation
+to be observed, no pending canary cleanup, and every role's existing replicas
+to be on the current revision. Unready groups or single-revision scaling
+do not prevent starting a canary. Requesting finalization does not complete it.
 Start at 0 to hold the baseline before creating any canary groups.
 For a durable rollback, restore the stable templates in Git. If they match
 the surviving baseline, the rollout converges fully to it without a hold.
@@ -201,22 +203,23 @@ This field has no effect when Percent is omitted or 100.</p>
 </table>
 
 ## `DisaggregatedSetCanaryStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus}
-
+    
 
 **Appears in:**
 
 - [DisaggregatedSetStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus)
 
 
-<p>DisaggregatedSetCanaryStatus describes an observed partial canary. Replica
-counts remain in RoleStatuses; this section does not drive rollout planning.</p>
+<p>DisaggregatedSetCanaryStatus describes an observed canary or its pending
+cleanup. Replica counts remain in RoleStatuses; this section does not drive
+rollout planning.</p>
 
 
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>percent</code> <B>[Required]</B><br/>
 <code>int32</code>
 </td>
@@ -263,7 +266,7 @@ generation; compare RoleStatuses.DesiredReplicas with the scaler targets.</p>
 </table>
 
 ## `DisaggregatedSetRoleScaler`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScaler}
-
+    
 
 **Appears in:**
 
@@ -280,8 +283,8 @@ reads it and drives the role's LeaderWorkerSet.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>spec</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec"><code>DisaggregatedSetRoleScalerSpec</code></a>
 </td>
@@ -300,7 +303,7 @@ reads it and drives the role's LeaderWorkerSet.</p>
 </table>
 
 ## `DisaggregatedSetRoleScalerSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerSpec}
-
+    
 
 **Appears in:**
 
@@ -315,8 +318,8 @@ from the scaler's controller ownerReference and its role label.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>replicas</code> <B>[Required]</B><br/>
 <code>int32</code>
 </td>
@@ -336,7 +339,7 @@ field does not exist&quot;) when the JSONPath resolves to nothing. HPA reads
 </table>
 
 ## `DisaggregatedSetRoleScalerStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRoleScalerStatus}
-
+    
 
 **Appears in:**
 
@@ -350,8 +353,8 @@ DisaggregatedSet controller.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>replicas</code><br/>
 <code>int32</code>
 </td>
@@ -392,7 +395,7 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </table>
 
 ## `DisaggregatedSetRolloutStrategy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy}
-
+    
 
 **Appears in:**
 
@@ -405,8 +408,8 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>canary</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary"><code>DisaggregatedSetCanary</code></a>
 </td>
@@ -418,7 +421,7 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </table>
 
 ## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
-
+    
 
 **Appears in:**
 
@@ -432,8 +435,8 @@ with DisaggregatedSet reconciliation.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>scaleUpDuringRollout</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy"><code>RolloutScalingPolicy</code></a>
 </td>
@@ -485,7 +488,7 @@ the delay. Controller restarts reset the window.</p>
 </table>
 
 ## `DisaggregatedSetSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec}
-
+    
 
 **Appears in:**
 
@@ -502,8 +505,8 @@ to zero without pausing sibling routing pools.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>roles</code> <B>[Required]</B><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec"><code>[]DisaggregatedRoleSpec</code></a>
 </td>
@@ -553,7 +556,7 @@ created, so changing it takes effect on the next rollout.</p>
 </table>
 
 ## `DisaggregatedSetStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus}
-
+    
 
 **Appears in:**
 
@@ -566,8 +569,8 @@ created, so changing it takes effect on the next rollout.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>observedGeneration</code><br/>
 <code>int64</code>
 </td>
@@ -588,9 +591,9 @@ Removed roles are omitted even while their groups drain.</p>
 <a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus"><code>DisaggregatedSetCanaryStatus</code></a>
 </td>
 <td>
-   <p>Canary describes a partial canary with surviving history. It is absent
-during initial creation without a baseline, when restoring the baseline's
-templates, and when the percentage is omitted or 100.</p>
+   <p>Canary describes a partial canary with surviving history, or its pending
+cleanup at omitted/100. Finalization clears it only after old LWS objects
+disappear. It is absent during initial creation without a baseline.</p>
 </td>
 </tr>
 <tr><td><code>conditions</code><br/>
@@ -614,7 +617,7 @@ health checks for service health, not Available alone.</li>
 </table>
 
 ## `DisaggregatedSubRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSubRoleSpec}
-
+    
 
 **Appears in:**
 
@@ -627,8 +630,8 @@ health checks for service health, not Available alone.</li>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -674,7 +677,7 @@ the parent; with no parent rollout configuration, the default is 1. Zero is expl
 </table>
 
 ## `PlacementPolicy`     {#disaggregatedset-x-k8s-io-v1-PlacementPolicy}
-
+    
 
 **Appears in:**
 
@@ -687,8 +690,8 @@ the parent; with no parent rollout configuration, the default is 1. Zero is expl
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>type</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-PlacementType"><code>PlacementType</code></a>
 </td>
@@ -708,7 +711,7 @@ topologyKey. Required when Type is not None.</p>
 </table>
 
 ## `PlacementType`     {#disaggregatedset-x-k8s-io-v1-PlacementType}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -722,7 +725,7 @@ topologyKey. Required when Type is not None.</p>
 
 
 ## `RoleScaling`     {#disaggregatedset-x-k8s-io-v1-RoleScaling}
-
+    
 
 **Appears in:**
 
@@ -739,8 +742,8 @@ a v2 API bump.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>mode</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-RoleScalingMode"><code>RoleScalingMode</code></a>
 </td>
@@ -753,7 +756,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 </table>
 
 ## `RoleScalingMode`     {#disaggregatedset-x-k8s-io-v1-RoleScalingMode}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -767,7 +770,7 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 
 
 ## `RoleStatus`     {#disaggregatedset-x-k8s-io-v1-RoleStatus}
-
+    
 
 **Appears in:**
 
@@ -780,8 +783,8 @@ inline spec.replicas; External uses the auto-created scaler CR.</p>
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -858,7 +861,7 @@ while draining. Do not add child counts to their parent aggregate.</p>
 </table>
 
 ## `RolloutScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-RolloutScalingPolicy}
-
+    
 (Alias of `string`)
 
 **Appears in:**
@@ -873,7 +876,7 @@ a rolling update. The scale-up and scale-down fields select it independently.</p
 
 
 ## `SubRoleStatus`     {#disaggregatedset-x-k8s-io-v1-SubRoleStatus}
-
+    
 
 **Appears in:**
 
@@ -886,8 +889,8 @@ a rolling update. The scale-up and scale-down fields select it independently.</p
 <table class="table">
 <thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
 <tbody>
-
-
+    
+  
 <tr><td><code>name</code> <B>[Required]</B><br/>
 <code>string</code>
 </td>
@@ -947,3 +950,4 @@ at least one Ready group. It never exceeds ReadyReplicas.</p>
 </tr>
 </tbody>
 </table>
+  
