@@ -67,6 +67,8 @@ Changing only the percentage does not create another application revision. Set t
 
 After B finishes at `100` (or with the percentage omitted), a new C rollout uses B as its baseline, without a separate finalization edit. Set the next starting percentage together with C's templates. Leaving `100` configured does not automatically pause the next template update below 100%.
 
+**Wait for completion before starting another canary.** Admission allows a change from `100` or omission to a partial percentage only when `Available=True` has been observed for the current generation. Merely writing `100` does not complete the rollout: a quick `50 → 100 → 25` is rejected until finalization finishes. The same check applies when starting the first canary on an existing set. Initial creation is still allowed with a partial percentage; without an older revision, it creates the requested workload normally.
+
 ### Choose groups or whole slices
 
 `spec.rolloutStrategy.canary.dimension` selects what the percentage divides:
@@ -114,6 +116,8 @@ This keeps **one extra group per affected role or sub-role in each slice**, pote
 
 The requested count remains one in the spec and status; observed counts show the extra group. `Progressing` explains the delayed final reduction, and `status.canary.settled` stays false rather than claiming an exact hold. Demand returning to two removes the excess. An admitted zero request, promotion to `100`, or omitting the percentage releases retention. Deferred scale-down still queues reductions as usual. Starting a new canary at one does not create a second copy automatically; use an autoscaler minimum of two if the canary must start and settle without this limitation.
 
+The same protection applies when another role resumes from zero at one group. For example, keep an existing A/B Prefill pair while Decode resumes on A only. Do not discard Prefill B or create a second Decode automatically. Further canary growth waits until Decode can split. Until then B is incomplete: its Prefill does not count as serving capacity, and the canary is not settled.
+
 In `Slices` mode, apply the same rounding rule to the number of slices. One slice cannot be divided; it stays on A while role scaling continues.
 
 ### Promote the canary or roll back through Git
@@ -148,6 +152,8 @@ With Immediate in both directions, one role held at 25% behaves as follows:
 Each role/sub-role has its own admitted count. With Deferred scale-up, a request from 4 to 8 stays at 3 A + 1 B. Promoting from 25% to 50% still proceeds, producing 2 A + 2 B. Likewise, changing B's templates to C continues within that admitted size. Deferred does not freeze rollout progress.
 
 The controller records admitted counts in the internal `disaggregatedset.x-k8s.io/canary-admitted-replicas` annotation on A's LWS objects. The first record uses A's saved replica targets, not a sum that includes temporary surge. Later Immediate changes update the record before planning; it survives restarts and B → C. Status is not used as planner state.
+
+Serving-capacity status uses those admitted counts to determine which roles each revision still needs. A queued zero does not make a missing role optional; an admitted zero followed by a queued increase does not reactivate it yet. Requested counts in status continue to show the latest demand. Restoring A's templates returns to ordinary rollout demand instead.
 
 Changing a Deferred direction to Immediate admits the **latest** request, not every intermediate autoscaler value. A demand of zero follows the same rule: Deferred scale-down queues it; Immediate can drain both sides to zero. Immediate scale-up can resume the same split from their retained templates. Unknown scaler targets pause reconciliation; they are not treated as zero.
 
