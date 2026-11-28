@@ -725,6 +725,14 @@ func TestPodCtrlReconcilePodWorkerStatefulSetCreateFailures(t *testing.T) {
 			wantErrContains:   "etcd unavailable",
 			wantEventContains: "Warning " + FailedCreate,
 		},
+		{
+			// The recorder formats the note, so error text must be passed as an
+			// argument rather than as part of the format string.
+			name:              "error text with a percent sign is recorded verbatim",
+			createErr:         apierrors.NewForbidden(appsv1.Resource("statefulsets"), "test-lws-0", errors.New("exceeded quota: 100%d used")),
+			wantErrContains:   "exceeded quota",
+			wantEventContains: "exceeded quota: 100%d used",
+		},
 	}
 
 	for _, tc := range tests {
