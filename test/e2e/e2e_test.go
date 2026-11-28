@@ -400,11 +400,34 @@ var _ = ginkgo.Describe("leaderWorkerSet e2e tests", func() {
 		// Happen during rolling update.
 		testing.ExpectValidServices(ctx, k8sClient, lws, 4)
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
+		// Wait for the initial rollout to complete so the update below starts
+		// from a fully ready state.
+		testing.ExpectLeaderWorkerSetAvailable(ctx, k8sClient, lws, "All replicas are ready")
 
-		testing.UpdateWorkerTemplate(ctx, k8sClient, lws)
+		// Update the worker template to an image that can never become ready.
+		// The leaders stay healthy, but no base group can be replaced, so the
+		// rollout holds at 4 base + 3 surge replicas and the surge state can be
+		// observed without racing the rollout.
+		updateWorkerImage := func(image, name string) {
+			gomega.Eventually(func() error {
+				var cur leaderworkerset.LeaderWorkerSet
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: lws.Name, Namespace: lws.Namespace}, &cur); err != nil {
+					return err
+				}
+				c := &cur.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0]
+				c.Image = image
+				c.Name = name
+				return k8sClient.Update(ctx, &cur)
+			}, timeout, interval).Should(gomega.Succeed())
+		}
+		updateWorkerImage("not-exist-image:v1", "worker")
 
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 7)
 		testing.ExpectValidServices(ctx, k8sClient, lws, 7)
+
+		// Roll forward to a valid worker template so the rollout completes.
+		updateWorkerImage("docker.io/nginxinc/nginx-unprivileged:1.27", "new-worker-name")
+
 		// Rolling update completes.
 		testing.ExpectValidLeaderStatefulSet(ctx, k8sClient, lws, 4)
 		testing.ExpectValidWorkerStatefulSets(ctx, lws, k8sClient, true)
