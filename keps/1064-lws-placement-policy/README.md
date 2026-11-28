@@ -10,6 +10,7 @@
     - [Story 1: One replica per domain](#story-1-one-replica-per-domain)
     - [Story 2: One subgroup per domain](#story-2-one-subgroup-per-domain)
     - [Story 3: Moving off the annotations](#story-3-moving-off-the-annotations)
+    - [Story 4: A capacity-first inference pool](#story-4-a-capacity-first-inference-pool)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
@@ -38,6 +39,7 @@
   - [Alternative 3: Keep only the annotations](#alternative-3-keep-only-the-annotations)
   - [Alternative 4: Wait for exclusive placement in kube-scheduler](#alternative-4-wait-for-exclusive-placement-in-kube-scheduler)
   - [Alternative 5: Nest the policy in leaderWorkerTemplate and subGroupPolicy](#alternative-5-nest-the-policy-in-leaderworkertemplate-and-subgrouppolicy)
+  - [Alternative 6: A separate scope field next to type](#alternative-6-a-separate-scope-field-next-to-type)
 <!-- /toc -->
 
 ## Summary
@@ -47,6 +49,14 @@ This KEP graduates LeaderWorkerSet exclusive placement from the
 `leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology` annotations to a typed
 top-level field, `spec.placementPolicy`, with replica-level placement on the
 policy itself and subgroup-level placement in `spec.placementPolicy.subGroup`.
+
+It extends the policy with the two dimensions the annotations never had. An
+`enforcement` — `Required` (the default) or `Preferred` — decides what happens
+when no free domain remains: wait for one, or share a replica's domain. A
+`scope` — `All` (the default) or `Own` — decides which pods the exclusivity
+repels: every LeaderWorkerSet, or only this LeaderWorkerSet's own replicas, so
+unrelated LeaderWorkerSets can share the domains
+(kubernetes-sigs/lws#1311).
 
 The field keeps the annotations' semantics exactly. It follows the shape of the
 DisaggregatedSet placement policy from [KEP-848](/keps/848-disaggregatedset-placement-policy),
@@ -70,6 +80,23 @@ through annotations:
 3. **Ergonomics.** Placement at both levels is easier to read and review as one
    policy next to the other top-level LWS policies, such as `spec.scheduling`,
    `spec.networkConfig` and `spec.startupPolicy`.
+4. **The shape of the field is too narrow for capacity-first clusters.** The
+   first iteration of the field mirrored the annotation: exclusive against
+   every LeaderWorkerSet in the namespace, and a hard constraint. On real
+   clusters that surfaced two gaps. First, keeping one's own replicas apart
+   should not monopolize each domain against unrelated workloads
+   (kubernetes-sigs/lws#1311): the empty capacity in a domain is only reusable
+   by other workloads when they exist, and on a single-tenant GPU cluster it
+   simply idles. Second, with a required anti-affinity the field forces
+   "perfectly spread or not running at all": once every domain holds a replica,
+   the next replica stays Pending while the domains still have room
+   (kubernetes-sigs/lws#1324). For inference pools a Pending replica is a
+   deterministic loss, and a co-located replica is survivable — a domain
+   failure displaces it only for the minutes Kubernetes takes to rebuild it
+   elsewhere. `topologySpreadConstraints` exposes the same choice as
+   `whenUnsatisfiable`, and pod anti-affinity has required and preferred forms;
+   the field gains both a scope and an enforcement so the user picks the
+   failure mode.
 
 Workload-aware scheduling does not cover this today. KEP-5732 keeps a PodGroup
 inside one topology domain but does not keep other PodGroups out of it, so it
@@ -87,19 +114,21 @@ rather than waiting on that discussion.
    path that does not replace running groups.
 4. Keep the KEP-666 WAS exclusion and the DisaggregatedSet placement conflict
    check correct for both the field and the annotations.
+5. An `enforcement` (`Required` or `Preferred`) and a `scope` (`All` or `Own`)
+   at both levels: `scope: Own` keeps unrelated LeaderWorkerSets out of the
+   repelled set. The defaults resolve to exactly today's behavior.
 
 ### Non-Goals
 
-1. Changing what exclusive placement means. The scope stays as it is today.
-2. Combining replica-level exclusive placement with WAS gang scheduling or
+1. Combining replica-level exclusive placement with WAS gang scheduling or
    topology constraints. This stays rejected, as KEP-666 validation rule 10 does
    for the annotation.
-3. Exclusive placement in kube-scheduler. That is the subject of
+2. Exclusive placement in kube-scheduler. That is the subject of
    kubernetes/kubernetes#142690.
-4. Best-effort (preferred) placement. Like the annotations, the field is a hard
-   constraint.
-5. Removing the annotations. See [Open Questions](#open-questions).
-6. Integrating the policy with Kueue topology-aware scheduling. The two stay
+3. Making the weight of the preferred enforcement configurable. It is fixed at
+   100 for now; see [Open Questions](#open-questions).
+4. Removing the annotations. See [Open Questions](#open-questions).
+5. Integrating the policy with Kueue topology-aware scheduling. The two stay
    alternatives; see
    [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling).
 
@@ -109,14 +138,27 @@ Add an optional `spec.placementPolicy` to `LeaderWorkerSetSpec` with:
 
 - `type`: `None` (default) or `ExclusiveTopology`, for each replica.
 - `topology`: the node-label key that defines a replica's domain. Required when
-  `type` is `ExclusiveTopology`.
-- `subGroup`: an optional `type` and `topology` pair for each subgroup.
+  `type` is not `None`.
+- `scope`: `All` (default) or `Own` — which pods the exclusive anti-affinity
+  repels: every LeaderWorkerSet and DisaggregatedSet pod, or only this
+  LeaderWorkerSet's own replicas.
+- `enforcement`: `Required` (default) or `Preferred`.
+- `subGroup`: an optional `type`, `topology`, `scope` and `enforcement` set for
+  each subgroup.
 
 `ExclusiveTopology` on `spec.placementPolicy` behaves like the
 `exclusive-topology` annotation, and on `spec.placementPolicy.subGroup` like the
-`subgroup-exclusive-topology` annotation. The controller applies the field
-through the same pod-template annotations it propagates today, so the pod
-webhook and the pods it produces do not change.
+`subgroup-exclusive-topology` annotation. `scope: All` is the annotation's
+behavior: every other group is repelled. `scope: Own` scopes the exclusivity to
+the LeaderWorkerSet itself: only its own replicas are kept out of a domain, so
+unrelated LeaderWorkerSets may share it. `Required`
+keeps the injected anti-affinity required, so a replica without a free domain
+stays Pending; `Preferred` makes it a weighted scheduling preference (weight
+100), so the scheduler keeps replicas apart while a free domain remains and
+co-locates them afterwards.
+
+The controller applies the field through the same pod-template annotations it
+propagates today, so the pod webhook and the pods it produces do not change.
 
 ### User Stories
 
@@ -142,10 +184,43 @@ An operator with existing manifests keeps them unchanged after upgrading. LWS
 warns that the annotations are deprecated, and the operator moves each manifest
 to the field on their own schedule. The move does not replace running groups.
 
+#### Story 4: A capacity-first inference pool
+
+An inference team runs four replicas of a serving workload across three racks
+and cares about capacity more than about strict isolation. With
+`type: ExclusiveTopology, scope: Own` and `enforcement: Preferred`, the replicas
+spread over the
+racks while free ones remain, and the fourth replica co-locates instead of
+staying Pending, so the pool serves at full capacity. The racks' remaining
+resources are used, and a rack failure displaces the replicas on it only for the
+minutes Kubernetes takes to rebuild them on the surviving racks. With
+`ExclusiveTopology`, keeping the replicas apart would also lock unrelated
+workloads out of the racks, and with `Required` the fourth replica would sit
+Pending while capacity is idle.
+
 ### Notes/Constraints/Caveats
 
-- `ExclusiveTopology` is a hard constraint, as the annotation is. Without enough
-  free domains, pods stay Pending.
+- `ExclusiveTopology` with the default `All` scope and `Required` enforcement is
+  a hard constraint, as the annotation is. Without enough free domains, pods
+  stay Pending.
+- `ExclusiveTopology` with the default `All` scope and `Preferred` is the same
+  global repulsion, softened:
+  another LeaderWorkerSet is repelled only while a free domain remains, and two
+  replicas may share a domain once none does. This is the global-but-soft form,
+  for workloads that keep other LeaderWorkerSets out when they can. It is not
+  appropriate for hardware-sliced accelerators, which need one domain per
+  replica and therefore `Required`; the capacity-first case is what
+  `scope: Own` is for.
+- `Preferred` makes the replica-level anti-affinity a weighted preference
+  (weight 100). The scheduler keeps replicas apart while a free domain remains;
+  once every domain holds a replica, every domain is penalized equally and the
+  next replica co-locates with whichever sibling the remaining scores pick. This
+  is best-effort repulsion, not a guaranteed even split — the replicas may land
+  together rather than in a balanced packing.
+- The replica's own pods stay co-located by the required affinity at every
+  enforcement; that term does not soften.
+- `Preferred` and `scope: Own` are only expressible through the field, never
+  through the annotations, so no existing manifest changes behavior.
 - At replica level only the leader carries the affinity terms. The worker
   StatefulSet is created once the leader is scheduled, and workers follow the
   leader's domain through a node selector. This KEP keeps that behavior.
@@ -179,6 +254,13 @@ Release notes call it out. An upgrade alone, or moving a value between the
 annotation and the field, keeps the revision. See
 [Update Semantics](#update-semantics).
 
+**Risk**: `Preferred` trades the isolation guarantee for capacity: a domain can
+hold several replicas, and a domain failure displaces all of them at once.
+
+**Mitigation**: The mode is opt-in and both defaults stay `Required`, so an
+upgraded object keeps today's behavior. Concept docs call out the trade, and
+`Preferred` is never expressible through the annotations.
+
 **Risk**: WAS later adds exclusive placement with different semantics, leaving
 LWS with two APIs for one concept.
 
@@ -191,17 +273,43 @@ kubernetes/kubernetes#142690 settles.
 ### API
 
 ```go
-// PlacementType selects the placement guarantee.
+// PlacementType selects the topology placement guarantee.
 // +kubebuilder:validation:Enum=None;ExclusiveTopology
 type PlacementType string
+
+// PlacementScope selects the pods an exclusive placement repels.
+// +kubebuilder:validation:Enum=All;Own
+type PlacementScope string
+
+// PlacementEnforcement selects how the exclusive placement is enforced.
+// +kubebuilder:validation:Enum=Required;Preferred
+type PlacementEnforcement string
 
 const (
 	// PlacementNone injects no placement affinity. This is the default.
 	PlacementNone PlacementType = "None"
+
 	// PlacementExclusiveTopology places all pods of the scope (a replica or a
-	// subgroup) in one topology domain that no other LeaderWorkerSet replica or
-	// subgroup in the namespace occupies.
+	// subgroup) in one topology domain. The scope decides which other pods are
+	// kept out of it.
 	PlacementExclusiveTopology PlacementType = "ExclusiveTopology"
+
+	// PlacementScopeAll repels every LeaderWorkerSet and DisaggregatedSet pod
+	// from the domain. This is the behavior the annotations always had.
+	PlacementScopeAll PlacementScope = "All"
+
+	// PlacementScopeOwn repels only this LeaderWorkerSet's own replicas, so
+	// replicas of other LeaderWorkerSets may share the domain.
+	PlacementScopeOwn PlacementScope = "Own"
+
+	// PlacementRequired keeps the injected anti-affinity required, so a group
+	// without a free domain stays Pending. This is the default.
+	PlacementRequired PlacementEnforcement = "Required"
+
+	// PlacementPreferred makes the group-level anti-affinity a scheduling
+	// preference, so the scheduler co-locates the groups once it runs out of
+	// domains.
+	PlacementPreferred PlacementEnforcement = "Preferred"
 )
 
 type LeaderWorkerSetSpec struct {
@@ -220,9 +328,21 @@ type PlacementPolicy struct {
 	Type PlacementType `json:"type,omitempty"`
 
 	// Topology is the node-label key that defines a replica topology domain.
-	// Required when Type is ExclusiveTopology.
+	// Required when Type is not None.
 	// +optional
 	Topology string `json:"topology,omitempty"`
+
+	// Scope selects the pods the exclusive anti-affinity repels. Defaults to
+	// All.
+	// +optional
+	// +kubebuilder:default=All
+	Scope PlacementScope `json:"scope,omitempty"`
+
+	// Enforcement selects how the exclusive placement is enforced. Defaults to
+	// Required.
+	// +optional
+	// +kubebuilder:default=Required
+	Enforcement PlacementEnforcement `json:"enforcement,omitempty"`
 
 	// SubGroup configures topology placement for each subgroup within a replica.
 	// +optional
@@ -236,9 +356,21 @@ type SubGroupPlacementPolicy struct {
 	Type PlacementType `json:"type,omitempty"`
 
 	// Topology is the node-label key that defines a subgroup topology domain.
-	// Required when Type is ExclusiveTopology.
+	// Required when Type is not None.
 	// +optional
 	Topology string `json:"topology,omitempty"`
+
+	// Scope selects the pods the exclusive anti-affinity repels, as at the
+	// replica level. Defaults to All.
+	// +optional
+	// +kubebuilder:default=All
+	Scope PlacementScope `json:"scope,omitempty"`
+
+	// Enforcement selects how the exclusive placement is enforced, as at the
+	// replica level. Defaults to Required.
+	// +optional
+	// +kubebuilder:default=Required
+	Enforcement PlacementEnforcement `json:"enforcement,omitempty"`
 }
 ```
 
@@ -249,17 +381,53 @@ DisaggregatedSet roles embed `LeaderWorkerSetSpec`, so a role sets it at
 `spec.roles[i].spec.placementPolicy`, beside `spec.placementPolicy` on the
 DisaggregatedSet.
 
+`type` stays `None | ExclusiveTopology` and gains two orthogonal siblings:
+`scope` (`All | Own`) selects which pods the anti-affinity repels, and
+`enforcement` (`Required | Preferred`) selects the hard or soft form. A separate
+scope field was chosen over a new `type` value such as `ExclusiveSet`. The
+`Exclusive<Unit>` values in this repo read as "a unit occupies a domain":
+DisaggregatedSet's `ExclusiveSlice` co-locates a slice's roles in one domain,
+the opposite emphasis from the spread `scope: Own` performs. Keeping
+`type: ExclusiveTopology` also preserves the value already in main and avoids a
+rename. `None` and `ExclusiveTopology` keep their names and behavior unchanged;
+the defaults (`scope: All`, `enforcement: Required`) resolve to exactly today's
+semantics. See [Alternative 6](#alternative-6-a-separate-scope-field-next-to-type).
+
 ### Semantics
 
-`ExclusiveTopology` means exactly what the matching annotation means today:
+`ExclusiveTopology` with the default `scope: All` and `Required` enforcement
+means exactly what the matching annotation means today:
 
 - **Replica level**: required pod affinity to the replica's own pods and required
   pod anti-affinity to pods of any other LeaderWorkerSet replica in the same
   namespace, both keyed on `topology`.
 - **Subgroup level**: the same terms, scoped to subgroups.
 
+With `scope: All` and `Preferred` the terms are unchanged; only the
+anti-affinity moves to the preferred list, so the repulsion is still global but
+yields to capacity once no free domain remains. That combination is for keeping
+other LeaderWorkerSets out when possible, never for a hardware slice that
+relies on the hard guarantee.
+
 Pods that do not carry LeaderWorkerSet labels can still share the domain unless
 taints are used, as today.
+
+`scope: Own` injects the same affinity and narrows the anti-affinity to the
+LeaderWorkerSet's own replicas: the selector repels pods whose group-key label
+exists and is not this group's, and additionally carries this set's name label,
+so replicas of other LeaderWorkerSets are not repelled.
+
+`enforcement` chooses the list the anti-affinity term lands in, not its
+contents, at both levels:
+
+- **Required** (default): the term goes into the required list. A replica
+  without a free domain stays Pending.
+- **Preferred**: the term goes into the preferred list with weight 100. The
+  scheduler penalizes a domain that already holds a sibling but may still pick
+  it; when every free domain is exhausted the replicas co-locate.
+
+The group's own pods stay co-located by the required pod affinity at either
+enforcement; exclusivity never softens the intra-group cohesion.
 
 ### How the Field Is Applied
 
@@ -267,10 +435,20 @@ taints are used, as today.
 the annotation second, into the revision (see
 [Update Semantics](#update-semantics)). The LeaderWorkerSet controller writes
 the effective topology key into the leader pod template annotations it
-propagates today. The pod controller copies the key from the group's leader pod
-into the worker StatefulSet template, since the leader was created from the
-group's own revision. The pod webhook builds the affinity terms from those pod
-annotations and does not change.
+propagates today, plus an `exclusive-scope` annotation when the scope is `Own`,
+an `exclusive-enforcement` annotation when the enforcement is `Preferred`, and
+the subgroup forms when `subGroup` is set — the non-default
+values only, so an upgrade or a migration between the annotation and the field
+does not change the template. The pod controller copies the keys from the
+group's leader pod into the worker StatefulSet template, since the leader was
+created from the group's own revision. The pod webhook builds the affinity terms
+from those pod annotations: the scope decides the selector and the enforcement
+decides the target list.
+
+The annotations are part of the leader pod template, so a scope or enforcement
+change is a template change and rolls out through a new revision, like a
+topology change. Default values are never stamped, so an upgrade or a migration
+between the annotation and the field does not change the template.
 
 Every other reader of the LeaderWorkerSet annotations moves to the same
 resolver:
@@ -287,10 +465,12 @@ resolver:
 | Condition | Rule |
 | --- | --- |
 | `type: ExclusiveTopology` at either level | `topology` must be a valid label key. |
-| `type: None` or unset at either level | `topology` must be empty. |
+| `type: None` or unset at either level | `topology` must be empty, `scope` must be unset or `All`, and `enforcement` must be unset or `Required`. |
+| `exclusive-scope`, `exclusive-enforcement`, or their subgroup forms set by a user in the pod templates | Rejected. The controller manages these annotations; a user-set value could silently relax the guarantee the policy asks for. A value unchanged from the previous template is allowed so objects that already carry one remain updatable. |
+| The same internal annotations on a DisaggregatedSet role's pod templates | Rejected by the DisaggregatedSet webhook, so a DisaggregatedSet cannot admit a role whose child LeaderWorkerSet admission would then reject. |
 | `placementPolicy.subGroup` without subgroups defined | Rejected, as the annotation is today without `subGroupSize`. See [Interaction With SubGroup Placement](#interaction-with-subgroup-placement). |
 | Both levels set | The two `topology` keys must differ, because one domain cannot hold a replica exclusively and each of its subgroups exclusively. Checked only when `placementPolicy` is set, so an object that sets both levels through the annotations alone is validated as before and an existing one stays updatable. |
-| Field and annotation both set for one level | Rejected if the field is `ExclusiveTopology` with a different key. A level whose `type` is `None` uses the annotation, since the API server defaults `type` to `None` whenever `placementPolicy` is set, including when only `subGroup` is. |
+| Field and annotation both set for one level | Rejected if the field is `ExclusiveTopology, scope: All` with a different key. `scope: Own` is rejected while the annotation of the same level is set at all, even on the same key, because the annotation repels every workload and would silently widen the repelled set. The check reads the LWS metadata annotation: an annotation on a pod template is inert whenever the field sets that level, since the controller stamps the field topology over it, and only produces the deprecation warning. A level whose `type` is `None` uses the annotation, since the API server defaults `type` to `None` whenever `placementPolicy` is set, including when only `subGroup` is. |
 | Replica-level policy or annotation with WAS gang or topology constraints at the selected level | Rejected, as rule 10 does for the annotation today. Subgroup-level placement stays allowed. See [Interaction With Workload-Aware Scheduling](#interaction-with-workload-aware-scheduling). |
 | Non-`None` policy on a template that carries Kueue topology annotations | Admission warning. See [Interaction With Kueue Topology-Aware Scheduling](#interaction-with-kueue-topology-aware-scheduling). |
 
@@ -298,7 +478,7 @@ resolver:
 
 | Phase | Behavior |
 | --- | --- |
-| Alpha | The field and the annotations are both accepted. Admission returns a warning when an annotation is used. Conflicting values are rejected. |
+| Alpha | The field and the annotations are both accepted. Admission returns a warning when an annotation is used. Conflicting values are rejected, and switching to `scope: Own` requires removing the same level's annotation in the same update. |
 | Later | No automatic migration is planned. Removing the annotations is left to a later update of this KEP. |
 
 Because `getPatch` hashes the effective placement rather than the raw field,
@@ -307,6 +487,12 @@ operator does it in one update or adds the matching field first and removes the
 annotation later. No group is replaced, and every revision carries its own
 placement, so a group still on an old revision keeps its constraint when its
 worker StatefulSet is rebuilt.
+
+Moving to `scope: Own` has one extra step: remove the annotation in the same
+update as the scope change, or move to the matching `ExclusiveTopology,
+scope: All` field first and remove the annotation before switching. The
+annotation repels every workload, so the two cannot be combined; removing it
+without setting the field drops the placement.
 
 Revisions created before this change carry no placement in their data. The
 worker StatefulSet takes its key from the group's leader pod in every case, so a
@@ -345,6 +531,14 @@ every required term. Once the first group of a slice is placed, no pod matches
 both terms for the next group, role or subgroup, so kube-scheduler places it in
 another domain and splits the slice. Composing them, for example a slice per
 rack with a group per host, is therefore not supported.
+
+The role's pod templates are also validated the way the child LeaderWorkerSet
+would be: the controller-managed `exclusive-scope`, `exclusive-enforcement` and
+their subgroup forms are rejected at DisaggregatedSet admission, and the
+field-versus-annotation rules above apply to the role's placement policy. Without
+this the DisaggregatedSet would be admitted and the child LeaderWorkerSet it
+creates would be rejected by the LeaderWorkerSet webhook, so the
+DisaggregatedSet could never create the role.
 
 ### Interaction With Kueue Topology-Aware Scheduling
 
@@ -422,6 +616,12 @@ annotation. Both sources produce the same revision, so:
    moving between the annotation and the field keeps the revision, and a
    placement change creates a new revision, as on any other revision.
 
+Only an `Own` scope and a `Preferred` enforcement are recorded, since they are
+the only values that change the injected affinity: `All` and `Required` resolve
+as the absent fields, so an object created before this change keeps its hash and
+does not roll on upgrade. Any scope or enforcement change that alters the
+injected terms creates a new revision under the existing rules.
+
 The field is not defaulted when absent, and an absent policy hashes the same as
 `type: None`, so objects without placement keep their revision.
 
@@ -457,6 +657,16 @@ Each question has a proposed answer for reviewers to confirm.
 5. **Combining with Kueue TAS.** Warn at admission. Rejecting would make LWS
    validation depend on Kueue's annotation names, and a warning is enough while
    the combination stays unsupported.
+6. **Preferred anti-affinity vs `topologySpreadConstraints` `ScheduleAnyway`.**
+   The preferred anti-affinity is chosen for now, with a fixed weight of 100.
+   The difference shows up exactly when domains run out: a soft anti-affinity
+   may pile several replicas onto one domain, while `ScheduleAnyway` spread aims
+   for a bounded skew. Happy to reshape per review.
+7. **Configurable weight.** Not in this iteration. A fixed 100 is the maximum
+   weight the inter-pod affinity plugin supports, so spreading is the strongest
+   preference that plugin can express; it is a preference, not a guarantee
+   against the other plugins' scores. Exposing the knob can follow if a use case
+   appears.
 
 ### Test Plan
 
@@ -479,15 +689,22 @@ None identified.
   placement accepted with WAS constraints.
 - `pkg/webhooks/disaggregatedset`: `validatePlacement` rejects a role with
   replica or subgroup exclusive placement, from the field or the annotation, on
-  any topology key, when the DisaggregatedSet `placementPolicy` is not `None`.
+  any topology key, when the DisaggregatedSet `placementPolicy` is not `None`;
+  and the internal `exclusive-scope`/`exclusive-enforcement` annotations on a
+  role's pod templates are rejected, matching the LeaderWorkerSet webhook.
 - `pkg/utils/disaggregatedset`: `ComputeRevisionV1` changes when a role's
-  `spec.placementPolicy` sets, changes or clears exclusive placement, and keeps
-  the existing hash for roles without exclusive placement.
+  `spec.placementPolicy` sets, changes or clears exclusive placement or its
+  scope, and keeps the existing hash for roles without exclusive placement.
+- `pkg/webhooks`: the injected terms for both scopes and both enforcements,
+  including the set-scoped selector and the preferred weight; the guard
+  recognizes injected required and preferred terms by their selector and does
+  not skip the injection for user-declared terms on the same topology key.
 - `pkg/utils/revision`: the annotation and the field produce the same revision;
   a LeaderWorkerSet without placement keeps its revision; a revision created
   before this change still matches after the upgrade; changing the effective
   placement creates a new revision; `ApplyRevision` restores placement from the
-  revision and clears the field for revisions without it.
+  revision and clears the field for revisions without it; an `All` scope and a
+  `Required` enforcement hash as the absent fields.
 
 ##### Integration tests
 
@@ -508,7 +725,11 @@ None identified.
 
 LeaderWorkerSet e2e has no exclusive-placement case today. Add one that labels
 kind nodes with a topology key and checks that each replica lands in its own
-domain, once with the field and once with the annotation.
+domain, once with the field and once with the annotation. Extend it to the new
+matrix: two unrelated `scope: Own` workloads share a domain, a `Required`
+sibling stays Pending on a single domain, a `Preferred` sibling co-locates, and
+an `ExclusiveTopology, scope: All` replica refuses to share with any other
+workload.
 
 ### Graduation Criteria
 
@@ -541,22 +762,38 @@ domain, once with the field and once with the annotation.
   exclusive placement on any topology key again, since the slice and group
   affinity terms cannot both hold, and unversioned DisaggregatedSet revisions
   include the role's `spec.placementPolicy`.
+- 2026-11-16: Revised after review: add the `enforcement` (Required / Preferred)
+  and the set-scoped placement.
+- 2026-11-17: Revised with the implementation: the field-versus-annotation
+  conflict is checked on the LWS metadata only, since a template annotation is
+  inert once the field sets the level; documented `ExclusiveTopology` with
+  `Preferred` and the role-template validation on the DisaggregatedSet side.
+- 2026-11-17: Revised after review: the set scope is an orthogonal `scope` field
+  (`All | Own`) next to `type`, not a new `type` value. `ExclusiveTopology` and
+  its default semantics stay unchanged, so no existing object or manifest
+  changes; switching to `scope: Own` requires removing the same level's
+  annotation.
 
 ## Drawbacks
 
 1. Two ways to express the same constraint until the annotations are retired.
 2. A LeaderWorkerSet-specific placement API next to WAS, which may need a mapping
    later.
+3. `Preferred` weakens the isolation guarantee the feature was originally built
+   for. It stays opt-in, but two failure modes now exist.
 
 ## Alternatives
 
 ### Alternative 1: Reuse the DisaggregatedSet type
 
 **Rejected because** DisaggregatedSet's `PlacementPolicy` includes
-`ExclusiveSlice`, which has no meaning for LeaderWorkerSet, and its
-`ExclusiveTopology` is scoped to slices across DisaggregatedSets. A shared type
-would expose values that LeaderWorkerSet must reject, and the same value name
-would mean a different scope in each API.
+`ExclusiveSlice`, which aggregates a slice's roles in one domain — the opposite
+emphasis from the spread this API needs — and its `ExclusiveTopology` is scoped
+to slices across DisaggregatedSets. A shared type would expose values that
+LeaderWorkerSet must reject, and the same value name would mean a different
+scope in each API. The later `scope: Own` reuses `ExclusiveTopology` as the
+placement pattern and adds the repulsion boundary as a separate field, so the
+same value name does not carry a different scope in each API.
 
 ### Alternative 2: Express exclusivity through spec.scheduling
 
@@ -585,3 +822,19 @@ policies, and puts `placementPolicy` next to KEP-859's `subGroupPlacement` in
 `SubGroupPolicy`. Living inside `leaderWorkerTemplate` was also not needed to
 make the field part of the revision, since `getPatch` already includes the
 top-level `spec.networkConfig`.
+
+### Alternative 6: A separate scope field next to type
+
+Keep `type` as the placement pattern and move the exclusivity scope into a
+sibling field, so no enum value carries a scope in its name.
+
+**Adopted.** The scope is `scope: All | Own` next to `type: None |
+ExclusiveTopology`. This keeps `ExclusiveTopology` (already in main) unchanged,
+adds only orthogonal fields, and avoids an `Exclusive<Unit>` value: in this repo
+that shape reads as "a unit occupies a domain" (DisaggregatedSet's
+`ExclusiveSlice`), which is the opposite of the spread `scope: Own` performs.
+Renaming `type` to `Exclusive` and using `scope: Cluster | Set` was considered
+and rejected as a larger change: it renames a value already in main for no
+behavioral gain, and `Cluster` is inaccurate because the repulsion is
+namespace-scoped. Because the API has not shipped in a release, this is the
+cheapest time to settle the shape.
