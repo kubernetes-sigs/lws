@@ -97,8 +97,9 @@ func TestVolcanoProvider_ReconcileScheduling(t *testing.T) {
 
 			owner := metav1.GetControllerOf(&pg)
 			require.NotNil(t, owner)
-			assert.Equal(t, lws.Name, owner.Name)
-			assert.Equal(t, "LeaderWorkerSet", owner.Kind)
+			assert.Equal(t, leader.Name, owner.Name)
+			assert.Equal(t, leader.UID, owner.UID)
+			assert.Equal(t, "Pod", owner.Kind)
 		}
 	})
 

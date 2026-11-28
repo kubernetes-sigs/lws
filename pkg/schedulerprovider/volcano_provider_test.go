@@ -592,11 +592,10 @@ func TestVolcanoProvider_RecreatesPodGroupAfterGarbageCollection(t *testing.T) {
 }
 
 // TestVolcanoProvider_CreatePodGroupIfNotExists_TypedSchedulingIsNoop reproduces
-// https://github.com/kubernetes-sigs/lws/issues/1075: with spec.scheduling set,
-// ReconcileScheduling has already pre-created a PodGroup controlled by the
-// LeaderWorkerSet itself, before any leader Pod exists. CreatePodGroupIfNotExists
-// must not treat that LWS-owned PodGroup as an unexpected owner and block worker
-// creation; it must leave PodGroup ownership to ReconcileScheduling entirely.
+// https://github.com/kubernetes-sigs/lws/issues/1075: earlier releases created
+// LWS-owned PodGroups when spec.scheduling was set. CreatePodGroupIfNotExists
+// must accept a pre-upgrade PodGroup controlled by the current LeaderWorkerSet
+// without treating it as an unexpected owner or modifying it.
 func TestVolcanoProvider_CreatePodGroupIfNotExists_TypedSchedulingIsNoop(t *testing.T) {
 	ctx := context.Background()
 	lws := &leaderworkerset.LeaderWorkerSet{
@@ -759,7 +758,7 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 		assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
 	})
 
-	t.Run("ordinal identity with typed scheduling creates LWS-owned PodGroup", func(t *testing.T) {
+	t.Run("ordinal identity with typed scheduling creates leader-owned PodGroup", func(t *testing.T) {
 		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 		provider := NewVolcanoProvider(fakeClient)
@@ -777,13 +776,94 @@ func TestVolcanoProviderCreatePodGroupIfNotExistsOwnership(t *testing.T) {
 
 		owner := metav1.GetControllerOf(pg)
 		assert.NotNil(t, owner)
-		assert.Equal(t, "LeaderWorkerSet", owner.Kind)
-		assert.Equal(t, lws.Name, owner.Name)
-		assert.Equal(t, lws.UID, owner.UID)
+		assert.Equal(t, "Pod", owner.Kind)
+		assert.Equal(t, leader.Name, owner.Name)
+		assert.Equal(t, leader.UID, owner.UID)
 
 		// Subsequent call succeeds idempotently.
 		err = provider.CreatePodGroupIfNotExists(ctx, lws, leader)
 		assert.NoError(t, err)
+	})
+
+	t.Run("ordinal identity accepts LWS-owned PodGroup from earlier releases", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            GetPodGroupName(lws.Name, "0", "rev1"),
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lws, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, pg).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+	})
+
+	t.Run("ordinal identity waits for stale LWS-owned PodGroup from previous LWS UID", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
+		previousLWS := lws.DeepCopy()
+		previousLWS.UID = "previous-lws-uid"
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            GetPodGroupName(lws.Name, "0", "rev1"),
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(previousLWS, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, pg).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.Error(t, err)
+		assert.NotErrorIs(t, err, ErrUnexpectedPodGroupOwner)
+	})
+
+	t.Run("ordinal identity rejects PodGroup owned by a different LWS name", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
+		otherLWS := lws.DeepCopy()
+		otherLWS.Name = "other-lws"
+		otherLWS.UID = "other-lws-uid"
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		pg := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            GetPodGroupName(lws.Name, "0", "rev1"),
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(otherLWS, leaderworkerset.GroupVersion.WithKind("LeaderWorkerSet"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, pg).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.ErrorIs(t, err, ErrUnexpectedPodGroupOwner)
+	})
+
+	t.Run("ordinal identity with typed scheduling waits for previous leader PodGroup GC and recreates", func(t *testing.T) {
+		lws := newLWS(leaderworkerset.GroupIdentityOrdinal, true)
+		leader := createTestLeaderPod("leader-0", lws.Namespace, lws.Name, "0", "rev1")
+		previousLeader := leader.DeepCopy()
+		previousLeader.UID = "previous-leader-uid"
+		pgName := leader.Annotations[volcanov1beta1.KubeGroupNameAnnotationKey]
+		stalePG := &volcanov1beta1.PodGroup{ObjectMeta: metav1.ObjectMeta{
+			Name:            pgName,
+			Namespace:       lws.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(previousLeader, corev1.SchemeGroupVersion.WithKind("Pod"))},
+		}}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws, stalePG).Build()
+		provider := NewVolcanoProvider(fakeClient)
+
+		err := provider.CreatePodGroupIfNotExists(ctx, lws, leader)
+		assert.Error(t, err)
+		assert.NotErrorIs(t, err, ErrUnexpectedPodGroupOwner)
+
+		assert.NoError(t, fakeClient.Delete(ctx, stalePG)) // Simulate owner-reference garbage collection.
+		assert.NoError(t, provider.CreatePodGroupIfNotExists(ctx, lws, leader))
+
+		var actualPG volcanov1beta1.PodGroup
+		assert.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &actualPG))
+		owner := metav1.GetControllerOf(&actualPG)
+		if assert.NotNil(t, owner) {
+			assert.Equal(t, "Pod", owner.Kind)
+			assert.Equal(t, leader.Name, owner.Name)
+			assert.Equal(t, leader.UID, owner.UID)
+		}
 	})
 
 	t.Run("legacy mode creates leader-pod-owned PodGroup", func(t *testing.T) {
