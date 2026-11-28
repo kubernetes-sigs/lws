@@ -47,6 +47,7 @@ import (
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	"sigs.k8s.io/lws/pkg/computedomain"
 	"sigs.k8s.io/lws/pkg/features"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
@@ -99,11 +100,13 @@ func (r *DisaggregatedSetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if r.LWSManager.pending != nil {
 			r.LWSManager.pending.forget(req.NamespacedName)
 		}
+		metrics.ClearDisaggregatedSet(req.Namespace, req.Name)
 		if err == nil {
 			return ctrl.Result{}, r.cleanupComputeDomains(ctx, disaggregatedSet, 0, "")
 		}
 		return ctrl.Result{}, nil
 	}
+	metrics.InitDisaggregatedSet(disaggregatedSet.Namespace, disaggregatedSet.Name)
 
 	log.Info("Reconciling DisaggregatedSet", "name", disaggregatedSet.Name, "namespace", disaggregatedSet.Namespace)
 

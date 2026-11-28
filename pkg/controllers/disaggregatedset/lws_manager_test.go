@@ -51,6 +51,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/pkg/webhooks"
@@ -821,6 +822,14 @@ func TestDisaggregatedSetDeletingClearsPerSetCaches(t *testing.T) {
 			o.initialized[types.UID("other-child-uid")] = otherKey
 			r.LWSManager.pending = o
 
+			// Populate the metric series.
+			metrics.InitDisaggregatedSet(key.Namespace, key.Name)
+			metrics.InitDisaggregatedSet(otherKey.Namespace, otherKey.Name)
+			t.Cleanup(func() {
+				metrics.ClearDisaggregatedSet(key.Namespace, key.Name)
+				metrics.ClearDisaggregatedSet(otherKey.Namespace, otherKey.Name)
+			})
+
 			res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
 			require.NoError(t, err)
 			require.Equal(t, ctrl.Result{}, res)
@@ -841,7 +850,34 @@ func TestDisaggregatedSetDeletingClearsPerSetCaches(t *testing.T) {
 			require.Len(t, o.initialized, 1, "pending initialized must be cleared for target DisaggregatedSet")
 			require.Contains(t, o.initialized, types.UID("other-child-uid"))
 			o.mu.Unlock()
+
+			// DeleteLabelValues reports whether the series existed.
+			require.False(t, metrics.DisaggregatedSetRolloutsStartedTotal.DeleteLabelValues(key.Namespace, key.Name), "metric series must be cleared for target DisaggregatedSet")
+			require.True(t, metrics.DisaggregatedSetRolloutsStartedTotal.DeleteLabelValues(otherKey.Namespace, otherKey.Name), "other DisaggregatedSet metric series must be preserved")
 		})
+	}
+}
+
+func TestCountedRolloutsSkipOnlyRepeats(t *testing.T) {
+	var counted countedRollouts
+	for i, step := range []struct {
+		uid   types.UID
+		slice int
+		event string
+		want  bool
+	}{
+		{"uid", 0, "RollingUpdateStarted/B", true},
+		{"uid", 0, "RollingUpdateStarted/B", false},
+		{"uid", 1, "RollingUpdateStarted/B", true},
+		{"other-uid", 0, "RollingUpdateStarted/B", true},
+		{"uid", 0, "RollingUpdateCompleted/B", true},
+		{"uid", 0, "RollingUpdateCompleted/B", false},
+		// Rolling back to A and forward to B again counts B again.
+		{"uid", 0, "RollingUpdateStarted/A", true},
+		{"uid", 0, "RollingUpdateCompleted/A", true},
+		{"uid", 0, "RollingUpdateStarted/B", true},
+	} {
+		assert.Equal(t, step.want, counted.first(step.uid, step.slice, step.event), "step %d", i)
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -56,6 +57,7 @@ import (
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	"sigs.k8s.io/lws/pkg/replicagroups"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
@@ -1226,6 +1228,56 @@ func TestReconcileRevisionTransitionDoesNotUseTerminatingTargetReadiness(t *test
 	assertRevisionReplicas(t, fakeClient, "old", [2]int32{1, 1})
 }
 
+// TestReconcileRevisionTransitionCountsEachRolloutOnce checks that a stale cache,
+// which repeats the start and completion events, does not count a rollout twice.
+func TestReconcileRevisionTransitionCountsEachRolloutOnce(t *testing.T) {
+	ctx := context.Background()
+	createdAt := time.Now()
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{1, 1}, [2]int{1, 1}, [2]int{})
+	desired := resolveDesiredReplicasByRole(ds, nil)
+	fakeClient := newTestClient(revisionLWSObjects("old", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt)...)
+	recorder := events.NewFakeRecorder(100)
+	executor := &RollingUpdateExecutor{LWSManager: newTestLWSManager(fakeClient), Record: recorder}
+	// The cache does not have the target LWS objects the first reconcile creates.
+	executor.LWSManager.reader = newTestClient(revisionLWSObjects("old", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{1, 1}, createdAt)...)
+	started := metrics.DisaggregatedSetRolloutsStartedTotal.WithLabelValues(ds.Namespace, ds.Name)
+	completed := metrics.DisaggregatedSetRolloutsCompletedTotal.WithLabelValues(ds.Namespace, ds.Name)
+	startedBefore, completedBefore := testutil.ToFloat64(started), testutil.ToFloat64(completed)
+
+	_, _, err := reconcileTestTransition(ctx, executor, ds, "new", desired)
+	require.NoError(t, err)
+	_, _, err = reconcileTestTransition(ctx, executor, ds, "new", desired)
+	require.ErrorIs(t, err, errReplicaGroupsPending)
+	executor.LWSManager.reader = fakeClient
+	complete := false
+	for range 20 {
+		_, complete, err = reconcileTestTransition(ctx, executor, ds, "new", desired)
+		require.NoError(t, err)
+		if complete {
+			break
+		}
+		simulateAllReady(fakeClient)
+	}
+	require.True(t, complete)
+	// The old revision is listed until the controller deletes it, so the rollout completes again.
+	_, complete, err = reconcileTestTransition(ctx, executor, ds, "new", desired)
+	require.NoError(t, err)
+	require.True(t, complete)
+
+	seen := map[string]int{}
+	for len(recorder.Events) > 0 {
+		event := <-recorder.Events
+		for _, reason := range []string{EventReasonRollingUpdateStarted, EventReasonRollingUpdateCompleted} {
+			if strings.Contains(event, reason) {
+				seen[reason]++
+			}
+		}
+	}
+	assert.Equal(t, map[string]int{EventReasonRollingUpdateStarted: 2, EventReasonRollingUpdateCompleted: 2}, seen)
+	assert.Equal(t, 1.0, testutil.ToFloat64(started)-startedBefore, "rollouts started")
+	assert.Equal(t, 1.0, testutil.ToFloat64(completed)-completedBefore, "rollouts completed")
+}
+
 func TestOrderedRevisionCandidatesPreferUnreadyThenNewest(t *testing.T) {
 	createdAt := time.Now()
 	oldestUnready := disaggregatedsetutils.RevisionRoles{Revision: "A", Roles: map[string]*leaderworkersetv1.LeaderWorkerSet{
@@ -1326,6 +1378,8 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 	// Both roles retain positive floors. An unready old Prefill occupies
 	// the slot that would otherwise let its target start without bootstrap.
 	ds := newTwoRoleTestDisaggregatedSet([2]int32{2, 5}, [2]int{}, [2]int{1, 1})
+	surges := metrics.DisaggregatedSetRecoveryStepsTotal.WithLabelValues(ds.Namespace, ds.Name, metrics.RecoveryStepReasonBootstrapSurge)
+	surgesBefore := testutil.ToFloat64(surges)
 	result, complete := reconcileExistingForTest(t, executor, ds, "hashC")
 	assert.False(t, complete)
 	assert.Equal(t, time.Second, result.RequeueAfter)
@@ -1349,6 +1403,7 @@ func TestReconcileExistingRolloutBootstrapsThenWaitsForReadiness(t *testing.T) {
 		require.Len(t, recorder.Events, 1)
 		assert.Contains(t, <-recorder.Events, EventReasonRevisionDrainBlocked)
 	}
+	assert.Equal(t, 1.0, testutil.ToFloat64(surges)-surgesBefore, "recovery steps BootstrapSurge")
 }
 
 func TestReconcileExistingRolloutBootstrapsPastOccupiedSurge(t *testing.T) {
@@ -1368,6 +1423,8 @@ func TestReconcileExistingRolloutBootstrapsPastOccupiedSurge(t *testing.T) {
 
 func TestReconcileExistingRolloutReleasesCapacityForUnschedulableBootstrap(t *testing.T) {
 	fakeClient, executor, ds, recorder := newOccupiedSurgeRollout()
+	fallbacks := metrics.DisaggregatedSetRecoveryStepsTotal.WithLabelValues(ds.Namespace, ds.Name, metrics.RecoveryStepReasonAvailabilityFallback)
+	fallbacksBefore := testutil.ToFloat64(fallbacks)
 
 	// No ordinary step exists, so the first reconcile creates C's bootstrap
 	// Prefill. B remains complete while that Pod gets a chance to schedule.
@@ -1415,6 +1472,7 @@ func TestReconcileExistingRolloutReleasesCapacityForUnschedulableBootstrap(t *te
 	}
 	assert.Contains(t, eventsSeen, EventReasonAvailabilityFallback)
 	assert.Contains(t, eventsSeen, testRolePrefill)
+	assert.Equal(t, 1.0, testutil.ToFloat64(fallbacks)-fallbacksBefore, "recovery steps AvailabilityFallback")
 }
 
 func TestPodIsPersistentlyUnschedulable(t *testing.T) {

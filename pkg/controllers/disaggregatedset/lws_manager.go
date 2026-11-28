@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -56,6 +57,31 @@ type LeaderWorkerSetManager struct {
 	scaleMu          sync.Mutex
 	scaleWindows     map[types.UID]subRoleScaleWindow
 	observeReadiness func(context.Context, []*leaderworkersetv1.LeaderWorkerSet) (rolloutReadiness, error)
+	counted          countedRollouts
+}
+
+// countedRollouts remembers the last rollout event counted for each slice: a
+// reconcile on a stale cache repeats the event, the count must not.
+type countedRollouts struct {
+	mu   sync.Mutex
+	last *lru.Cache
+}
+
+// first reports whether event differs from the last event counted for the
+// slice of the DisaggregatedSet uid, and records it.
+func (c *countedRollouts) first(uid types.UID, slice int, event string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.last == nil {
+		// One entry per slice; an evicted entry lets at most one repeat count.
+		c.last = lru.New(4096)
+	}
+	key := fmt.Sprintf("%s/%d", uid, slice)
+	if last, found := c.last.Get(key); found && last == event {
+		return false
+	}
+	c.last.Add(key, event)
+	return true
 }
 
 func NewLeaderWorkerSetManager(c client.Client) *LeaderWorkerSetManager {

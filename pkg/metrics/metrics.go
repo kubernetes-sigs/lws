@@ -38,6 +38,17 @@ const (
 	GroupRecreateReasonUpgradeSplit = "UpgradeSplit"
 )
 
+// Reasons for a DisaggregatedSet rollout step past maxSurge or maxUnavailable,
+// the values of the reason label of DisaggregatedSetRecoveryStepsTotal.
+const (
+	// RecoveryStepReasonBootstrapSurge is a step that created a target replica
+	// without a free maxSurge slot, so that the target revision has every role.
+	RecoveryStepReasonBootstrapSurge = "BootstrapSurge"
+	// RecoveryStepReasonAvailabilityFallback is a step that retired old replicas
+	// past maxUnavailable to free capacity for unschedulable target Pods.
+	RecoveryStepReasonAvailabilityFallback = "AvailabilityFallback"
+)
+
 var (
 	// GroupRecreationsTotal counts the groups the pod controller recreated by
 	// deleting their leader pod.
@@ -70,6 +81,38 @@ var (
 			Name:      "group_restart_backoffs_total",
 			Help:      "The number of group recreations the pod controller delayed because of restartBackoff.",
 		}, []string{"namespace", "name"},
+	)
+
+	// DisaggregatedSetRolloutsStartedTotal counts the slices of a
+	// DisaggregatedSet that started rolling to a new revision.
+	DisaggregatedSetRolloutsStartedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: subsystem,
+			Name:      "disaggregatedset_rollouts_started_total",
+			Help:      "The number of DisaggregatedSet slices that started rolling to a new revision.",
+		}, []string{"namespace", "name"},
+	)
+
+	// DisaggregatedSetRolloutsCompletedTotal counts the slice rollouts whose old
+	// revisions are drained and whose target revision is Ready.
+	DisaggregatedSetRolloutsCompletedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: subsystem,
+			Name:      "disaggregatedset_rollouts_completed_total",
+			Help:      "The number of DisaggregatedSet slice rollouts that completed: the old revisions are drained and the target revision is Ready.",
+		}, []string{"namespace", "name"},
+	)
+
+	// DisaggregatedSetRecoveryStepsTotal counts the DisaggregatedSet rollout
+	// steps that went past maxSurge or maxUnavailable to unblock a rollout.
+	DisaggregatedSetRecoveryStepsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: subsystem,
+			Name:      "disaggregatedset_recovery_steps_total",
+			Help: "The number of DisaggregatedSet rollout steps that went past maxSurge or maxUnavailable to unblock the rollout, by reason: " +
+				"BootstrapSurge (a target replica created without a free maxSurge slot) " +
+				"or AvailabilityFallback (old replicas retired past maxUnavailable to release capacity for unschedulable target Pods).",
+		}, []string{"namespace", "name", "reason"},
 	)
 )
 
@@ -111,6 +154,42 @@ func ClearLeaderWorkerSet(namespace, name string) {
 	GroupRestartBackoffsTotal.DeletePartialMatch(labels)
 }
 
+// DisaggregatedSetRolloutStarted records a slice of the DisaggregatedSet
+// namespace/name that started rolling to a new revision.
+func DisaggregatedSetRolloutStarted(namespace, name string) {
+	DisaggregatedSetRolloutsStartedTotal.WithLabelValues(namespace, name).Inc()
+}
+
+// DisaggregatedSetRolloutCompleted records a completed slice rollout of the
+// DisaggregatedSet namespace/name.
+func DisaggregatedSetRolloutCompleted(namespace, name string) {
+	DisaggregatedSetRolloutsCompletedTotal.WithLabelValues(namespace, name).Inc()
+}
+
+// DisaggregatedSetRecoveryStep records a rollout step of the DisaggregatedSet
+// namespace/name that went past maxSurge or maxUnavailable for the given reason.
+func DisaggregatedSetRecoveryStep(namespace, name, reason string) {
+	DisaggregatedSetRecoveryStepsTotal.WithLabelValues(namespace, name, reason).Inc()
+}
+
+// InitDisaggregatedSet creates the series of the DisaggregatedSet namespace/name
+// at 0, so that rate() and increase() see its first rollout or recovery step.
+func InitDisaggregatedSet(namespace, name string) {
+	DisaggregatedSetRolloutsStartedTotal.WithLabelValues(namespace, name)
+	DisaggregatedSetRolloutsCompletedTotal.WithLabelValues(namespace, name)
+	DisaggregatedSetRecoveryStepsTotal.WithLabelValues(namespace, name, RecoveryStepReasonBootstrapSurge)
+	DisaggregatedSetRecoveryStepsTotal.WithLabelValues(namespace, name, RecoveryStepReasonAvailabilityFallback)
+}
+
+// ClearDisaggregatedSet removes the series of the DisaggregatedSet namespace/name,
+// so a deleted DisaggregatedSet does not keep them until the manager restarts.
+func ClearDisaggregatedSet(namespace, name string) {
+	labels := prometheus.Labels{"namespace": namespace, "name": name}
+	DisaggregatedSetRolloutsStartedTotal.DeletePartialMatch(labels)
+	DisaggregatedSetRolloutsCompletedTotal.DeletePartialMatch(labels)
+	DisaggregatedSetRecoveryStepsTotal.DeletePartialMatch(labels)
+}
+
 // Register registers the LWS metrics with the controller-runtime registry,
 // which the manager serves on its metrics endpoint.
 func Register() {
@@ -118,5 +197,8 @@ func Register() {
 		GroupRecreationsTotal,
 		GroupRestartBudgetExhaustedTotal,
 		GroupRestartBackoffsTotal,
+		DisaggregatedSetRolloutsStartedTotal,
+		DisaggregatedSetRolloutsCompletedTotal,
+		DisaggregatedSetRecoveryStepsTotal,
 	)
 }

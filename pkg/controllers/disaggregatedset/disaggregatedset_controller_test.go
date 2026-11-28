@@ -40,6 +40,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	controller "sigs.k8s.io/lws/pkg/controllers/disaggregatedset"
+	"sigs.k8s.io/lws/pkg/metrics"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	"sigs.k8s.io/lws/test/wrappers"
 )
@@ -853,6 +854,30 @@ func TestDisaggregatedSetDeletingDoesNotReconcile(t *testing.T) {
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: disaggregatedSet.Name, Namespace: disaggregatedSet.Namespace}, &stored))
 	assert.Empty(t, stored.Status.RoleStatuses)
 	assert.Empty(t, stored.Status.Conditions)
+}
+
+func TestDisaggregatedSetReconcilerInitializesMetrics(t *testing.T) {
+	scheme := wrappers.DisaggregatedSetTestScheme()
+	ds := wrappers.BuildDisaggregatedSet("metrics-init", "default").
+		WithRole(testControllerRolePrefill, 1, "nginx:1.0").
+		Obj()
+	metrics.ClearDisaggregatedSet(ds.Namespace, ds.Name)
+	t.Cleanup(func() { metrics.ClearDisaggregatedSet(ds.Namespace, ds.Name) })
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ds).
+		WithStatusSubresource(&disaggregatedsetv1.DisaggregatedSet{}, &leaderworkersetv1.LeaderWorkerSet{}).Build()
+
+	_, err := newTestDisaggregatedSetReconciler(fakeClient, scheme).Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)})
+	require.NoError(t, err)
+
+	// DeleteLabelValues reports whether the series existed.
+	for name, existed := range map[string]bool{
+		"rollouts_started_total":                    metrics.DisaggregatedSetRolloutsStartedTotal.DeleteLabelValues(ds.Namespace, ds.Name),
+		"rollouts_completed_total":                  metrics.DisaggregatedSetRolloutsCompletedTotal.DeleteLabelValues(ds.Namespace, ds.Name),
+		"recovery_steps_total BootstrapSurge":       metrics.DisaggregatedSetRecoveryStepsTotal.DeleteLabelValues(ds.Namespace, ds.Name, metrics.RecoveryStepReasonBootstrapSurge),
+		"recovery_steps_total AvailabilityFallback": metrics.DisaggregatedSetRecoveryStepsTotal.DeleteLabelValues(ds.Namespace, ds.Name, metrics.RecoveryStepReasonAvailabilityFallback),
+	} {
+		assert.True(t, existed, "the DisaggregatedSet has no %s series", name)
+	}
 }
 
 func TestCleanupRemovedSlicesSkipsDeletingLWS(t *testing.T) {

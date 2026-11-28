@@ -36,6 +36,7 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/lws/pkg/metrics"
 	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 	podutils "sigs.k8s.io/lws/pkg/utils/pod"
 )
@@ -146,9 +147,14 @@ func (executor *RollingUpdateExecutor) ReconcileRevisionTransition(
 		return ctrl.Result{RequeueAfter: time.Second}, false, nil
 	}
 	// The slice was used above to discover the relevant LWS objects. Continuing
-	// the rollout updates those objects by their actual names, so the executor
-	// does not need the slice index below.
-	return executor.reconcileExistingRollout(ctx, disaggregatedSet, oldRevisions, *newRevision, desiredReplicasByRole)
+	// the rollout updates those objects by their actual names, so
+	// reconcileExistingRollout does not need the slice index.
+	result, complete, err := executor.reconcileExistingRollout(ctx, disaggregatedSet, oldRevisions, *newRevision, desiredReplicasByRole)
+	// complete comes with the RollingUpdateCompleted event; count it once per slice.
+	if complete && executor.LWSManager.counted.first(disaggregatedSet.UID, slice, EventReasonRollingUpdateCompleted+"/"+revision) {
+		metrics.DisaggregatedSetRolloutCompleted(disaggregatedSet.Namespace, disaggregatedSet.Name)
+	}
+	return result, complete, err
 }
 
 // ensureDesiredRevision makes the target revision structurally complete before
@@ -171,6 +177,9 @@ func (executor *RollingUpdateExecutor) ensureDesiredRevision(
 		log.Info("Initiating new rolling update", "revision", revision)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeNormal, EventReasonRollingUpdateStarted,
 			"Update", "Started rolling update to revision %s", revision)
+		if executor.LWSManager.counted.first(disaggregatedSet.UID, slice, EventReasonRollingUpdateStarted+"/"+revision) {
+			metrics.DisaggregatedSetRolloutStarted(disaggregatedSet.Namespace, disaggregatedSet.Name)
+		}
 	}
 
 	created := false
@@ -518,6 +527,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 		roles := bootstrapSurgeRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used bootstrap surge to unblock rolling update", "roles", roles)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonBootstrapSurge, "Bootstrap", "Created one bootstrap replica for roles %v without a free maxSurge slot to preserve revision completeness", roles)
+		metrics.DisaggregatedSetRecoveryStep(disaggregatedSet.Namespace, disaggregatedSet.Name, metrics.RecoveryStepReasonBootstrapSurge)
 	}
 	if growFirst {
 		if err := drain(); err != nil {
@@ -528,6 +538,7 @@ func (executor *RollingUpdateExecutor) applyRolloutStep(
 		roles := unavailableFallbackRoleNames(inputs.allRoleNames, selectedState, selectedStep)
 		log.Info("Used availability fallback for scheduler-unschedulable target Pods", "roles", roles)
 		executor.Record.Eventf(disaggregatedSet, nil, corev1.EventTypeWarning, EventReasonAvailabilityFallback, "ReleaseCapacity", "Temporarily relaxed availability by at most one replica per role while retiring revision %s to release excess bootstrap capacity for scheduler-unschedulable target roles %v", selectedRevision.Revision, roles)
+		metrics.DisaggregatedSetRecoveryStep(disaggregatedSet.Namespace, disaggregatedSet.Name, metrics.RecoveryStepReasonAvailabilityFallback)
 	}
 	return nil
 }

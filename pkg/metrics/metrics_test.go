@@ -28,10 +28,16 @@ func resetAll(t *testing.T) {
 	GroupRecreationsTotal.Reset()
 	GroupRestartBudgetExhaustedTotal.Reset()
 	GroupRestartBackoffsTotal.Reset()
+	DisaggregatedSetRolloutsStartedTotal.Reset()
+	DisaggregatedSetRolloutsCompletedTotal.Reset()
+	DisaggregatedSetRecoveryStepsTotal.Reset()
 	t.Cleanup(func() {
 		GroupRecreationsTotal.Reset()
 		GroupRestartBudgetExhaustedTotal.Reset()
 		GroupRestartBackoffsTotal.Reset()
+		DisaggregatedSetRolloutsStartedTotal.Reset()
+		DisaggregatedSetRolloutsCompletedTotal.Reset()
+		DisaggregatedSetRecoveryStepsTotal.Reset()
 	})
 }
 
@@ -121,6 +127,49 @@ func TestInitLeaderWorkerSet(t *testing.T) {
 	}
 }
 
+func TestDisaggregatedSetCounters(t *testing.T) {
+	resetAll(t)
+
+	InitDisaggregatedSet("ns", "gone")
+	InitDisaggregatedSet("ns", "kept")
+	DisaggregatedSetRolloutStarted("ns", "gone")
+	DisaggregatedSetRolloutCompleted("ns", "gone")
+	DisaggregatedSetRecoveryStep("ns", "gone", RecoveryStepReasonBootstrapSurge)
+	DisaggregatedSetRolloutStarted("ns", "kept")
+	DisaggregatedSetRecoveryStep("ns", "kept", RecoveryStepReasonAvailabilityFallback)
+	DisaggregatedSetRecoveryStep("ns", "kept", RecoveryStepReasonAvailabilityFallback)
+
+	ClearDisaggregatedSet("ns", "gone")
+
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"disaggregatedset_rollouts_started_total", testutil.CollectAndCount(DisaggregatedSetRolloutsStartedTotal), 1},
+		{"disaggregatedset_rollouts_completed_total", testutil.CollectAndCount(DisaggregatedSetRolloutsCompletedTotal), 1},
+		{"disaggregatedset_recovery_steps_total", testutil.CollectAndCount(DisaggregatedSetRecoveryStepsTotal), 2},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s has %d series, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		got  float64
+		want float64
+	}{
+		{"rollouts started ns/kept", testutil.ToFloat64(DisaggregatedSetRolloutsStartedTotal.WithLabelValues("ns", "kept")), 1},
+		{"rollouts completed ns/kept", testutil.ToFloat64(DisaggregatedSetRolloutsCompletedTotal.WithLabelValues("ns", "kept")), 0},
+		{"recovery steps ns/kept BootstrapSurge", testutil.ToFloat64(DisaggregatedSetRecoveryStepsTotal.WithLabelValues("ns", "kept", RecoveryStepReasonBootstrapSurge)), 0},
+		{"recovery steps ns/kept AvailabilityFallback", testutil.ToFloat64(DisaggregatedSetRecoveryStepsTotal.WithLabelValues("ns", "kept", RecoveryStepReasonAvailabilityFallback)), 2},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
 func TestRegister(t *testing.T) {
 	resetAll(t)
 	Register()
@@ -128,16 +177,25 @@ func TestRegister(t *testing.T) {
 		metrics.Registry.Unregister(GroupRecreationsTotal)
 		metrics.Registry.Unregister(GroupRestartBudgetExhaustedTotal)
 		metrics.Registry.Unregister(GroupRestartBackoffsTotal)
+		metrics.Registry.Unregister(DisaggregatedSetRolloutsStartedTotal)
+		metrics.Registry.Unregister(DisaggregatedSetRolloutsCompletedTotal)
+		metrics.Registry.Unregister(DisaggregatedSetRecoveryStepsTotal)
 	})
 
 	GroupRecreated("ns", "lws", GroupRecreateReasonPodRestart)
 	GroupRestartBudgetExhausted("ns", "lws")
 	GroupRestartBackedOff("ns", "lws")
+	DisaggregatedSetRolloutStarted("ns", "ds")
+	DisaggregatedSetRolloutCompleted("ns", "ds")
+	DisaggregatedSetRecoveryStep("ns", "ds", RecoveryStepReasonBootstrapSurge)
 
 	names := []string{
 		"lws_group_recreations_total",
 		"lws_group_restart_budget_exhausted_total",
 		"lws_group_restart_backoffs_total",
+		"lws_disaggregatedset_rollouts_started_total",
+		"lws_disaggregatedset_rollouts_completed_total",
+		"lws_disaggregatedset_recovery_steps_total",
 	}
 	count, err := testutil.GatherAndCount(metrics.Registry, names...)
 	if err != nil {
