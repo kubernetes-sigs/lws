@@ -92,36 +92,30 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 	}
 	log := ctrl.LoggerFrom(ctx).WithValues("podGroup", pgName, "namespace", lws.Namespace)
 
-	// With spec.scheduling, Ordinal PodGroups are owned by the LWS since an
-	// ordinal reuses its name across restarts. Hash groups never reuse a name,
-	// so the leader owns them and they are garbage collected with it.
-	ownedByLWS := lws.Spec.Scheduling != nil && lws.Spec.GroupIdentity != leaderworkerset.GroupIdentityHash
-
 	if err := v.client.Get(ctx, types.NamespacedName{Name: pgName, Namespace: lws.Namespace}, &pg); err == nil {
 		if pg.DeletionTimestamp != nil {
 			return fmt.Errorf("waiting for podgroup %s/%s to finish deletion", pg.Namespace, pgName)
 		}
 
 		owner := metav1.GetControllerOf(&pg)
-		if ownedByLWS {
-			if owner == nil ||
-				owner.APIVersion != leaderworkerset.GroupVersion.String() ||
-				owner.Kind != "LeaderWorkerSet" ||
-				owner.Name != lws.Name {
-				return fmt.Errorf("%w: podgroup %s/%s has controller owner %+v; expected LeaderWorkerSet %s with UID %s", ErrUnexpectedPodGroupOwner, pg.Namespace, pgName, owner, lws.Name, lws.UID)
-			}
+		// Earlier releases made spec.scheduling PodGroups LWS-owned (both Ordinal
+		// and Hash). Accept PodGroups owned by the current LWS, and wait for GC
+		// if a same-name PodGroup belongs to a previous LWS UID.
+		if lws.Spec.Scheduling != nil &&
+			owner != nil &&
+			owner.APIVersion == leaderworkerset.GroupVersion.String() &&
+			owner.Kind == "LeaderWorkerSet" &&
+			owner.Name == lws.Name {
 			if owner.UID == lws.UID {
 				return nil
 			}
 			return fmt.Errorf("waiting for podgroup %s/%s owned by previous LeaderWorkerSet UID %s to be deleted; current LeaderWorkerSet UID is %s", pg.Namespace, pgName, owner.UID, lws.UID)
 		}
-		// Earlier releases made hash PodGroups LWS-owned.
-		if lws.Spec.GroupIdentity == leaderworkerset.GroupIdentityHash && owner != nil && owner.Kind == "LeaderWorkerSet" && owner.UID == lws.UID {
-			return nil
-		}
 
-		// LWS-created PodGroups are always controlled by their leader Pod in legacy annotation mode. This should not happen during
-		// normal reconciliation, so fail without modifying a same-name PodGroup with an unexpected owner.
+		// Volcano PodGroups are controlled by their leader Pod so Kubernetes
+		// garbage collection cleans them up automatically. This should not happen
+		// during normal reconciliation, so fail without modifying a same-name
+		// PodGroup with an unexpected owner.
 		if owner == nil ||
 			owner.APIVersion != corev1.SchemeGroupVersion.String() ||
 			owner.Kind != "Pod" ||
@@ -175,11 +169,7 @@ func (v *VolcanoProvider) CreatePodGroupIfNotExists(ctx context.Context, lws *le
 		pg.Spec.Queue = queueName
 	}
 
-	var controllerOwner metav1.Object = leaderPod
-	if ownedByLWS {
-		controllerOwner = lws
-	}
-	err = ctrl.SetControllerReference(controllerOwner, &pg, v.client.Scheme())
+	err = ctrl.SetControllerReference(leaderPod, &pg, v.client.Scheme())
 	if err != nil {
 		return err
 	}
