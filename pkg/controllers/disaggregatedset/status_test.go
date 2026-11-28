@@ -29,8 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,7 +41,161 @@ import (
 
 	disaggregatedsetv1 "sigs.k8s.io/lws/api/disaggregatedset/v1"
 	leaderworkersetv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	disaggregatedsetutils "sigs.k8s.io/lws/pkg/utils/disaggregatedset"
 )
+
+func TestCanaryHoldSurvivesControllerTakeover(t *testing.T) {
+	for _, change := range []string{"none", "generation", "scaler", "baseline", "other slice", "pending split"} {
+		t.Run(change, func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{1, 1}, [2]int{})
+			ds.Generation = 1
+			ds.Annotations = map[string]string{disaggregatedsetv1.RevisionHashVersionAnnotationKey: disaggregatedsetv1.RevisionHashVersion}
+			setCanaryPercent(ds, 25)
+			if change == "scaler" {
+				ds.Spec.Roles[0].Scaling = &disaggregatedsetv1.RoleScaling{Mode: disaggregatedsetv1.RoleScalingExternal}
+				ds.Spec.Roles[0].Spec.Replicas = nil
+			}
+			revision := disaggregatedsetutils.ComputeRevision(ds.Spec.Roles)
+			objects := []client.Object{ds}
+			for _, role := range testRoleNames() {
+				old := revisionLWS("old", role, 6, 6, time.Unix(1, 0), 8)
+				old.Annotations[canaryStableAnnotation] = "true"
+				target := revisionLWS(revision, role, 2, 2, time.Unix(2, 0), 8)
+				target.Status.UpdatedReplicas = 2
+				objects = append(objects, old, target)
+			}
+			if change == "other slice" {
+				ds.Spec.Slices = ptr.To[int32](2)
+				for _, object := range objects[1:] {
+					lws := object.DeepCopyObject().(*leaderworkersetv1.LeaderWorkerSet)
+					lws.Name += "-slice1"
+					lws.UID = types.UID(lws.Name)
+					lws.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+					objects = append(objects, lws)
+				}
+			}
+			c := newTestClient(objects...)
+			r := newTestReconciler(c)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ds)}
+			for range 2 {
+				_, err := r.Reconcile(t.Context(), request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds))
+			require.Equal(t, &disaggregatedsetv1.DisaggregatedSetCanaryStatus{
+				Percent: 25, Dimension: disaggregatedsetv1.CanaryDimensionGroups,
+				TargetRevision: revision, BaselineRevisions: []string{"old"}, Settled: true,
+			}, ds.Status.Canary)
+			if change == "generation" {
+				setCanaryPercent(ds, 50)
+				ds.Generation++ // The fake client does not advance generations.
+				require.NoError(t, c.Update(t.Context(), ds))
+			} else if change == "scaler" {
+				scaler := &disaggregatedsetv1.DisaggregatedSetRoleScaler{}
+				require.NoError(t, c.Get(t.Context(), client.ObjectKey{Namespace: ds.Namespace, Name: ScalerName(ds.Name, "prefill")}, scaler))
+				scaler.Spec.Replicas = 12
+				require.NoError(t, c.Update(t.Context(), scaler))
+			} else if change == "baseline" {
+				lws := &leaderworkersetv1.LeaderWorkerSet{}
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(objects[2]), lws))
+				lws.Annotations[canaryStableAnnotation] = "true"
+				require.NoError(t, c.Update(t.Context(), lws))
+			}
+
+			// Restart loses the in-memory receipts and first performs metadata-only takeover.
+			r = newTestReconciler(c)
+			r.LWSManager.pending = testPendingWrites(c)
+			if change == "other slice" || change == "pending split" {
+				// 5/3 needs to return to 6/2, even though all eight groups are Ready.
+				workloads := objects[1:]
+				if change == "other slice" {
+					// This slice is evaluated while the other is pending takeover.
+					require.ErrorIs(t, r.LWSManager.prepareSlice(t.Context(), ds, 1), errReplicaGroupsPending)
+					require.NoError(t, r.LWSManager.prepareSlice(t.Context(), ds, 1))
+					workloads = objects[5:]
+				}
+				for _, object := range workloads {
+					lws := &leaderworkersetv1.LeaderWorkerSet{}
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(object), lws))
+					count := int32(3)
+					if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == "old" {
+						count = 5
+					}
+					lws.Spec.Replicas = ptr.To(count)
+					require.NoError(t, c.Update(t.Context(), lws))
+					lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas = count, count, count
+					require.NoError(t, c.Status().Update(t.Context(), lws))
+				}
+			}
+			result, err := r.Reconcile(t.Context(), request)
+			require.NoError(t, err)
+			require.Equal(t, time.Second, result.RequeueAfter)
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			if change != "none" {
+				require.Equal(t, "RolloutInProgress", progressingReason(ds), "an old hold cannot hide a new request or observed progress")
+				require.NotNil(t, ds.Status.Canary)
+				require.False(t, ds.Status.Canary.Settled)
+				return
+			}
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds), "takeover is not rollout movement")
+			require.True(t, ds.Status.Canary.Settled)
+			for range 2 {
+				_, err := r.Reconcile(t.Context(), request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(t.Context(), request.NamespacedName, ds))
+			require.Equal(t, reasonCanaryHeld, progressingReason(ds))
+			require.Empty(t, r.Record.(*events.FakeRecorder).Events, "observing the same hold again must not emit another event")
+		})
+	}
+}
+
+func TestObservedCanaryStatus(t *testing.T) {
+	ds := newTwoRoleTestDisaggregatedSet([2]int32{8, 8}, [2]int{1, 1}, [2]int{})
+	setCanaryPercent(ds, 25)
+	ds.Spec.RolloutStrategy.Canary.Dimension = disaggregatedsetv1.CanaryDimensionSlices
+	a := revisionLWS("A", "prefill", 0, 0, time.Unix(1, 0), 8)
+	a.Annotations[canaryStableAnnotation] = "true"
+	b := a.DeepCopy()
+	b.Labels[disaggregatedsetv1.RevisionLabelKey] = "B"
+	b.Labels[disaggregatedsetv1.SliceLabelKey] = "1"
+	all := []*leaderworkersetv1.LeaderWorkerSet{b, a, a.DeepCopy()}
+	status := observedCanaryStatus(ds, "C", all)
+	require.Equal(t, &disaggregatedsetv1.DisaggregatedSetCanaryStatus{
+		Percent: 25, Dimension: disaggregatedsetv1.CanaryDimensionSlices,
+		TargetRevision: "C", BaselineRevisions: []string{"A", "B"},
+	}, status, "zero-replica baselines survive; identifiers are unique and sorted")
+	ds.Status.Canary = status
+	ds.DeepCopy().Status.Canary.BaselineRevisions[0] = "changed"
+	require.Equal(t, "A", ds.Status.Canary.BaselineRevisions[0], "deep copies must not share baseline slices")
+	for _, percent := range []int32{-1, 100} {
+		setCanaryPercent(ds, percent)
+		finalizing := observedCanaryStatus(ds, "C", all)
+		require.NotNil(t, finalizing, "finalization keeps the canary status until cleanup is observed")
+		require.EqualValues(t, 100, finalizing.Percent)
+		require.False(t, finalizing.Settled)
+		deleting := a.DeepCopy()
+		deleting.DeletionTimestamp = ptr.To(metav1.Now())
+		delete(deleting.Annotations, canaryStableAnnotation)
+		require.Equal(t, []string{"A"}, observedCanaryStatus(ds, "C", []*leaderworkersetv1.LeaderWorkerSet{deleting}).BaselineRevisions)
+		require.Nil(t, observedCanaryStatus(ds, "C", nil), "cleanup completed")
+	}
+	setCanaryPercent(ds, 25)
+	for _, target := range []string{"A", "C"} {
+		require.Nil(t, observedCanaryStatus(ds, target, nil), "initial creation has no active canary")
+	}
+	b.Labels[disaggregatedsetv1.SliceLabelKey] = "0"
+	delete(b.Annotations, canaryStableAnnotation)
+	b.Spec.Replicas = ptr.To[int32](2)
+	require.Nil(t, observedCanaryStatus(ds, "A", all), "restoring A's templates is a normal rollout")
+	delete(a.Annotations, canaryStableAnnotation)
+	status = observedCanaryStatus(ds, "C", []*leaderworkersetv1.LeaderWorkerSet{a, b})
+	require.NotNil(t, status)
+	require.Empty(t, status.BaselineRevisions, "unmarked live history must not be guessed")
+	b.Spec.Replicas = ptr.To[int32](0)
+	require.Nil(t, observedCanaryStatus(ds, "C", []*leaderworkersetv1.LeaderWorkerSet{a, b}), "unmarked empty history is not a retained baseline")
+}
 
 func TestStatusWriteCacheLifecycle(t *testing.T) {
 	ds := newDSWithRoles("ds", staticRole("prefill"))
@@ -58,7 +214,7 @@ func TestStatusWriteCacheLifecycle(t *testing.T) {
 	r.staleStatusVersions = utilcache.NewLRUExpireCacheWithClock(maxStaleStatusVersions, clock)
 	desired := map[string]int{"prefill": 1}
 	publish := func() error {
-		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil)
+		return r.updateStatus(t.Context(), ds.DeepCopy(), []string{"prefill"}, "current", desired, nil, ptr.To(false), "")
 	}
 	require.NoError(t, publish())
 	desired["prefill"] = 2
@@ -647,10 +803,51 @@ func TestServingCapacityRequiresTargets(t *testing.T) {
 			for _, workload := range tc.workloads {
 				capacity.observeWorkload(workload, workload.Labels[disaggregatedsetv1.RoleLabelKey])
 			}
-			capacity.requireTargets(ds, "current", tc.desired)
+			capacity.requireTargets(ds, "current", tc.desired, tc.workloads)
 			statuses := []disaggregatedsetv1.RoleStatus{{Name: "prefill", ReadyReplicas: 10}, {Name: "decode", ReadyReplicas: 10}}
 			capacity.setAvailableReplicas(statuses)
 			assert.Equal(t, tc.want, statuses[0].AvailableReplicas)
+		})
+	}
+}
+
+func TestCanaryServingUsesAdmittedDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		admitted, requested int
+		available           int32
+		restoreBaseline     bool
+	}{
+		{"queued zero still requires Decode", 4, 0, 1, false},
+		{"admitted zero releases Decode", 0, 0, 4, false},
+		{"queued increase does not reactivate Decode", 0, 4, 4, false},
+		{"Git rollback uses current demand", 0, 4, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newTwoRoleTestDisaggregatedSet([2]int32{4, 4}, [2]int{1, 1}, [2]int{})
+			setCanaryPercent(ds, 25)
+			objects := revisionLWSObjects("A", [2]int32{3, 3}, [2]int32{3, 0}, [2]int32{4, 4}, time.Unix(1, 0))
+			for i, object := range objects {
+				lws := object.(*leaderworkersetv1.LeaderWorkerSet)
+				lws.Annotations[canaryStableAnnotation] = "true"
+				lws.Annotations[canaryDemandAnnotation] = `{"":4}`
+				if i == 1 {
+					lws.Annotations[canaryDemandAnnotation] = fmt.Sprintf(`{"":%d}`, tc.admitted)
+				}
+			}
+			objects = append(objects, revisionLWSObjects("B", [2]int32{1, 1}, [2]int32{1, 1}, [2]int32{4, 4}, time.Unix(2, 0))...)
+			manager := newTestLWSManager(newTestClient(objects...))
+			desired := map[string]int{"prefill": 4, "decode": tc.requested}
+			target := "B"
+			if tc.restoreBaseline {
+				target = "A"
+			}
+			statuses, _, _, err := manager.collectRoleStatuses(t.Context(), ds, testRoleNames(), target, desired)
+			require.NoError(t, err)
+			require.Equal(t, tc.available, statuses[0].AvailableReplicas)
+			setMinAvailableReplicas(ds, statuses, desired, 1)
+			condition := minimumReplicasAvailableCondition(ds, statuses)
+			require.Equal(t, tc.admitted == 0 && tc.requested == 0, condition.Status == metav1.ConditionTrue)
 		})
 	}
 }
@@ -667,7 +864,7 @@ func TestUpdateStatusReportsMissingWorkloadOfCurrentRevision(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	r := newTestReconciler(c)
 	desired := map[string]int{"prefill": 2, "decode": 1}
-	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil))
+	require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", desired, nil, ptr.To(false), ""))
 	require.NoError(t, c.Get(t.Context(), key, ds))
 	assert.Zero(t, ds.Status.RoleStatuses[0].AvailableReplicas)
 	condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
@@ -709,7 +906,7 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{withMaxUnavailable(staticRole("model"), intstr.FromInt32(1))}
 		create(t, f, "model", "new", 2, 0)
 		desired := map[string]int{"model": 2}
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", desired)
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", desired)
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
 		assert.Zero(t, statuses[0].AvailableReplicas, "neither revision can serve")
@@ -721,7 +918,7 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 		f := setUp(t, true)
 		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
 		create(t, f, "model", "new", 2, 0)
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", map[string]int{"model": 2})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "new", map[string]int{"model": 2})
 		require.NoError(t, err)
 		assert.EqualValues(t, 2, statuses[0].AvailableReplicas)
 	})
@@ -730,7 +927,7 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("prefill")}
 		// The fixture's revision label is its workload name.
 		create(t, f, "prefill", "model", 1, 1, 1)
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"prefill"}, "new", map[string]int{"prefill": 1})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"prefill"}, "new", map[string]int{"prefill": 1})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
 		assert.Zero(t, statuses[0].AvailableReplicas, "the old revision cannot serve without old child b")
@@ -760,14 +957,14 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 	t.Run("dropping sub-roles in place counts the current workload as one role", func(t *testing.T) {
 		f := setUp(t, false)
 		f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
 	})
 	t.Run("removing a child in place does not require it on the current revision", func(t *testing.T) {
 		f := setUp(t, true)
 		f.ds.Spec.Roles = partitioned("a")
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 1, "model/a": 1})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 1, "model/a": 1})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
 		assert.EqualValues(t, 1, statuses[0].SubRoleStatuses[0].AvailableReplicas)
@@ -776,14 +973,14 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 		f := setUp(t, true)
 		annotate(t, f, map[string]string{subRoleReplicasAnnotation: "", disaggregatedsetv1.InitialSubRoleReplicasAnnotationKey: ""})
 		f.ds.Spec.Roles = partitioned("a", "b")
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
 		require.NoError(t, err)
 		assert.EqualValues(t, 2, statuses[0].AvailableReplicas)
 	})
 	t.Run("a current child with a positive target is still required", func(t *testing.T) {
 		f := setUp(t, false)
 		f.ds.Spec.Roles = partitioned("a", "b")
-		statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
+		statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, "model", map[string]int{"model": 2, "model/a": 1, "model/b": 1})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, statuses[0].ReadyReplicas)
 		assert.Zero(t, statuses[0].AvailableReplicas, "child b has no Ready group")
@@ -796,7 +993,7 @@ func TestCollectRoleStatusesUsesRecordedLayout(t *testing.T) {
 				f := setUp(t, false)
 				annotate(t, f, map[string]string{subRoleReplicasAnnotation: issued})
 				f.ds.Spec.Roles = []disaggregatedsetv1.DisaggregatedRoleSpec{staticRole("model")}
-				statuses, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, revision, map[string]int{"model": 2})
+				statuses, _, _, err := f.manager.collectRoleStatuses(t.Context(), f.ds, []string{"model"}, revision, map[string]int{"model": 2})
 				require.NoError(t, err)
 				assert.EqualValues(t, 1, statuses[0].AvailableReplicas)
 			})
@@ -915,7 +1112,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			key := client.ObjectKeyFromObject(ds)
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			r := newTestReconciler(c)
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, ptr.To(false), ""))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			require.Equal(t, tc.decode, ds.Status.RoleStatuses[1])
 			require.False(t, meta.IsStatusConditionTrue(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetAvailable)), "the change has not completed")
@@ -926,7 +1123,7 @@ func TestUpdateStatusSeparatesMinimumAvailabilityFromCompletion(t *testing.T) {
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(decode), decode))
 			decode.Status.ReadyReplicas = 2
 			require.NoError(t, c.Status().Update(t.Context(), decode))
-			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil))
+			require.NoError(t, r.updateStatus(t.Context(), ds, []string{"prefill", "decode"}, "current", tc.desired, nil, ptr.To(false), ""))
 			require.NoError(t, c.Get(t.Context(), key, ds))
 			condition := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetMinimumReplicasAvailable))
 			require.NotNil(t, condition)
@@ -959,6 +1156,6 @@ func TestUpdateStatusReplicaGroupsPending(t *testing.T) {
 	})
 	r := newTestReconciler(c)
 
-	err := r.updateStatus(t.Context(), ds, []string{"prefill"}, "current", map[string]int{"prefill": 1}, nil)
+	err := r.updateStatus(t.Context(), ds, []string{"prefill"}, "current", map[string]int{"prefill": 1}, nil, ptr.To(false), "")
 	require.ErrorIs(t, err, errReplicaGroupsPending)
 }

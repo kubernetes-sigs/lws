@@ -50,6 +50,142 @@ func TestValidateHashSubRoles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateCanaryPercent(t *testing.T) {
+	for _, percent := range []int32{-1, 0, 25, 100, 101} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To(percent)}},
+		}}
+		webhook := &DisaggregatedSetWebhook{}
+		_, createErr := webhook.ValidateCreate(t.Context(), ds)
+		old := ds.DeepCopy()
+		old.Spec.RolloutStrategy = nil
+		canaryTestCompleted(old)
+		_, updateErr := webhook.ValidateUpdate(t.Context(), old, ds)
+		for _, err := range []error{createErr, updateErr} {
+			if percent < 0 || percent > 100 {
+				require.ErrorContains(t, err, "between 0 and 100")
+			} else {
+				require.NoError(t, err)
+			}
+		}
+	}
+	for _, identity := range []leaderworkerset.GroupIdentityType{leaderworkerset.GroupIdentityOrdinal, leaderworkerset.GroupIdentityHash} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model", SubRoles: []disaggv1.DisaggregatedSubRoleSpec{{Name: "a"}, {Name: "b"}}}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25)}},
+		}}
+		ds.Spec.Roles[0].Spec.GroupIdentity = identity
+		_, err := (&DisaggregatedSetWebhook{}).ValidateCreate(t.Context(), ds)
+		require.NoError(t, err)
+	}
+}
+
+func TestCanaryDimension(t *testing.T) {
+	for _, mode := range []disaggv1.CanaryDimension{"", "Groups", "Slices", "groups", "slices", "auto", "Auto", "invalid"} {
+		ds := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Slices: ptr.To[int32](8), RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To[int32](25), Dimension: mode}}}}
+		w := &DisaggregatedSetWebhook{}
+		_, err := w.ValidateCreate(t.Context(), ds)
+		if mode != "" && mode != "Groups" && mode != "Slices" {
+			require.ErrorContains(t, err, "canary.dimension")
+			continue
+		}
+		require.NoError(t, err)
+		changed := ds.DeepCopy()
+		changed.Spec.Slices = ptr.To[int32](9)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		if mode == "Slices" {
+			require.ErrorContains(t, err, "slice-count changes")
+		} else {
+			require.NoError(t, err)
+		}
+		changed.Spec.Slices = ds.Spec.Slices
+		changed.Spec.RolloutStrategy.Canary.Dimension = "Groups"
+		if mode == "" || mode == "Groups" {
+			changed.Spec.RolloutStrategy.Canary.Dimension = "Slices"
+		}
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.ErrorContains(t, err, "cannot change dimension")
+		for _, percent := range []*int32{ptr.To[int32](100), nil} {
+			changed.Spec.RolloutStrategy.Canary.Percent = percent
+			_, err = w.ValidateUpdate(t.Context(), ds, changed)
+			require.NoError(t, err)
+		}
+		ds.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+		canaryTestCompleted(ds)
+		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.NoError(t, err, "a new canary can choose a different dimension")
+		changed.Spec.RolloutStrategy.Canary.Dimension = "Slices"
+		changed.Spec.Slices = ptr.To[int32](16)
+		_, err = w.ValidateUpdate(t.Context(), ds, changed)
+		require.ErrorContains(t, err, "slice-count changes", "starting a canary must not deploy new slices outside its quota")
+		changed.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](-1)
+		errs := validateCanaryUpdate(changed, ds)
+		require.Len(t, errs, 1)
+		require.Contains(t, errs[0].Detail, "between 0 and 100", "range errors take precedence over transition errors")
+	}
+}
+
+func TestCanaryPercentOnlyAdvances(t *testing.T) {
+	for _, dimension := range []disaggv1.CanaryDimension{disaggv1.CanaryDimensionGroups, disaggv1.CanaryDimensionSlices} {
+		for _, step := range [][2]int32{{0, 25}, {25, 50}, {50, 50}, {50, 25}, {25, 0}, {50, 100}, {50, -1}, {100, 25}, {-1, 25}} {
+			old := &disaggv1.DisaggregatedSet{Spec: disaggv1.DisaggregatedSetSpec{Roles: []disaggv1.DisaggregatedRoleSpec{{Name: "model"}}, RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: ptr.To(step[0]), Dimension: dimension}}}}
+			canaryTestCompleted(old)
+			if step[0] < 0 {
+				old.Spec.RolloutStrategy.Canary.Percent = nil
+			}
+			next := old.DeepCopy()
+			next.Spec.RolloutStrategy.Canary.Percent = ptr.To(step[1])
+			if step[1] < 0 {
+				next.Spec.RolloutStrategy.Canary.Percent = nil
+			}
+			_, err := (&DisaggregatedSetWebhook{}).ValidateUpdate(t.Context(), old, next)
+			if step[0] < 100 && step[0] > step[1] && step[1] >= 0 {
+				require.ErrorContains(t, err, "cannot decrease percent", "%s %v", dimension, step)
+			} else {
+				require.NoError(t, err, "%s %v", dimension, step)
+			}
+		}
+	}
+}
+
+func canaryTestCompleted(ds *disaggv1.DisaggregatedSet) {
+	ds.Status.ObservedGeneration = ds.Generation
+	ds.Status.Canary = nil
+	ds.Status.RoleStatuses = nil
+	for _, role := range ds.Spec.Roles {
+		ds.Status.RoleStatuses = append(ds.Status.RoleStatuses, disaggv1.RoleStatus{Name: role.Name, Replicas: 2, UpdatedReplicas: 2})
+	}
+}
+
+func TestCanaryWaitsForFinalization(t *testing.T) {
+	for _, percent := range []*int32{ptr.To[int32](100), nil} {
+		old := &disaggv1.DisaggregatedSet{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Spec: disaggv1.DisaggregatedSetSpec{
+			Roles:           []disaggv1.DisaggregatedRoleSpec{{Name: "model"}},
+			RolloutStrategy: &disaggv1.DisaggregatedSetRolloutStrategy{Canary: &disaggv1.DisaggregatedSetCanary{Percent: percent}},
+		}}
+		next := old.DeepCopy()
+		next.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+		for _, change := range []func(*disaggv1.DisaggregatedSet){
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.ObservedGeneration-- },
+			func(ds *disaggv1.DisaggregatedSet) {
+				ds.Status.Canary = &disaggv1.DisaggregatedSetCanaryStatus{Percent: 100}
+			},
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.RoleStatuses = nil },
+			func(ds *disaggv1.DisaggregatedSet) { ds.Status.RoleStatuses[0].UpdatedReplicas-- },
+		} {
+			canaryTestCompleted(old)
+			change(old)
+			require.NotEmpty(t, validateCanaryUpdate(next, old), "unobserved changes, old replicas, and pending baseline cleanup must block a new canary")
+		}
+		canaryTestCompleted(old)
+		old.Status.Conditions = []metav1.Condition{{Type: string(disaggv1.DisaggregatedSetAvailable), Status: metav1.ConditionFalse, ObservedGeneration: 2}}
+		old.Status.RoleStatuses[0].DesiredReplicas = ptr.To[int32](4)
+		require.Empty(t, validateCanaryUpdate(next, old), "unready groups and single-revision scale-up do not block a canary fix")
+	}
+}
+
 func TestChildAdmissionConstraints(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

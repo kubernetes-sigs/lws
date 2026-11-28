@@ -350,6 +350,53 @@ var _ = ginkgo.Describe("disaggregatedset group identity", func() {
 		gomega.Expect(fetched.Spec.Roles[1].Spec.GroupIdentity).To(gomega.Equal(leaderworkerset.GroupIdentityOrdinal))
 	})
 
+	ginkgo.DescribeTable("persists and validates the set-wide canary percentage",
+		func(identity leaderworkerset.GroupIdentityType) {
+			disagg := buildDisaggregatedSet("canary-schema").Obj()
+			disagg.Spec.Roles[0].Spec.GroupIdentity = identity
+			disagg.Spec.RolloutStrategy = &disaggregatedset.DisaggregatedSetRolloutStrategy{Canary: &disaggregatedset.DisaggregatedSetCanary{Percent: ptr.To[int32](25), Dimension: disaggregatedset.CanaryDimensionSlices}}
+			gomega.Expect(k8sClient.Create(ctx, disagg)).To(gomega.Succeed())
+			fetched := &disaggregatedset.DisaggregatedSet{}
+			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), fetched)).To(gomega.Succeed())
+			gomega.Expect(fetched.Spec.RolloutStrategy.Canary.Percent).To(gomega.HaveValue(gomega.Equal(int32(25))))
+			gomega.Expect(fetched.Spec.RolloutStrategy.Canary.Dimension).To(gomega.Equal(disaggregatedset.CanaryDimensionSlices))
+			fetched.Spec.RolloutStrategy.Canary.Dimension = "invalid"
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canary.dimension")))
+			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionSlices
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](101)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("canary.percent")))
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			fetched.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](1)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("partition is not supported")))
+			fetched.Spec.Roles[0].Spec.RolloutStrategy.RollingUpdateConfiguration.Partition = ptr.To[int32](0)
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("wait for the current rollout and baseline cleanup to finish")))
+			gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(disagg), fetched)).To(gomega.Succeed())
+			fetched.Status.ObservedGeneration = fetched.Generation
+			for _, role := range fetched.Spec.Roles {
+				fetched.Status.RoleStatuses = append(fetched.Status.RoleStatuses, disaggregatedset.RoleStatus{Name: role.Name, Replicas: 2, UpdatedReplicas: 2, DesiredReplicas: ptr.To[int32](4)})
+			}
+			fetched.Status.Conditions = []metav1.Condition{{Type: string(disaggregatedset.DisaggregatedSetAvailable), Status: metav1.ConditionFalse, ObservedGeneration: fetched.Generation, Reason: "ReplicasNotReady", Message: "single revision still starting", LastTransitionTime: metav1.Now()}}
+			gomega.Expect(k8sClient.Status().Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](25)
+			previousSlices := fetched.Spec.Slices
+			fetched.Spec.Slices = ptr.To[int32](8)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.MatchError(gomega.ContainSubstring("slice-count changes")))
+			fetched.Spec.Slices = previousSlices
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = ptr.To[int32](100)
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Dimension = disaggregatedset.CanaryDimensionGroups
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+			fetched.Spec.RolloutStrategy.Canary.Percent = nil
+			gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
+		},
+		ginkgo.Entry("Ordinal", leaderworkerset.GroupIdentityOrdinal),
+		ginkgo.Entry("Hash", leaderworkerset.GroupIdentityHash),
+	)
+
 	ginkgo.It("rejects a Hash role with volumeClaimTemplates at admission", func() {
 		disagg := buildDisaggregatedSet("gi-hash-vct").Obj()
 		disagg.Spec.Roles[0].Spec.GroupIdentity = leaderworkerset.GroupIdentityHash

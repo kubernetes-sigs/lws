@@ -1478,7 +1478,7 @@ func TestScalingDuringRolloutExposesLatestExternalTarget(t *testing.T) {
 		testRolePrefill: revisionLWS("target", testRolePrefill, 5, 0, time.Now(), 5),
 	}}
 	readTarget := func() []int {
-		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2}, nil)
+		return rolloutTargetReplicas(ds, []string{testRolePrefill}, sets.New(testRolePrefill), old, target, map[string]int{testRolePrefill: 2}, nil, scaleDownDuringRolloutEnabled(ds))
 	}
 	assert.Equal(t, []int{5}, readTarget(), "default keeps the in-flight External target")
 	ds.Spec.ScalingPolicy = &disaggregatedsetv1.DisaggregatedSetScalingPolicy{ScaleUpDuringRollout: disaggregatedsetv1.RolloutScalingImmediate}

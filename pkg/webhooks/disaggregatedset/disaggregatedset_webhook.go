@@ -88,6 +88,7 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 	rolesPath := field.NewPath("spec", "roles")
+	allErrs = append(allErrs, validateCanaryUpdate(obj, oldObj)...)
 
 	// Roles are a map-style list; reordering must preserve legacy templates.
 	oldRoles := make(map[string]*disaggv1.DisaggregatedRoleSpec)
@@ -193,6 +194,61 @@ func (w *DisaggregatedSetWebhook) validate(obj, oldObj *disaggv1.DisaggregatedSe
 	allErrs = append(allErrs, cdErrs...)
 
 	return warnings, allErrs
+}
+
+func validateCanaryUpdate(obj, old *disaggv1.DisaggregatedSet) field.ErrorList {
+	strategy := obj.Spec.RolloutStrategy
+	if strategy == nil || strategy.Canary == nil {
+		return nil
+	}
+	if percent := ptr.Deref(strategy.Canary.Percent, 100); percent < 0 || percent > 100 {
+		return field.ErrorList{field.Invalid(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), percent, "must be between 0 and 100")}
+	}
+	path := field.NewPath("spec", "rolloutStrategy", "canary", "dimension")
+	dimension := func(ds *disaggv1.DisaggregatedSet) disaggv1.CanaryDimension {
+		if ds.Spec.RolloutStrategy == nil || ds.Spec.RolloutStrategy.Canary == nil || ds.Spec.RolloutStrategy.Canary.Dimension == "" {
+			return disaggv1.CanaryDimensionGroups
+		}
+		return ds.Spec.RolloutStrategy.Canary.Dimension
+	}
+	mode := dimension(obj)
+	if mode != disaggv1.CanaryDimensionGroups && mode != disaggv1.CanaryDimensionSlices {
+		return field.ErrorList{field.NotSupported(path, mode, []string{"Groups", "Slices"})}
+	}
+	if old == nil || ptr.Deref(strategy.Canary.Percent, 100) == 100 {
+		return nil
+	}
+	if mode == disaggv1.CanaryDimensionSlices && ptr.Deref(old.Spec.Slices, 1) != ptr.Deref(obj.Spec.Slices, 1) {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "slices"), "slice-count changes are not supported when starting or continuing a partial Slices canary; finish at 100 or remove canary.percent first")}
+	}
+	if old.Spec.RolloutStrategy == nil || old.Spec.RolloutStrategy.Canary == nil || ptr.Deref(old.Spec.RolloutStrategy.Canary.Percent, 100) == 100 {
+		// Finalization is asynchronous: 50 -> 100 -> 25 must not restore A
+		// merely because the informer never observed the intermediate 100.
+		// Readiness is separate: a single-revision scale-up or Pod failure must
+		// not prevent an operator from deploying a canary fix.
+		finished := old.Status.ObservedGeneration == old.Generation && old.Status.Canary == nil
+		for _, role := range old.Spec.Roles {
+			observed := false
+			for _, status := range old.Status.RoleStatuses {
+				if status.Name == role.Name {
+					observed = status.UpdatedReplicas == status.Replicas
+					break
+				}
+			}
+			finished = finished && observed
+		}
+		if !finished {
+			return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "wait for the current rollout and baseline cleanup to finish before starting a partial canary")}
+		}
+		return nil
+	}
+	if *strategy.Canary.Percent < *old.Spec.RolloutStrategy.Canary.Percent {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "rolloutStrategy", "canary", "percent"), "cannot decrease percent during a partial canary; to roll back, restore the previous templates and remove canary.percent")}
+	}
+	if dimension(old) != mode {
+		return field.ErrorList{field.Forbidden(path, "cannot change dimension during a partial canary; finish at 100 or remove canary.percent first")}
+	}
+	return nil
 }
 
 func isExternal(scaling *disaggv1.RoleScaling) bool {

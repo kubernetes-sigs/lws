@@ -152,6 +152,8 @@ type DisaggregatedSetScalingPolicy struct {
 	// count, so readiness loss alone does not trigger extra growth.
 	// Old-revision retirement checks are unchanged.
 	// Renamed-role replacement limits still apply.
+	// During a partial canary, Deferred instead queues demand increases until
+	// finalization or a switch to Immediate. Percentage promotion still proceeds.
 	// +optional
 	// +kubebuilder:default=Deferred
 	ScaleUpDuringRollout RolloutScalingPolicy `json:"scaleUpDuringRollout,omitempty"`
@@ -170,6 +172,8 @@ type DisaggregatedSetScalingPolicy struct {
 	// Renamed-role surplus recovery uses the same availability and scheduled-startup
 	// protection as other target reductions. These safeguards may delay
 	// reductions: Immediate does not mean instant deletion.
+	// During a partial canary, Deferred queues demand decreases (including zero)
+	// until finalization or a switch to Immediate. The latest request wins.
 	// +optional
 	// +kubebuilder:default=Deferred
 	ScaleDownDuringRollout RolloutScalingPolicy `json:"scaleDownDuringRollout,omitempty"`
@@ -285,6 +289,11 @@ type DisaggregatedSetSpec struct {
 	// +optional
 	ScalingPolicy *DisaggregatedSetScalingPolicy `json:"scalingPolicy,omitempty"`
 
+	// RolloutStrategy controls progressive delivery across all roles and sub-roles.
+	// Changing it does not create a new revision.
+	// +optional
+	RolloutStrategy *DisaggregatedSetRolloutStrategy `json:"rolloutStrategy,omitempty"`
+
 	// PlacementPolicy controls how a slice's roles are co-located and how the
 	// DisaggregatedSet's slices are spread across topology domains. When set, the
 	// controller injects pod affinity and anti-affinity into the managed
@@ -292,6 +301,82 @@ type DisaggregatedSetSpec struct {
 	// created, so changing it takes effect on the next rollout.
 	// +optional
 	PlacementPolicy *PlacementPolicy `json:"placementPolicy,omitempty"`
+}
+
+// CanaryDimension selects the unit used to divide a canary.
+// +kubebuilder:validation:Enum=Groups;Slices
+type CanaryDimension string
+
+const (
+	CanaryDimensionGroups CanaryDimension = "Groups"
+	CanaryDimensionSlices CanaryDimension = "Slices"
+)
+
+// DisaggregatedSetRolloutStrategy configures a set-wide canary hold.
+type DisaggregatedSetRolloutStrategy struct {
+	// Canary configures the new revision's requested share during a rollout.
+	// +optional
+	Canary *DisaggregatedSetCanary `json:"canary,omitempty"`
+}
+
+// DisaggregatedSetCanary configures a percentage-based canary rollout.
+type DisaggregatedSetCanary struct {
+	// Percent is the new revision's requested share, using Dimension
+	// as the unit. By default, split each role/sub-role's groups independently in
+	// every slice. Omitted or 100 finishes the rollout, allows old history to be
+	// cleaned up, and accepts the new revision as the next canary's baseline.
+	// Lowering the percentage after completion does not restore retired history;
+	// use a Git revert for rollback after finalization.
+	// The oldest revision with surviving groups is recorded as the baseline;
+	// that choice survives controller restarts. A later template update replaces
+	// the canary within its share while retaining the recorded baseline's share.
+	// During a partial canary Percent may increase, but decreases are rejected.
+	// Starting a partial canary from omitted/100 requires the current generation
+	// to be observed, no pending canary cleanup, and every role's existing replicas
+	// to be on the current revision. Unready groups or single-revision scaling
+	// do not prevent starting a canary. Requesting finalization does not complete it.
+	// Start at 0 to hold the baseline before creating any canary groups.
+	// For a durable rollback, restore the stable templates in Git. If they match
+	// the surviving baseline, the rollout converges fully to it without a hold.
+	// Remove Percent in the same Git change to leave no canary hold.
+	// It does not limit initial creation when there is no old revision.
+	// For 1..99, the canary count rounds up and keeps at least one unit on each
+	// side. In groups mode, a role starting with one admitted group keeps the
+	// whole slice on the baseline. If both sides already have groups, reducing
+	// demand to one retains one group on each side instead of restarting the
+	// canary. This one extra group consumes surge allowance; with zero surge,
+	// retention is a one-group exception. Admitted zero demand or finalization
+	// ends retention.
+	// A peer resuming at one waits on the baseline without discarding existing
+	// canary groups in other roles; further canary growth waits until it can split.
+	// In slices mode the units are whole slices instead of groups.
+	// This is not a traffic percentage.
+	// While held, Immediate admits demand changes in its configured direction;
+	// Deferred keeps the last admitted count for that direction. Accepted demand
+	// resizes both shares within readiness and availability budgets. Promotion
+	// and replacement of the canary templates continue even with Deferred.
+	// Percentage changes alone never recreate retired history.
+	// The active role/sub-role layout must match the recorded baseline; an
+	// incompatible baseline blocks even if a younger revision is compatible.
+	// An ambiguous initial choice or conflicting recorded baselines also blocks.
+	// Existing roles can scale to and from zero. Scaling the whole set to zero
+	// retains the marked baseline's LWS templates; scale-up restores the split.
+	// Finalizing at 100 or by removing the field retires that baseline and its
+	// rollback history. Keeping 100 does not automatically hold the next template
+	// update below 100%; set its starting percentage with the new templates.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	Percent *int32 `json:"percent,omitempty"`
+
+	// Dimension defaults to Groups: divide each role/sub-role within each
+	// slice. Slices instead promotes whole slices in ascending slice-index order.
+	// Dimensions cannot change while Percent is below 100.
+	// Slice-count changes are not supported during a partial Slices canary;
+	// finish at 100 or remove Percent first.
+	// This field has no effect when Percent is omitted or 100.
+	// +optional
+	Dimension CanaryDimension `json:"dimension,omitempty"`
 }
 
 // PlacementType selects the DisaggregatedSet placement guarantee.
@@ -415,6 +500,39 @@ type RoleStatus struct {
 	SubRoleStatuses []SubRoleStatus `json:"subRoleStatuses,omitempty"`
 }
 
+// DisaggregatedSetCanaryStatus describes an observed canary or its pending
+// cleanup. Replica counts remain in RoleStatuses; this section does not drive
+// rollout planning.
+type DisaggregatedSetCanaryStatus struct {
+	// Percent is the requested canary percentage observed by the controller,
+	// not a measured traffic weight or a guarantee of the current replica split.
+	// +required
+	Percent int32 `json:"percent"`
+
+	// Dimension is the unit of the requested percentage: Groups or Slices.
+	// +required
+	Dimension CanaryDimension `json:"dimension"`
+
+	// TargetRevision identifies the revision computed from the desired templates.
+	// +required
+	TargetRevision string `json:"targetRevision"`
+
+	// BaselineRevisions lists the recorded baseline revision identifiers across
+	// slices. It is empty until the baseline markers have been observed. Different
+	// slices can retain different baselines; conflicting markers do not imply a
+	// successful hold. Consult Settled and Conditions before treating it as ready.
+	// +optional
+	// +listType=set
+	BaselineRevisions []string `json:"baselineRevisions,omitempty"`
+
+	// Settled is true only when the controller reports CanaryHeld for the
+	// observed generation and replica demand. It confirms replica readiness,
+	// not application health. External scaler changes do not advance the parent
+	// generation; compare RoleStatuses.DesiredReplicas with the scaler targets.
+	// +required
+	Settled bool `json:"settled"`
+}
+
 // DisaggregatedSetStatus defines the observed state of DisaggregatedSet.
 type DisaggregatedSetStatus struct {
 	// For Kubernetes API conventions, see:
@@ -432,12 +550,21 @@ type DisaggregatedSetStatus struct {
 	// +optional
 	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 
+	// Canary describes a partial canary with surviving history, or its pending
+	// cleanup at omitted/100. Finalization clears it only after old LWS objects
+	// disappear. It is absent during initial creation without a baseline.
+	// +optional
+	Canary *DisaggregatedSetCanaryStatus `json:"canary,omitempty"`
+
 	// conditions represent the current state of the DisaggregatedSet resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
-	// - "Available": the resource is fully functional
+	// - "Available": the rollout is complete and every desired group is Ready
 	// - "Progressing": the resource is being created or updated
+	// Available is False during a successful partial canary hold. Use
+	// MinimumReplicasAvailable for the serving-capacity floor and application
+	// health checks for service health, not Available alone.
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map

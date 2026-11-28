@@ -50,6 +50,22 @@ description: Generated API reference documentation for disaggregatedset.x-k8s.io
 </tbody>
 </table>
 
+## `CanaryDimension`     {#disaggregatedset-x-k8s-io-v1-CanaryDimension}
+    
+(Alias of `string`)
+
+**Appears in:**
+
+- [DisaggregatedSetCanary](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary)
+
+- [DisaggregatedSetCanaryStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus)
+
+
+<p>CanaryDimension selects the unit used to divide a canary.</p>
+
+
+
+
 ## `DisaggregatedRoleSpec`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedRoleSpec}
     
 
@@ -101,6 +117,149 @@ auto-creates a DisaggregatedSetRoleScaler and reads its spec.replicas.</p>
 Note: Spec.RolloutStrategy.Type must be RollingUpdate (or empty) and
 Spec.RolloutStrategy.RollingUpdateConfiguration.Partition must not be set.
 DisaggregatedSet handles rollouts across roles.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSetCanary`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetRolloutStrategy](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy)
+
+
+<p>DisaggregatedSetCanary configures a percentage-based canary rollout.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>percent</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Percent is the new revision's requested share, using Dimension
+as the unit. By default, split each role/sub-role's groups independently in
+every slice. Omitted or 100 finishes the rollout, allows old history to be
+cleaned up, and accepts the new revision as the next canary's baseline.
+Lowering the percentage after completion does not restore retired history;
+use a Git revert for rollback after finalization.
+The oldest revision with surviving groups is recorded as the baseline;
+that choice survives controller restarts. A later template update replaces
+the canary within its share while retaining the recorded baseline's share.
+During a partial canary Percent may increase, but decreases are rejected.
+Starting a partial canary from omitted/100 requires the current generation
+to be observed, no pending canary cleanup, and every role's existing replicas
+to be on the current revision. Unready groups or single-revision scaling
+do not prevent starting a canary. Requesting finalization does not complete it.
+Start at 0 to hold the baseline before creating any canary groups.
+For a durable rollback, restore the stable templates in Git. If they match
+the surviving baseline, the rollout converges fully to it without a hold.
+Remove Percent in the same Git change to leave no canary hold.
+It does not limit initial creation when there is no old revision.
+For 1..99, the canary count rounds up and keeps at least one unit on each
+side. In groups mode, a role starting with one admitted group keeps the
+whole slice on the baseline. If both sides already have groups, reducing
+demand to one retains one group on each side instead of restarting the
+canary. This one extra group consumes surge allowance; with zero surge,
+retention is a one-group exception. Admitted zero demand or finalization
+ends retention.
+A peer resuming at one waits on the baseline without discarding existing
+canary groups in other roles; further canary growth waits until it can split.
+In slices mode the units are whole slices instead of groups.
+This is not a traffic percentage.
+While held, Immediate admits demand changes in its configured direction;
+Deferred keeps the last admitted count for that direction. Accepted demand
+resizes both shares within readiness and availability budgets. Promotion
+and replacement of the canary templates continue even with Deferred.
+Percentage changes alone never recreate retired history.
+The active role/sub-role layout must match the recorded baseline; an
+incompatible baseline blocks even if a younger revision is compatible.
+An ambiguous initial choice or conflicting recorded baselines also blocks.
+Existing roles can scale to and from zero. Scaling the whole set to zero
+retains the marked baseline's LWS templates; scale-up restores the split.
+Finalizing at 100 or by removing the field retires that baseline and its
+rollback history. Keeping 100 does not automatically hold the next template
+update below 100%; set its starting percentage with the new templates.</p>
+</td>
+</tr>
+<tr><td><code>dimension</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-CanaryDimension"><code>CanaryDimension</code></a>
+</td>
+<td>
+   <p>Dimension defaults to Groups: divide each role/sub-role within each
+slice. Slices instead promotes whole slices in ascending slice-index order.
+Dimensions cannot change while Percent is below 100.
+Slice-count changes are not supported during a partial Slices canary;
+finish at 100 or remove Percent first.
+This field has no effect when Percent is omitted or 100.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `DisaggregatedSetCanaryStatus`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetStatus](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetStatus)
+
+
+<p>DisaggregatedSetCanaryStatus describes an observed canary or its pending
+cleanup. Replica counts remain in RoleStatuses; this section does not drive
+rollout planning.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>percent</code> <B>[Required]</B><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>Percent is the requested canary percentage observed by the controller,
+not a measured traffic weight or a guarantee of the current replica split.</p>
+</td>
+</tr>
+<tr><td><code>dimension</code> <B>[Required]</B><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-CanaryDimension"><code>CanaryDimension</code></a>
+</td>
+<td>
+   <p>Dimension is the unit of the requested percentage: Groups or Slices.</p>
+</td>
+</tr>
+<tr><td><code>targetRevision</code> <B>[Required]</B><br/>
+<code>string</code>
+</td>
+<td>
+   <p>TargetRevision identifies the revision computed from the desired templates.</p>
+</td>
+</tr>
+<tr><td><code>baselineRevisions</code><br/>
+<code>[]string</code>
+</td>
+<td>
+   <p>BaselineRevisions lists the recorded baseline revision identifiers across
+slices. It is empty until the baseline markers have been observed. Different
+slices can retain different baselines; conflicting markers do not imply a
+successful hold. Consult Settled and Conditions before treating it as ready.</p>
+</td>
+</tr>
+<tr><td><code>settled</code> <B>[Required]</B><br/>
+<code>bool</code>
+</td>
+<td>
+   <p>Settled is true only when the controller reports CanaryHeld for the
+observed generation and replica demand. It confirms replica readiness,
+not application health. External scaler changes do not advance the parent
+generation; compare RoleStatuses.DesiredReplicas with the scaler targets.</p>
 </td>
 </tr>
 </tbody>
@@ -235,6 +394,32 @@ revisions so HPA observes the serving fleet during a rolling update.</p>
 </tbody>
 </table>
 
+## `DisaggregatedSetRolloutStrategy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy}
+    
+
+**Appears in:**
+
+- [DisaggregatedSetSpec](#disaggregatedset-x-k8s-io-v1-DisaggregatedSetSpec)
+
+
+<p>DisaggregatedSetRolloutStrategy configures a set-wide canary hold.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>canary</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanary"><code>DisaggregatedSetCanary</code></a>
+</td>
+<td>
+   <p>Canary configures the new revision's requested share during a rollout.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `DisaggregatedSetScalingPolicy`     {#disaggregatedset-x-k8s-io-v1-DisaggregatedSetScalingPolicy}
     
 
@@ -262,7 +447,9 @@ rollout to finish. Immediate also tops up target replicas to desired minus
 replicas requested from all old revisions of the same role. Loading groups
 count, so readiness loss alone does not trigger extra growth.
 Old-revision retirement checks are unchanged.
-Renamed-role replacement limits still apply.</p>
+Renamed-role replacement limits still apply.
+During a partial canary, Deferred instead queues demand increases until
+finalization or a switch to Immediate. Percentage promotion still proceeds.</p>
 </td>
 </tr>
 <tr><td><code>scaleDownDuringRollout</code><br/>
@@ -282,7 +469,9 @@ reductions of roles still present preserve max(0, effective desired -
 maxUnavailable) Ready replicas, or avoid worsening an existing shortfall.
 Renamed-role surplus recovery uses the same availability and scheduled-startup
 protection as other target reductions. These safeguards may delay
-reductions: Immediate does not mean instant deletion.</p>
+reductions: Immediate does not mean instant deletion.
+During a partial canary, Deferred queues demand decreases (including zero)
+until finalization or a switch to Immediate. The latest request wins.</p>
 </td>
 </tr>
 <tr><td><code>subRoleScaleDelaySeconds</code><br/>
@@ -344,6 +533,14 @@ Omit it to use Deferred for both directions: readiness-paced growth and
 target reductions after old revisions drain.</p>
 </td>
 </tr>
+<tr><td><code>rolloutStrategy</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetRolloutStrategy"><code>DisaggregatedSetRolloutStrategy</code></a>
+</td>
+<td>
+   <p>RolloutStrategy controls progressive delivery across all roles and sub-roles.
+Changing it does not create a new revision.</p>
+</td>
+</tr>
 <tr><td><code>placementPolicy</code><br/>
 <a href="#disaggregatedset-x-k8s-io-v1-PlacementPolicy"><code>PlacementPolicy</code></a>
 </td>
@@ -390,6 +587,15 @@ Parent counts include historical layouts and may exceed the visible child sum.
 Removed roles are omitted even while their groups drain.</p>
 </td>
 </tr>
+<tr><td><code>canary</code><br/>
+<a href="#disaggregatedset-x-k8s-io-v1-DisaggregatedSetCanaryStatus"><code>DisaggregatedSetCanaryStatus</code></a>
+</td>
+<td>
+   <p>Canary describes a partial canary with surviving history, or its pending
+cleanup at omitted/100. Finalization clears it only after old LWS objects
+disappear. It is absent during initial creation without a baseline.</p>
+</td>
+</tr>
 <tr><td><code>conditions</code><br/>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#condition-v1-meta"><code>[]k8s.io/apimachinery/pkg/apis/meta/v1.Condition</code></a>
 </td>
@@ -398,8 +604,11 @@ Removed roles are omitted even while their groups drain.</p>
 Each condition has a unique type and reflects the status of a specific aspect of the resource.</p>
 <p>Standard condition types include:</p>
 <ul>
-<li>&quot;Available&quot;: the resource is fully functional</li>
-<li>&quot;Progressing&quot;: the resource is being created or updated</li>
+<li>&quot;Available&quot;: the rollout is complete and every desired group is Ready</li>
+<li>&quot;Progressing&quot;: the resource is being created or updated
+Available is False during a successful partial canary hold. Use
+MinimumReplicasAvailable for the serving-capacity floor and application
+health checks for service health, not Available alone.</li>
 </ul>
 <p>The status of each condition is one of True, False, or Unknown.</p>
 </td>

@@ -20,15 +20,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -40,8 +43,11 @@ import (
 
 // updateStatus publishes cached counts and conditions.
 // Scalers use the same counts as the DisaggregatedSet's nested role status.
-func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler) error {
-	roleStatuses, assigned, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
+// canaryHeld reports that the rollout executor found every rolling slice
+// settled at the canary percentage in this reconcile. Nil means observation
+// is pending, so only an unchanged, previously verified hold can be retained.
+func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int, scalers map[string]*disaggregatedsetv1.DisaggregatedSetRoleScaler, canaryHeld *bool, canaryMessage string) error {
+	roleStatuses, assigned, canary, err := r.LWSManager.collectRoleStatuses(ctx, ds, roleNames, revision, desiredReplicasByRole)
 	if err != nil {
 		return err
 	}
@@ -51,10 +57,33 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 	setMinAvailableReplicas(ds, roleStatuses, desiredReplicasByRole, sliceCount)
 	observedReplicas, available := summarizeRoleStatuses(roleStatuses)
 
+	held := ptr.Deref(canaryHeld, false)
+	if canaryHeld == nil {
+		if canary != nil && ds.Status.Canary != nil {
+			canary.Settled = ds.Status.Canary.Settled
+		}
+		previous := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing))
+		held = previous != nil && previous.Status == metav1.ConditionTrue && previous.Reason == reasonCanaryHeld &&
+			previous.ObservedGeneration == ds.Generation && equality.Semantic.DeepEqual(ds.Status.RoleStatuses, roleStatuses) &&
+			equality.Semantic.DeepEqual(ds.Status.Canary, canary)
+	}
 	changed := setRoleStatuses(ds, roleStatuses)
 	changed = setSubRolesAssignedCondition(ds, assigned) || changed
 	unresolvedRoles := unresolvedReplicaTargetRoles(roleNames, desiredReplicasByRole)
-	changed = setDisaggregatedSetCondition(ds, disaggregatedSetCondition(ds, available && assigned, unresolvedRoles)) || changed
+	condition := disaggregatedSetCondition(ds, roleStatuses, available && assigned, unresolvedRoles, held)
+	if canaryMessage != "" && len(unresolvedRoles) == 0 {
+		condition.Type = string(disaggregatedsetv1.DisaggregatedSetProgressing)
+		condition.Reason, condition.Message = "RolloutInProgress", canaryMessage
+	}
+	if canary != nil {
+		canary.Settled = condition.Reason == reasonCanaryHeld
+	}
+	if !equality.Semantic.DeepEqual(ds.Status.Canary, canary) {
+		ds.Status.Canary = canary
+		changed = true
+	}
+	holdStarted := condition.Reason == reasonCanaryHeld && progressingReason(ds) != reasonCanaryHeld
+	changed = setDisaggregatedSetCondition(ds, condition) || changed
 	changed = setDisaggregatedSetCondition(ds, minimumReplicasAvailableCondition(ds, roleStatuses)) || changed
 	if ds.Status.ObservedGeneration != ds.Generation {
 		ds.Status.ObservedGeneration = ds.Generation
@@ -67,6 +96,11 @@ func (r *DisaggregatedSetReconciler) updateStatus(ctx context.Context, ds *disag
 		scalerErr = r.ScalerManager.WriteStatus(ctx, ds, scalers, observedReplicas)
 	}
 	err = r.publishStatus(ctx, ds, changed)
+	if err == nil && holdStarted {
+		// Once per hold, after the condition is written: not on every requeue
+		// while it lasts, nor again from a stale read of the previous status.
+		r.Record.Eventf(ds, nil, corev1.EventTypeNormal, EventReasonCanaryHeld, "Wait", "%s", condition.Message)
+	}
 	if errors.Is(err, errStatusPending) && scalerErr != nil {
 		// A normal status retry must not hide a scaler failure.
 		return scalerErr
@@ -120,10 +154,10 @@ func (r *DisaggregatedSetReconciler) publishStatus(ctx context.Context, ds *disa
 // collectRoleStatuses aggregates all slices and revisions. Only current roles
 // and children are published, in spec order; removed children still count toward
 // their parent's total while their old groups drain.
-func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, error) {
+func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *disaggregatedsetv1.DisaggregatedSet, roleNames []string, revision string, desiredReplicasByRole map[string]int) ([]disaggregatedsetv1.RoleStatus, bool, *disaggregatedsetv1.DisaggregatedSetCanaryStatus, error) {
 	all, err := m.ListAll(ctx, ds, "")
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to list LWS for status: %w", err)
+		return nil, false, nil, fmt.Errorf("failed to list LWS for status: %w", err)
 	}
 	byRole := make(map[string][]*leaderworkersetv1.LeaderWorkerSet)
 	for _, lws := range all {
@@ -142,7 +176,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 			var assigned bool
 			status, assigned, err = m.subRoleStatus(ctx, config, workloads, revision, capacity)
 			if err != nil {
-				return nil, false, err
+				return nil, false, nil, err
 			}
 			allAssigned = allAssigned && assigned
 		} else {
@@ -153,7 +187,7 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 					status.UpdatedReplicas += lws.Status.UpdatedReplicas
 				}
 				if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
-					return nil, false, err
+					return nil, false, nil, err
 				}
 			}
 		}
@@ -164,13 +198,65 @@ func (m *LeaderWorkerSetManager) collectRoleStatuses(ctx context.Context, ds *di
 	for role, workloads := range byRole {
 		for _, lws := range workloads {
 			if err := m.observeServingLayout(ctx, capacity, lws, role, revision); err != nil {
-				return nil, false, err
+				return nil, false, nil, err
 			}
 		}
 	}
-	capacity.requireTargets(ds, revision, desiredReplicasByRole)
+	capacity.requireTargets(ds, revision, desiredReplicasByRole, all)
 	capacity.setAvailableReplicas(statuses)
-	return statuses, allAssigned, nil
+	return statuses, allAssigned, observedCanaryStatus(ds, revision, all), nil
+}
+
+// Reuse the owned LWS list already read for role counts. Only published markers
+// identify baselines here: status must not guess or become a second planner.
+func observedCanaryStatus(ds *disaggregatedsetv1.DisaggregatedSet, target string, all []*leaderworkersetv1.LeaderWorkerSet) *disaggregatedsetv1.DisaggregatedSetCanaryStatus {
+	percent, partial := canaryPercent(ds)
+	// Keep finalization visible until the last old LWS disappears, including
+	// foreground deletion after its baseline annotation has been removed.
+	finalizing := !partial && (ds.Status.Canary != nil || slices.ContainsFunc(all, func(lws *leaderworkersetv1.LeaderWorkerSet) bool {
+		return lws.Annotations[canaryStableAnnotation] == "true"
+	}))
+	if !partial && !finalizing {
+		return nil
+	}
+	baselines := sets.New[string]()
+	markedBySlice := map[string]sets.Set[string]{}
+	for _, lws := range all {
+		if lws.Annotations[canaryStableAnnotation] != "true" || !finalizing && lws.DeletionTimestamp != nil {
+			continue
+		}
+		slice := lws.Labels[disaggregatedsetv1.SliceLabelKey]
+		if markedBySlice[slice] == nil {
+			markedBySlice[slice] = sets.New[string]()
+		}
+		markedBySlice[slice].Insert(lws.Labels[disaggregatedsetv1.RevisionLabelKey])
+	}
+	active := false
+	for _, lws := range all {
+		revision := lws.Labels[disaggregatedsetv1.RevisionLabelKey]
+		if revision == "" || revision == target || !finalizing && lws.DeletionTimestamp != nil {
+			continue
+		}
+		markedRevisions := markedBySlice[lws.Labels[disaggregatedsetv1.SliceLabelKey]]
+		if !finalizing && markedRevisions.Len() == 1 && markedRevisions.Has(target) {
+			continue // Git restored the baseline; this slice rolls normally to it.
+		}
+		marked := lws.Annotations[canaryStableAnnotation] == "true"
+		active = active || finalizing || marked || ptr.Deref(lws.Spec.Replicas, 0) > 0
+		if marked {
+			baselines.Insert(markedRevisions.UnsortedList()...)
+		}
+		if finalizing && ds.Status.Canary != nil && slices.Contains(ds.Status.Canary.BaselineRevisions, revision) {
+			baselines.Insert(revision)
+		}
+	}
+	if !active {
+		return nil
+	}
+	return &disaggregatedsetv1.DisaggregatedSetCanaryStatus{
+		Percent: int32(percent), Dimension: canaryDimension(ds),
+		TargetRevision: target, BaselineRevisions: sets.List(baselines),
+	}
 }
 
 // observeServingLayout counts a workload that the current spec does not partition.
@@ -245,11 +331,48 @@ func (revision *servingRevision) requireSubRoles(role string, layouts ...map[str
 // requireTargets makes the current revision require every role with a positive
 // target in each slice, so a role whose workload is missing still stops its peers
 // from counting as available.
-func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.DisaggregatedSet, revision string, desiredReplicasByRole map[string]int) {
+func (capacity servingCapacity) requireTargets(ds *disaggregatedsetv1.DisaggregatedSet, revision string, desiredReplicasByRole map[string]int, workloads []*leaderworkersetv1.LeaderWorkerSet) {
 	for slice := range disaggregatedsetutils.GetSlices(ds) {
 		current := capacity.revisionAt(servingRevisionKey{strconv.Itoa(int(slice)), revision})
 		for _, leaf := range rolloutRoleNames(ds) {
 			current.observe(leaf, 0, desiredReplicasByRole[leaf] > 0)
+		}
+	}
+	if _, canary := canaryPercent(ds); !canary {
+		return
+	}
+	// A queued zero is not an inactive role. Use the counts the planner has
+	// actually admitted, including an admitted zero followed by a queued increase.
+	// Keep slices independent; conflicting records conservatively require a role.
+	admitted := map[string]map[string]int{}
+	restored := sets.New[string]()
+	for _, lws := range workloads {
+		if lws.Annotations[canaryStableAnnotation] != "true" || lws.DeletionTimestamp != nil {
+			continue
+		}
+		slice, role := lws.Labels[disaggregatedsetv1.SliceLabelKey], lws.Labels[disaggregatedsetv1.RoleLabelKey]
+		if lws.Labels[disaggregatedsetv1.RevisionLabelKey] == revision {
+			restored.Insert(slice) // Git restored A; this slice uses ordinary rollout demand.
+			continue
+		}
+		counts, err := subRoleCounts(lws, canaryDemandAnnotation)
+		if err != nil || counts == nil {
+			continue // Until demand is recorded, retain the observed requirements.
+		}
+		if admitted[slice] == nil {
+			admitted[slice] = map[string]int{}
+		}
+		for child, replicas := range counts {
+			name := childRoleKey(role, child)
+			admitted[slice][name] = max(admitted[slice][name], replicas)
+		}
+	}
+	for key, observed := range capacity {
+		if restored.Has(key.slice) {
+			continue
+		}
+		for name, replicas := range admitted[key.slice] {
+			observed.required[name] = replicas > 0
 		}
 	}
 }
@@ -539,12 +662,18 @@ func setRoleStatuses(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, role
 	return true
 }
 
-func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, available bool, unresolvedRoles []string) metav1.Condition {
+const reasonCanaryHeld = "CanaryHeld"
+
+func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.DisaggregatedSet, roleStatuses []disaggregatedsetv1.RoleStatus, available bool, unresolvedRoles []string, canaryHeld bool) metav1.Condition {
 	condType := disaggregatedsetv1.DisaggregatedSetProgressing
 	reason, message := "RolloutInProgress", "Not all roles have reached their desired replica count, ready and updated to the current revision"
+	percent, canary := canaryPercent(disaggregatedSet)
+	held, ready := canaryHold(roleStatuses)
 	if len(unresolvedRoles) > 0 {
 		reason = "ReplicaTargetsUnresolved"
 		message = fmt.Sprintf("DisaggregatedSetRoleScaler could not be created or adopted for roles: %s", listRoles(unresolvedRoles))
+	} else if canary && canaryHeld && ready {
+		reason, message = reasonCanaryHeld, fmt.Sprintf("Rolling update held at canary.percent %d; %s", percent, held)
 	} else if available {
 		condType = disaggregatedsetv1.DisaggregatedSetAvailable
 		reason, message = "AllRolesReady", "All roles have reached their desired replica count, ready and updated to the current revision"
@@ -557,6 +686,37 @@ func disaggregatedSetCondition(disaggregatedSet *disaggregatedsetv1.Disaggregate
 		Reason:             reason,
 		Message:            message,
 	}
+}
+
+// canaryHold reports a rolling update that has stopped at the requested
+// percentage: every role has exactly its desired groups, all Ready. The message lists
+// each role's groups on the current revision. Counts alone can briefly match
+// while a new LWS's status lags its groups, or one slice's progress can mask
+// another's, so the caller also requires the executor to have found every
+// rolling slice held.
+func canaryHold(roleStatuses []disaggregatedsetv1.RoleStatus) (string, bool) {
+	counts := make([]string, 0, len(roleStatuses))
+	for _, status := range roleStatuses {
+		if status.DesiredReplicas == nil {
+			return "", false
+		}
+		desired := *status.DesiredReplicas
+		if status.Replicas != desired || status.ReadyReplicas != desired {
+			return "", false
+		}
+		counts = append(counts, fmt.Sprintf("%s %d/%d", status.Name, status.UpdatedReplicas, desired))
+	}
+	if len(counts) == 0 {
+		return "", false
+	}
+	return "groups on the current revision: " + strings.Join(counts, ", "), true
+}
+
+func progressingReason(ds *disaggregatedsetv1.DisaggregatedSet) string {
+	if c := meta.FindStatusCondition(ds.Status.Conditions, string(disaggregatedsetv1.DisaggregatedSetProgressing)); c != nil && c.Status == metav1.ConditionTrue {
+		return c.Reason
+	}
+	return ""
 }
 
 // exclusiveConditionTypes reports whether t1 and t2 are a mutually-exclusive
